@@ -1,0 +1,32 @@
+enabled: true
+name: cfctl
+namespace: spaceone
+image:
+  name: spaceone/cfctl
+  version: latest
+imagePullPolicy: IfNotPresent
+replicas: 1
+
+resources: {}
+#     requests:
+#         memory: "128Mi"
+#         cpu: "25m"
+#     limits:
+#         memory: "256Mi"
+#         cpu: "50m"
+
+#imagePullSecrets:
+# - {imagePullSecret_name}
+
+#serviceAccountName: {name}
+
+#env:
+# - name: key
+#   value: value
+
+pvc:
+  storageClassName: null # You must specify a storage class name. Otherwise, the cfctl pod will use empty volume.
+  accessModes:
+    - "ReadWriteMany"
+  requests:
+    storage: 8Gi
