@@ -1,6 +1,4 @@
-/*
-Copyright © 2024 NAME HERE <EMAIL ADDRESS>
-*/
+// config.go
 
 package cmd
 
@@ -27,7 +25,7 @@ var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage cfctl configuration files",
 	Long: `Manage configuration files for cfctl. You can initialize,
-switch environments, and display the current configuration.`,
+	switch environments, and display the current configuration.`,
 }
 
 // initCmd initializes a new environment configuration
@@ -101,6 +99,22 @@ var initCmd = &cobra.Command{
 		err = encoder.Encode(envData)
 		if err != nil {
 			log.Fatalf("Failed to update environment.yml file: %v", err)
+		}
+
+		// Create short_names.yml if it doesn't exist
+		shortNamesFile := filepath.Join(getConfigDir(), "short_names.yml")
+		if _, err := os.Stat(shortNamesFile); os.IsNotExist(err) {
+			file, err := os.Create(shortNamesFile)
+			if err != nil {
+				log.Fatalf("Failed to create short_names.yml file: %v", err)
+			}
+			defer file.Close()
+			yamlContent := "# Define your short names here\n# Example:\n# identity.User: 'iu'\n"
+			_, err = file.WriteString(yamlContent)
+			if err != nil {
+				log.Fatalf("Failed to write to short_names.yml file: %v", err)
+			}
+			pterm.Success.Println("short_names.yml file created successfully.")
 		}
 
 		// Update the global config file with the new environment command only if not overwriting
