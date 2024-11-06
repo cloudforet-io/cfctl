@@ -171,7 +171,7 @@ var apiResourcesCmd = &cobra.Command{
 
 		endpointsMap := viper.GetStringMapString("endpoints")
 
-		// 플래그로 전달된 엔드포인트들 처리
+		// Process endpoints provided via flag
 		if endpoints != "" {
 			selectedEndpoints := strings.Split(endpoints, ",")
 			for i := range selectedEndpoints {
@@ -204,7 +204,7 @@ var apiResourcesCmd = &cobra.Command{
 			return
 		}
 
-		// -e 플래그가 없을 때 기존의 모든 서비스에 대해 나열하는 기능 유지
+		// If -e flag is not provided, list all services as before
 		var wg sync.WaitGroup
 		dataChan := make(chan [][]string, len(endpointsMap))
 		errorChan := make(chan error, len(endpointsMap))
