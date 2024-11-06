@@ -5,12 +5,14 @@ Copyright © 2024 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
@@ -40,22 +42,72 @@ var initCmd = &cobra.Command{
 			log.Fatalf("Environment name must be provided")
 		}
 
+		// Ensure environments directory exists
+		envDir := filepath.Join(getConfigDir(), "environments")
+		if _, err := os.Stat(envDir); os.IsNotExist(err) {
+			err = os.MkdirAll(envDir, 0755)
+			if err != nil {
+				log.Fatalf("Failed to create environments directory: %v", err)
+			}
+		}
+
+		configPath := filepath.Join(envDir, environment+".yml")
+		overwrite := false
+
+		if _, err := os.Stat(configPath); err == nil {
+			// Environment file already exists, prompt the user for confirmation
+			pterm.Warning.Printf("Environment '%s' already exists. Do you want to overwrite it? (Y/N): ", environment)
+			reader := bufio.NewReader(os.Stdin)
+			response, _ := reader.ReadString('\n')
+			response = strings.TrimSpace(strings.ToUpper(response))
+			if response != "Y" {
+				pterm.Info.Println("Operation cancelled by the user.")
+				return
+			}
+			pterm.Info.Printf("Overwriting environment '%s' at '%s'.\n", environment, configPath)
+			overwrite = true
+		}
+
+		// Create or overwrite the environment file
+		file, err := os.Create(configPath)
+		if err != nil {
+			log.Fatalf("Failed to create environment file: %v", err)
+		}
+		file.Close()
+
+		// If an import file is provided, write its content into the new environment file
 		if importFile != "" {
 			viper.SetConfigFile(importFile)
 			err := viper.ReadInConfig()
 			if err != nil {
 				log.Fatalf("Unable to read config file: %v", err)
 			}
+			err = viper.WriteConfigAs(configPath)
+			if err != nil {
+				log.Fatalf("Error writing config file: %v", err)
+			}
 		}
 
-		viper.Set("environment", environment)
-		configPath := filepath.Join(getConfigDir(), "environments", environment+".yml")
-		err := viper.WriteConfigAs(configPath)
+		// Update the ~/.spaceone/environment.yml with the new environment
+		envConfigPath := filepath.Join(getConfigDir(), "environment.yml")
+		envData := map[string]string{"environment": environment}
+		envFile, err := os.Create(envConfigPath)
 		if err != nil {
-			log.Fatalf("Error writing config file: %v", err)
+			log.Fatalf("Failed to open environment.yml file: %v", err)
+		}
+		defer envFile.Close()
+
+		encoder := yaml.NewEncoder(envFile)
+		err = encoder.Encode(envData)
+		if err != nil {
+			log.Fatalf("Failed to update environment.yml file: %v", err)
 		}
 
-		pterm.Success.Printf("Environment %s initialized at %s\n", environment, configPath)
+		// Update the global config file with the new environment command only if not overwriting
+		if !overwrite {
+			updateGlobalConfigWithEnvironment(environment)
+			pterm.Success.Printf("Environment '%s' initialized at %s\n", environment, configPath)
+		}
 	},
 }
 
@@ -140,37 +192,6 @@ var showCmd = &cobra.Command{
 	},
 }
 
-// updateGlobalConfig updates the ~/.spaceone/config file with all available environments
-func updateGlobalConfig() {
-	envDir := filepath.Join(getConfigDir(), "environments")
-	entries, err := os.ReadDir(envDir)
-	if err != nil {
-		log.Fatalf("Unable to list environments: %v", err)
-	}
-
-	configPath := filepath.Join(getConfigDir(), "config")
-	file, err := os.Create(configPath)
-	if err != nil {
-		log.Fatalf("Failed to open config file: %v", err)
-	}
-	defer file.Close()
-
-	var configContent strings.Builder
-	for _, entry := range entries {
-		name := entry.Name()
-		name = name[:len(name)-len(filepath.Ext(name))] // Remove ".yml" extension
-		configContent.WriteString(fmt.Sprintf("[%s]\n", name))
-		configContent.WriteString(fmt.Sprintf("cfctl environments -s %s\n\n", name))
-	}
-
-	_, err = file.WriteString(configContent.String())
-	if err != nil {
-		log.Fatalf("Failed to write to config file: %v", err)
-	}
-
-	pterm.Info.Println("Updated global config file with available environments.")
-}
-
 func init() {
 	rootCmd.AddCommand(configCmd)
 
@@ -194,7 +215,6 @@ func init() {
 	viper.SetConfigType("yml")
 }
 
-// getConfigDir returns the directory for SpaceONE configuration
 func getConfigDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -203,7 +223,6 @@ func getConfigDir() string {
 	return filepath.Join(home, ".spaceone")
 }
 
-// getCurrentEnvironment reads the current environment from ~/.spaceone/environment.yml
 func getCurrentEnvironment() string {
 	envConfigPath := filepath.Join(getConfigDir(), "environment.yml")
 	viper.SetConfigFile(envConfigPath)
@@ -214,4 +233,103 @@ func getCurrentEnvironment() string {
 	}
 
 	return viper.GetString("environment")
+}
+
+func updateGlobalConfig() {
+	envDir := filepath.Join(getConfigDir(), "environments")
+	entries, err := os.ReadDir(envDir)
+	if err != nil {
+		log.Fatalf("Unable to list environments: %v", err)
+	}
+
+	configPath := filepath.Join(getConfigDir(), "config")
+	file, err := os.Create(configPath)
+	if err != nil {
+		log.Fatalf("Failed to open config file: %v", err)
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	defer writer.Flush()
+
+	var wg sync.WaitGroup
+	existingEnvironments := make(map[string]bool)
+
+	for _, entry := range entries {
+		wg.Add(1)
+		go func(entry os.DirEntry) {
+			defer wg.Done()
+			name := entry.Name()
+			name = name[:len(name)-len(filepath.Ext(name))] // Remove ".yml" extension
+			existingEnvironments[name] = true
+			writer.WriteString(fmt.Sprintf("[%s]\n", name))
+			writer.WriteString(fmt.Sprintf("cfctl environments -s %s\n\n", name))
+		}(entry)
+	}
+
+	wg.Wait()
+
+	pterm.Info.Println("Updated global config file with available environments.")
+}
+
+// updateGlobalConfigWithEnvironment adds the new environment command to the global config file
+func updateGlobalConfigWithEnvironment(environment string) {
+	configPath := filepath.Join(getConfigDir(), "config")
+
+	var file *os.File
+	var err error
+	var message string
+	var isFileCreated bool
+
+	// Check if the config file already exists
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		// Create a new config file if it does not exist
+		file, err = os.Create(configPath)
+		if err != nil {
+			log.Fatalf("Failed to create config file: %v", err)
+		}
+		message = fmt.Sprintf("Created global config file with environment '%s'.\n", environment)
+		isFileCreated = true
+	} else {
+		// Read the existing config file to check for duplicates
+		content, err := os.ReadFile(configPath)
+		if err != nil {
+			log.Fatalf("Failed to read config file: %v", err)
+		}
+		if strings.Contains(string(content), fmt.Sprintf("[%s]", environment)) {
+			pterm.Info.Printf("Environment '%s' already exists in the config file.\n", environment)
+			return
+		}
+		// Open the existing config file for appending
+		file, err = os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			log.Fatalf("Failed to open config file: %v", err)
+		}
+
+		// Ensure the last line ends with a newline
+		if len(content) > 0 && content[len(content)-1] != '\n' {
+			_, err = file.WriteString("\n")
+			if err != nil {
+				log.Fatalf("Failed to write newline to config file: %v", err)
+			}
+		}
+		message = fmt.Sprintf("Added environment '%s' to global config file.\n", environment)
+		isFileCreated = false
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	defer writer.Flush()
+
+	// Append the new environment to the config file
+	_, err = writer.WriteString(fmt.Sprintf("[%s]\ncfctl environments -s %s\n\n", environment, environment))
+	if err != nil {
+		log.Fatalf("Failed to write to config file: %v", err)
+	}
+
+	if isFileCreated {
+		pterm.Info.Print(message)
+	} else {
+		pterm.Success.Print(message)
+	}
 }
