@@ -22,6 +22,8 @@ import (
 	"google.golang.org/protobuf/types/descriptorpb"
 )
 
+var endpoints string
+
 func fetchServiceResources(service, endpoint string) ([][]string, error) {
 	// Configure gRPC connection based on TLS usage
 	parts := strings.Split(endpoint, "://")
@@ -125,6 +127,29 @@ func getServiceMethods(client grpc_reflection_v1alpha.ServerReflectionClient, se
 	return methods
 }
 
+func splitIntoLinesWithComma(text string, maxWidth int) []string {
+	words := strings.Split(text, ", ")
+	var lines []string
+	var currentLine string
+
+	for _, word := range words {
+		if len(currentLine)+len(word)+2 > maxWidth { // +2 accounts for the ", " separator
+			lines = append(lines, currentLine+",")
+			currentLine = word
+		} else {
+			if currentLine != "" {
+				currentLine += ", "
+			}
+			currentLine += word
+		}
+	}
+	if currentLine != "" {
+		lines = append(lines, currentLine)
+	}
+
+	return lines
+}
+
 var apiResourcesCmd = &cobra.Command{
 	Use:   "api-resources",
 	Short: "Displays supported API resources",
@@ -144,13 +169,47 @@ var apiResourcesCmd = &cobra.Command{
 			log.Fatalf("Error reading config file: %v", err)
 		}
 
-		endpoints := viper.GetStringMapString("endpoints")
+		endpointsMap := viper.GetStringMapString("endpoints")
 
+		// Process endpoints provided via flag
+		if endpoints != "" {
+			selectedEndpoints := strings.Split(endpoints, ",")
+			for i := range selectedEndpoints {
+				selectedEndpoints[i] = strings.TrimSpace(selectedEndpoints[i])
+			}
+			var allData [][]string
+
+			for _, endpointName := range selectedEndpoints {
+				endpointName = strings.TrimSpace(endpointName)
+				serviceEndpoint, ok := endpointsMap[endpointName]
+				if !ok {
+					log.Printf("No endpoint found for %s", endpointName)
+					continue
+				}
+
+				result, err := fetchServiceResources(endpointName, serviceEndpoint)
+				if err != nil {
+					log.Printf("Error processing service %s: %v", endpointName, err)
+					continue
+				}
+
+				allData = append(allData, result...)
+			}
+
+			sort.Slice(allData, func(i, j int) bool {
+				return allData[i][0] < allData[j][0]
+			})
+
+			renderTable(allData)
+			return
+		}
+
+		// If -e flag is not provided, list all services as before
 		var wg sync.WaitGroup
-		dataChan := make(chan [][]string, len(endpoints))
-		errorChan := make(chan error, len(endpoints))
+		dataChan := make(chan [][]string, len(endpointsMap))
+		errorChan := make(chan error, len(endpointsMap))
 
-		for service, endpoint := range endpoints {
+		for service, endpoint := range endpointsMap {
 			wg.Add(1)
 			go func(service, endpoint string) {
 				defer wg.Done()
@@ -182,80 +241,62 @@ var apiResourcesCmd = &cobra.Command{
 			return allData[i][0] < allData[j][0]
 		})
 
-		// Calculate the dynamic width for the "Verb" column
-		terminalWidth := pterm.GetTerminalWidth()
-		usedWidth := 30 + 20 + 15 // Estimated widths for Service, Resource, and Short Names
-		verbColumnWidth := terminalWidth - usedWidth
-		if verbColumnWidth < 20 {
-			verbColumnWidth = 20 // Minimum width for Verb column
-		}
-
-		// Use unique colors for each service and its associated data
-		serviceColors := []pterm.Color{
-			pterm.FgLightGreen, pterm.FgLightYellow, pterm.FgLightBlue,
-			pterm.FgLightMagenta, pterm.FgLightCyan, pterm.FgWhite,
-		}
-
-		serviceColorMap := make(map[string]pterm.Color)
-		colorIndex := 0
-
-		table := pterm.TableData{{"Service", "Resource", "Short Names", "Verb"}}
-
-		for _, row := range allData {
-			service := row[0]
-			// Assign a unique color to each service if not already assigned
-			if _, exists := serviceColorMap[service]; !exists {
-				serviceColorMap[service] = serviceColors[colorIndex]
-				colorIndex = (colorIndex + 1) % len(serviceColors)
-			}
-
-			// Get the color for this service
-			color := serviceColorMap[service]
-			coloredStyle := pterm.NewStyle(color)
-
-			// Color the entire row (Service, Resource, Short Names, Verb)
-			serviceColored := coloredStyle.Sprint(service)
-			resourceColored := coloredStyle.Sprint(row[1])
-			shortNamesColored := coloredStyle.Sprint(row[2])
-
-			verbs := splitIntoLinesWithComma(row[3], verbColumnWidth)
-			for i, line := range verbs {
-				if i == 0 {
-					table = append(table, []string{serviceColored, resourceColored, shortNamesColored, coloredStyle.Sprint(line)})
-				} else {
-					table = append(table, []string{"", "", "", coloredStyle.Sprint(line)})
-				}
-			}
-		}
-
-		// Render the table using pterm
-		pterm.DefaultTable.WithHasHeader().WithData(table).Render()
+		renderTable(allData)
 	},
 }
 
-func splitIntoLinesWithComma(text string, maxWidth int) []string {
-	words := strings.Split(text, ", ")
-	var lines []string
-	var currentLine string
+func renderTable(data [][]string) {
+	// Calculate the dynamic width for the "Verb" column
+	terminalWidth := pterm.GetTerminalWidth()
+	usedWidth := 30 + 20 + 15 // Estimated widths for Service, Resource, and Short Names
+	verbColumnWidth := terminalWidth - usedWidth
+	if verbColumnWidth < 20 {
+		verbColumnWidth = 20 // Minimum width for Verb column
+	}
 
-	for _, word := range words {
-		if len(currentLine)+len(word)+2 > maxWidth { // +2 accounts for the ", " separator
-			lines = append(lines, currentLine+",")
-			currentLine = word
-		} else {
-			if currentLine != "" {
-				currentLine += ", "
+	// Use unique colors for each service and its associated data
+	serviceColors := []pterm.Color{
+		pterm.FgLightGreen, pterm.FgLightYellow, pterm.FgLightBlue,
+		pterm.FgLightMagenta, pterm.FgLightCyan, pterm.FgWhite,
+	}
+
+	serviceColorMap := make(map[string]pterm.Color)
+	colorIndex := 0
+
+	table := pterm.TableData{{"Service", "Resource", "Short Names", "Verb"}}
+
+	for _, row := range data {
+		service := row[0]
+		// Assign a unique color to each service if not already assigned
+		if _, exists := serviceColorMap[service]; !exists {
+			serviceColorMap[service] = serviceColors[colorIndex]
+			colorIndex = (colorIndex + 1) % len(serviceColors)
+		}
+
+		// Get the color for this service
+		color := serviceColorMap[service]
+		coloredStyle := pterm.NewStyle(color)
+
+		// Color the entire row (Service, Resource, Short Names, Verb)
+		serviceColored := coloredStyle.Sprint(service)
+		resourceColored := coloredStyle.Sprint(row[1])
+		shortNamesColored := coloredStyle.Sprint(row[2])
+
+		verbs := splitIntoLinesWithComma(row[3], verbColumnWidth)
+		for i, line := range verbs {
+			if i == 0 {
+				table = append(table, []string{serviceColored, resourceColored, shortNamesColored, coloredStyle.Sprint(line)})
+			} else {
+				table = append(table, []string{"", "", "", coloredStyle.Sprint(line)})
 			}
-			currentLine += word
 		}
 	}
-	if currentLine != "" {
-		lines = append(lines, currentLine)
-	}
 
-	return lines
+	// Render the table using pterm
+	pterm.DefaultTable.WithHasHeader().WithData(table).Render()
 }
 
 func init() {
 	rootCmd.AddCommand(apiResourcesCmd)
+	apiResourcesCmd.Flags().StringVarP(&endpoints, "endpoint", "e", "", "Specify the endpoints to connect to, separated by commas (e.g., 'identity,inventory')")
 }
