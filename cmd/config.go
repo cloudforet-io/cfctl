@@ -10,6 +10,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
@@ -35,6 +36,10 @@ var initCmd = &cobra.Command{
 		environment, _ := cmd.Flags().GetString("environment")
 		importFile, _ := cmd.Flags().GetString("import-file")
 
+		if environment == "" {
+			log.Fatalf("Environment name must be provided")
+		}
+
 		if importFile != "" {
 			viper.SetConfigFile(importFile)
 			err := viper.ReadInConfig()
@@ -59,6 +64,9 @@ var envCmd = &cobra.Command{
 	Use:   "environment",
 	Short: "Manage and switch environments",
 	Run: func(cmd *cobra.Command, args []string) {
+		// Update the global config file with the current list of environments
+		updateGlobalConfig()
+
 		switchEnv, _ := cmd.Flags().GetString("switch")
 		if switchEnv != "" {
 			configPath := filepath.Join(getConfigDir(), "environments", switchEnv+".yml")
@@ -92,13 +100,14 @@ var envCmd = &cobra.Command{
 			log.Fatalf("Unable to list environments: %v", err)
 		}
 
+		pterm.Println("Available Environments:\n")
 		for _, entry := range entries {
 			name := entry.Name()
-			name = name[:len(name)-len(filepath.Ext(name))] // Remove ".yaml" extension
+			name = name[:len(name)-len(filepath.Ext(name))] // Remove ".yml" extension
 			if name == currentEnv {
-				pterm.Info.Println(name + " (current)")
+				pterm.FgGreen.Printf("  > %s (current)\n", name)
 			} else {
-				pterm.Println(name)
+				pterm.Printf("  %s\n", name)
 			}
 		}
 	},
@@ -119,16 +128,47 @@ var showCmd = &cobra.Command{
 				log.Fatalf("Error formatting output as JSON: %v", err)
 			}
 			fmt.Println(string(data))
-		case "yaml":
+		case "yml":
 			data, err := yaml.Marshal(configData)
 			if err != nil {
-				log.Fatalf("Error formatting output as YAML: %v", err)
+				log.Fatalf("Error formatting output as yml: %v", err)
 			}
 			fmt.Println(string(data))
 		default:
 			log.Fatalf("Unsupported output format: %v", output)
 		}
 	},
+}
+
+// updateGlobalConfig updates the ~/.spaceone/config file with all available environments
+func updateGlobalConfig() {
+	envDir := filepath.Join(getConfigDir(), "environments")
+	entries, err := os.ReadDir(envDir)
+	if err != nil {
+		log.Fatalf("Unable to list environments: %v", err)
+	}
+
+	configPath := filepath.Join(getConfigDir(), "config")
+	file, err := os.Create(configPath)
+	if err != nil {
+		log.Fatalf("Failed to open config file: %v", err)
+	}
+	defer file.Close()
+
+	var configContent strings.Builder
+	for _, entry := range entries {
+		name := entry.Name()
+		name = name[:len(name)-len(filepath.Ext(name))] // Remove ".yml" extension
+		configContent.WriteString(fmt.Sprintf("[%s]\n", name))
+		configContent.WriteString(fmt.Sprintf("cfctl environments -s %s\n\n", name))
+	}
+
+	_, err = file.WriteString(configContent.String())
+	if err != nil {
+		log.Fatalf("Failed to write to config file: %v", err)
+	}
+
+	pterm.Info.Println("Updated global config file with available environments.")
 }
 
 func init() {
@@ -139,15 +179,19 @@ func init() {
 	configCmd.AddCommand(envCmd)
 	configCmd.AddCommand(showCmd)
 
-	// Defining flags
+	// Defining flags for initCmd
 	initCmd.Flags().StringP("environment", "e", "", "Name of the environment (required)")
 	initCmd.Flags().StringP("import-file", "f", "", "Path to an import configuration file")
 	initCmd.MarkFlagRequired("environment")
 
+	// Defining flags for envCmd
 	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
-	showCmd.Flags().StringP("output", "o", "yaml", "Output format (yaml/json)")
+	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
 
-	viper.SetConfigType("yaml")
+	// Defining flags for showCmd
+	showCmd.Flags().StringP("output", "o", "yml", "Output format (yml/json)")
+
+	viper.SetConfigType("yml")
 }
 
 // getConfigDir returns the directory for SpaceONE configuration
