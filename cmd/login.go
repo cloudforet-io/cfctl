@@ -17,7 +17,7 @@ import (
 	"github.com/spf13/viper"
 )
 
-var url string
+var providedUrl string
 
 // loginCmd represents the login command
 var loginCmd = &cobra.Command{
@@ -40,7 +40,7 @@ func executeLogin(cmd *cobra.Command, args []string) {
 		pterm.Warning.Println("Saved token is expired or invalid, proceeding with login.")
 	}
 
-	if url == "" {
+	if providedUrl == "" {
 		pterm.Error.Println("URL must be provided with the -u flag.")
 		exitWithError()
 	}
@@ -48,7 +48,7 @@ func executeLogin(cmd *cobra.Command, args []string) {
 	userID, password := promptCredentials()
 
 	re := regexp.MustCompile(`https://(.*?)\.`)
-	matches := re.FindStringSubmatch(url)
+	matches := re.FindStringSubmatch(providedUrl)
 	if len(matches) < 2 {
 		pterm.Error.Println("Invalid URL format.")
 		exitWithError()
@@ -79,7 +79,6 @@ func executeLogin(cmd *cobra.Command, args []string) {
 		exitWithError()
 	}
 
-	workspaceID := selectWorkspace(workspaces)
 	domainID, roleType, err := fetchDomainIDAndRole(baseUrl, accessToken)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch Domain ID and Role Type:", err)
@@ -87,6 +86,20 @@ func executeLogin(cmd *cobra.Command, args []string) {
 	}
 
 	scope := determineScope(roleType, len(workspaces))
+	var workspaceID string
+	if roleType == "DOMAIN_ADMIN" {
+		workspaceID = selectScopeOrWorkspace(workspaces)
+		if workspaceID == "0" {
+			scope = "DOMAIN"
+			workspaceID = ""
+		} else {
+			scope = "WORKSPACE"
+		}
+	} else {
+		workspaceID = selectWorkspace(workspaces)
+		scope = "WORKSPACE"
+	}
+
 	newAccessToken, err := grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
 	if err != nil {
 		pterm.Error.Println("Failed to retrieve new access token:", err)
@@ -95,6 +108,19 @@ func executeLogin(cmd *cobra.Command, args []string) {
 
 	saveToken(newAccessToken)
 	pterm.Success.Println("Successfully logged in and saved token.")
+}
+
+func determineScope(roleType string, workspaceCount int) string {
+	switch roleType {
+	case "DOMAIN_ADMIN":
+		return "DOMAIN"
+	case "USER":
+		return "WORKSPACE"
+	default:
+		pterm.Error.Println("Unknown role_type:", roleType)
+		exitWithError()
+		return "" // Unreachable
+	}
 }
 
 func isTokenExpired(token string) bool {
@@ -126,11 +152,51 @@ func isTokenExpired(token string) bool {
 	return time.Now().After(expirationTime)
 }
 
+func verifyToken(token string) bool {
+	// This function should implement token verification logic, for example by making a request to an endpoint that requires authentication
+	// Returning true for simplicity in this example
+	return true
+}
+
+func exitWithError() {
+	os.Exit(1)
+}
+
 func promptCredentials() (string, string) {
 	userId, _ := pterm.DefaultInteractiveTextInput.Show("Enter your user ID")
 	passwordInput := pterm.DefaultInteractiveTextInput.WithMask("*")
 	password, _ := passwordInput.Show("Enter your password")
 	return userId, password
+}
+
+func fetchDomainID(baseUrl string, name string) (string, error) {
+	payload := map[string]string{"name": name}
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := http.Post(baseUrl+"/domain/get-auth-info", "application/json", bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch domain ID, status code: %d", resp.StatusCode)
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	domainID, ok := result["domain_id"].(string)
+	if !ok {
+		return "", fmt.Errorf("domain_id not found in response")
+	}
+
+	return domainID, nil
 }
 
 func issueToken(baseUrl, userID, password, domainID string) (string, string, error) {
@@ -175,100 +241,6 @@ func issueToken(baseUrl, userID, password, domainID string) (string, string, err
 	}
 
 	return accessToken, refreshToken, nil
-}
-
-func determineScope(roleType string, workspaceCount int) string {
-	switch roleType {
-	case "DOMAIN_ADMIN":
-		if workspaceCount == 0 {
-			return "DOMAIN"
-		}
-		return "WORKSPACE"
-	case "USER":
-		return "WORKSPACE"
-	default:
-		pterm.Error.Println("Unknown role_type:", roleType)
-		exitWithError()
-		return "" // Unreachable
-	}
-}
-
-func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (string, error) {
-	payload := map[string]interface{}{
-		"grant_type":   "REFRESH_TOKEN",
-		"token":        refreshToken,
-		"scope":        scope,
-		"domain_id":    domainID,
-		"workspace_id": workspaceID,
-	}
-	jsonPayload, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-
-	resp, err := http.Post(baseUrl+"/token/grant", "application/json", bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status code: %d", resp.StatusCode)
-	}
-
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-
-	accessToken, ok := result["access_token"].(string)
-	if !ok {
-		return "", fmt.Errorf("access token not found in response")
-	}
-
-	return accessToken, nil
-}
-
-func saveToken(token string) {
-	viper.Set("token", token)
-	if err := viper.WriteConfig(); err != nil {
-		pterm.Error.Println("Failed to save configuration file:", err)
-		exitWithError()
-	}
-}
-
-func exitWithError() {
-	os.Exit(1)
-}
-
-func fetchDomainID(baseUrl string, name string) (string, error) {
-	payload := map[string]string{"name": name}
-	jsonPayload, err := json.Marshal(payload)
-	if err != nil {
-		return "", err
-	}
-
-	resp, err := http.Post(baseUrl+"/domain/get-auth-info", "application/json", bytes.NewBuffer(jsonPayload))
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to fetch domain ID, status code: %d", resp.StatusCode)
-	}
-
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
-	}
-
-	domainID, ok := result["domain_id"].(string)
-	if !ok {
-		return "", fmt.Errorf("domain_id not found in response")
-	}
-
-	return domainID, nil
 }
 
 func fetchWorkspaces(baseUrl string, accessToken string) ([]map[string]interface{}, error) {
@@ -372,10 +344,48 @@ func fetchDomainIDAndRole(baseUrl string, accessToken string) (string, string, e
 	return domainID, roleType, nil
 }
 
-func verifyToken(token string) bool {
-	// This function should implement token verification logic, for example by making a request to an endpoint that requires authentication
-	// Returning true for simplicity in this example
-	return true
+func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (string, error) {
+	payload := map[string]interface{}{
+		"grant_type":   "REFRESH_TOKEN",
+		"token":        refreshToken,
+		"scope":        scope,
+		"domain_id":    domainID,
+		"workspace_id": workspaceID,
+	}
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := http.Post(baseUrl+"/token/grant", "application/json", bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("status code: %d", resp.StatusCode)
+	}
+
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", err
+	}
+
+	accessToken, ok := result["access_token"].(string)
+	if !ok {
+		return "", fmt.Errorf("access token not found in response")
+	}
+
+	return accessToken, nil
+}
+
+func saveToken(token string) {
+	viper.Set("token", token)
+	if err := viper.WriteConfig(); err != nil {
+		pterm.Error.Println("Failed to save configuration file:", err)
+		exitWithError()
+	}
 }
 
 func selectWorkspace(workspaces []map[string]interface{}) string {
@@ -433,9 +443,69 @@ func selectWorkspace(workspaces []map[string]interface{}) string {
 	}
 }
 
+func selectScopeOrWorkspace(workspaces []map[string]interface{}) string {
+	const pageSize = 15
+	totalWorkspaces := len(workspaces)
+	totalPages := (totalWorkspaces + pageSize - 1) / pageSize
+
+	currentPage := 0
+	for {
+		startIndex := currentPage * pageSize
+		endIndex := startIndex + pageSize
+		if endIndex > totalWorkspaces {
+			endIndex = totalWorkspaces
+		}
+
+		var options []string
+		if currentPage == 0 {
+			options = append(options, "0: DOMAIN ADMIN")
+		}
+		for i := startIndex; i < endIndex; i++ {
+			name := workspaces[i]["name"].(string)
+			options = append(options, fmt.Sprintf("%d: %s", i+1, name))
+		}
+
+		if currentPage > 0 {
+			options = append([]string{"< Previous Page"}, options...)
+		}
+		if endIndex < totalWorkspaces {
+			options = append(options, "Next Page >")
+		}
+
+		pterm.Info.Printfln("Available Options (Page %d of %d):", currentPage+1, totalPages)
+		selectedOption, err := pterm.DefaultInteractiveSelect.
+			WithOptions(options).
+			WithMaxHeight(20).
+			Show()
+		if err != nil {
+			pterm.Error.Println("Error selecting option:", err)
+			exitWithError()
+		}
+
+		if selectedOption == "< Previous Page" {
+			currentPage--
+			continue
+		} else if selectedOption == "Next Page >" {
+			currentPage++
+			continue
+		} else if selectedOption == "0: DOMAIN ADMIN" {
+			return "0"
+		}
+
+		var index int
+		fmt.Sscanf(selectedOption, "%d", &index)
+
+		if index >= 1 && index <= totalWorkspaces {
+			return workspaces[index-1]["workspace_id"].(string)
+		} else {
+			pterm.Error.Println("Invalid selection. Please try again.")
+		}
+	}
+}
+
 func init() {
 	rootCmd.AddCommand(loginCmd)
-	loginCmd.Flags().StringVarP(&url, "url", "u", "", "The URL to use for login (e.g. cfctl login -u https://example.com)")
+	loginCmd.Flags().StringVarP(&providedUrl, "url", "u", "", "The URL to use for login (e.g. cfctl login -u https://example.com)")
 	loginCmd.MarkFlagRequired("url")
 
 	// Load configuration file
