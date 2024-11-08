@@ -2,12 +2,15 @@ package cmd
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"regexp"
+	"strings"
+	"time"
 
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
@@ -27,12 +30,14 @@ It will prompt you for your User ID, Password, and fetch the Domain ID automatic
 
 func executeLogin(cmd *cobra.Command, args []string) {
 	if token := viper.GetString("token"); token != "" {
-		pterm.Info.Println("Existing token found, attempting to authenticate with saved credentials.")
-		if verifyToken(token) {
-			pterm.Success.Println("Successfully authenticated with saved token.")
-			return
+		if !isTokenExpired(token) {
+			pterm.Info.Println("Existing token found and it is still valid. Attempting to authenticate with saved credentials.")
+			if verifyToken(token) {
+				pterm.Success.Println("Successfully authenticated with saved token.")
+				return
+			}
 		}
-		pterm.Warning.Println("Saved token is invalid or expired, proceeding with login.")
+		pterm.Warning.Println("Saved token is expired or invalid, proceeding with login.")
 	}
 
 	if url == "" {
@@ -90,6 +95,35 @@ func executeLogin(cmd *cobra.Command, args []string) {
 
 	saveToken(newAccessToken)
 	pterm.Success.Println("Successfully logged in and saved token.")
+}
+
+func isTokenExpired(token string) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		pterm.Error.Println("Invalid token format.")
+		return true
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		pterm.Error.Println("Failed to decode token payload:", err)
+		return true
+	}
+
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		pterm.Error.Println("Failed to unmarshal token payload:", err)
+		return true
+	}
+
+	exp, ok := claims["exp"].(float64)
+	if !ok {
+		pterm.Error.Println("Expiration time (exp) not found in token.")
+		return true
+	}
+
+	expirationTime := time.Unix(int64(exp), 0)
+	return time.Now().After(expirationTime)
 }
 
 func promptCredentials() (string, string) {
