@@ -12,6 +12,11 @@ import (
 	"os"
 	"strings"
 
+	"github.com/golang/protobuf/ptypes/empty"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/types/descriptorpb"
+
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 
@@ -73,6 +78,7 @@ var execCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		// Verb and service resource extraction
 		serviceResource := args[1]
+		rpcVerb := args[0]
 
 		// Load environment
 		environment, err := fetchCurrentEnvironment()
@@ -91,6 +97,7 @@ var execCmd = &cobra.Command{
 			log.Fatalf("Invalid service format. Use [service].[resource]")
 		}
 		serviceName := parts[0]
+		resourceName := parts[1]
 
 		// Modify endpoint format
 		endpoint := config.Endpoints[serviceName]
@@ -123,12 +130,87 @@ var execCmd = &cobra.Command{
 			log.Fatalf("Failed to send reflection request: %v", err)
 		}
 
-		// Receive and print reflection response
+		// Receive and search for the specific service
 		resp, err := stream.Recv()
 		if err != nil {
 			log.Fatalf("Failed to receive reflection response: %v", err)
 		}
-		fmt.Println(resp.MessageResponse)
+
+		serviceFound := false
+		for _, svc := range resp.GetListServicesResponse().Service {
+			if strings.Contains(svc.Name, resourceName) {
+				serviceFound = true
+
+				// Request file descriptor for the specific service
+				fileDescriptorReq := &grpc_reflection_v1alpha.ServerReflectionRequest{
+					MessageRequest: &grpc_reflection_v1alpha.ServerReflectionRequest_FileContainingSymbol{
+						FileContainingSymbol: svc.Name,
+					},
+				}
+
+				if err := stream.Send(fileDescriptorReq); err != nil {
+					log.Fatalf("Failed to send file descriptor request: %v", err)
+				}
+
+				fileResp, err := stream.Recv()
+				if err != nil {
+					log.Fatalf("Failed to receive file descriptor response: %v", err)
+				}
+
+				// Parse the file descriptor response
+				fd := fileResp.GetFileDescriptorResponse()
+				if fd == nil {
+					log.Fatalf("No file descriptor found for service %s", svc.Name)
+				}
+
+				// Extract methods from the file descriptor
+				fmt.Printf("Available methods for service %s:\n", svc.Name)
+				methodFound := false
+				for _, b := range fd.FileDescriptorProto {
+					protoDescriptor := &descriptorpb.FileDescriptorProto{}
+					if err := proto.Unmarshal(b, protoDescriptor); err != nil {
+						log.Fatalf("Failed to unmarshal file descriptor proto: %v", err)
+					}
+
+					for _, service := range protoDescriptor.Service {
+						if service.GetName() == resourceName {
+							for _, method := range service.Method {
+								fmt.Printf("- %s\n", method.GetName())
+								if method.GetName() == rpcVerb {
+									methodFound = true
+									// Call the method if it matches
+									fmt.Printf("Calling method %s on service %s...\n", rpcVerb, svc.Name)
+
+									// Assuming the list method has no parameters
+									// Prepare the request message (in this case, an empty request)
+									req := &empty.Empty{}
+									response := new(empty.Empty) // Create a response placeholder
+
+									// Make the RPC call using the client connection
+									err = conn.Invoke(ctx, fmt.Sprintf("/%s/%s", svc.Name, method.GetName()), req, response)
+									if err != nil {
+										log.Fatalf("Failed to call method %s: %v", rpcVerb, err)
+									}
+
+									// Print the response
+									fmt.Printf("Response: %+v\n", response)
+								}
+							}
+						}
+					}
+				}
+
+				if !methodFound {
+					log.Fatalf("Method %s not found in service %s", rpcVerb, resourceName)
+				}
+
+				break
+			}
+		}
+
+		if !serviceFound {
+			log.Fatalf("Service %s not found", resourceName)
+		}
 	},
 }
 
