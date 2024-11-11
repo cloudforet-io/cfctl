@@ -13,19 +13,150 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v2"
+
+	"github.com/pterm/pterm"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
-	"gopkg.in/yaml.v2"
 )
 
 var endpoints string
+
+var apiResourcesCmd = &cobra.Command{
+	Use:   "api-resources",
+	Short: "Displays supported API resources",
+	Run: func(cmd *cobra.Command, args []string) {
+		// Load the active environment configuration file
+		cfgFile, err := getEnvironmentConfig()
+		if err != nil {
+			log.Fatalf("Failed to load active environment configuration: %v", err)
+		}
+
+		viper.SetConfigFile(cfgFile)
+		if err := viper.ReadInConfig(); err != nil {
+			log.Fatalf("Error reading config file: %v", err)
+		}
+
+		endpointsMap := viper.GetStringMapString("endpoints")
+
+		// Load short names configuration
+		shortNamesFile := filepath.Join(getConfigDirectory(), "short_names.yml")
+		shortNamesMap := make(map[string]string)
+		if _, err := os.Stat(shortNamesFile); err == nil {
+			file, err := os.Open(shortNamesFile)
+			if err != nil {
+				log.Fatalf("Failed to open short_names.yml file: %v", err)
+			}
+			defer file.Close()
+
+			err = yaml.NewDecoder(file).Decode(&shortNamesMap)
+			if err != nil {
+				log.Fatalf("Failed to decode short_names.yml: %v", err)
+			}
+		}
+
+		// Process endpoints provided via flag
+		if endpoints != "" {
+			selectedEndpoints := strings.Split(endpoints, ",")
+			for i := range selectedEndpoints {
+				selectedEndpoints[i] = strings.TrimSpace(selectedEndpoints[i])
+			}
+			var allData [][]string
+
+			for _, endpointName := range selectedEndpoints {
+				endpointName = strings.TrimSpace(endpointName)
+				serviceEndpoint, ok := endpointsMap[endpointName]
+				if !ok {
+					log.Printf("No endpoint found for %s", endpointName)
+					continue
+				}
+
+				result, err := fetchServiceResources(endpointName, serviceEndpoint, shortNamesMap)
+				if err != nil {
+					log.Printf("Error processing service %s: %v", endpointName, err)
+					continue
+				}
+
+				allData = append(allData, result...)
+			}
+
+			sort.Slice(allData, func(i, j int) bool {
+				return allData[i][0] < allData[j][0]
+			})
+
+			renderTable(allData)
+			return
+		}
+
+		// If -e flag is not provided, list all services as before
+		var wg sync.WaitGroup
+		dataChan := make(chan [][]string, len(endpointsMap))
+		errorChan := make(chan error, len(endpointsMap))
+
+		for service, endpoint := range endpointsMap {
+			wg.Add(1)
+			go func(service, endpoint string) {
+				defer wg.Done()
+				result, err := fetchServiceResources(service, endpoint, shortNamesMap)
+				if err != nil {
+					errorChan <- fmt.Errorf("Error processing service %s: %v", service, err)
+					return
+				}
+				dataChan <- result
+			}(service, endpoint)
+		}
+
+		wg.Wait()
+		close(dataChan)
+		close(errorChan)
+
+		if len(errorChan) > 0 {
+			for err := range errorChan {
+				log.Println(err)
+			}
+		}
+
+		var allData [][]string
+		for data := range dataChan {
+			allData = append(allData, data...)
+		}
+
+		sort.Slice(allData, func(i, j int) bool {
+			return allData[i][0] < allData[j][0]
+		})
+
+		renderTable(allData)
+	},
+}
+
+func getEnvironmentConfig() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("unable to find home directory: %v", err)
+	}
+
+	// Load the main environment file
+	envConfigFile := filepath.Join(home, ".spaceone", "environment.yml")
+	viper.SetConfigFile(envConfigFile)
+	if err := viper.ReadInConfig(); err != nil {
+		return "", fmt.Errorf("error reading main environment file: %v", err)
+	}
+
+	// Get the current environment name (e.g., 'dev')
+	currentEnv := viper.GetString("environment")
+	if currentEnv == "" {
+		return "", fmt.Errorf("no active environment specified in %s", envConfigFile)
+	}
+
+	// Path to the specific environment file (e.g., ~/.spaceone/environments/dev.yml)
+	return filepath.Join(home, ".spaceone", "environments", currentEnv+".yml"), nil
+}
 
 func fetchServiceResources(service, endpoint string, shortNamesMap map[string]string) ([][]string, error) {
 	// Configure gRPC connection based on TLS usage
@@ -129,117 +260,6 @@ func getServiceMethods(client grpc_reflection_v1alpha.ServerReflectionClient, se
 	}
 
 	return methods
-}
-
-var apiResourcesCmd = &cobra.Command{
-	Use:   "api-resources",
-	Short: "Displays supported API resources",
-	Run: func(cmd *cobra.Command, args []string) {
-		// Load configuration file
-		cfgFile := viper.GetString("config")
-		if cfgFile == "" {
-			home, err := os.UserHomeDir()
-			if err != nil {
-				log.Fatalf("Failed to get user home directory: %v", err)
-			}
-			cfgFile = filepath.Join(home, ".spaceone", "cfctl.yaml")
-		}
-
-		viper.SetConfigFile(cfgFile)
-		if err := viper.ReadInConfig(); err != nil {
-			log.Fatalf("Error reading config file: %v", err)
-		}
-
-		endpointsMap := viper.GetStringMapString("endpoints")
-
-		// Load short names configuration
-		shortNamesFile := filepath.Join(getConfigDirectory(), "short_names.yml")
-		shortNamesMap := make(map[string]string)
-		if _, err := os.Stat(shortNamesFile); err == nil {
-			file, err := os.Open(shortNamesFile)
-			if err != nil {
-				log.Fatalf("Failed to open short_names.yml file: %v", err)
-			}
-			defer file.Close()
-
-			err = yaml.NewDecoder(file).Decode(&shortNamesMap)
-			if err != nil {
-				log.Fatalf("Failed to decode short_names.yml: %v", err)
-			}
-		}
-
-		// Process endpoints provided via flag
-		if endpoints != "" {
-			selectedEndpoints := strings.Split(endpoints, ",")
-			for i := range selectedEndpoints {
-				selectedEndpoints[i] = strings.TrimSpace(selectedEndpoints[i])
-			}
-			var allData [][]string
-
-			for _, endpointName := range selectedEndpoints {
-				endpointName = strings.TrimSpace(endpointName)
-				serviceEndpoint, ok := endpointsMap[endpointName]
-				if !ok {
-					log.Printf("No endpoint found for %s", endpointName)
-					continue
-				}
-
-				result, err := fetchServiceResources(endpointName, serviceEndpoint, shortNamesMap)
-				if err != nil {
-					log.Printf("Error processing service %s: %v", endpointName, err)
-					continue
-				}
-
-				allData = append(allData, result...)
-			}
-
-			sort.Slice(allData, func(i, j int) bool {
-				return allData[i][0] < allData[j][0]
-			})
-
-			renderTable(allData)
-			return
-		}
-
-		// If -e flag is not provided, list all services as before
-		var wg sync.WaitGroup
-		dataChan := make(chan [][]string, len(endpointsMap))
-		errorChan := make(chan error, len(endpointsMap))
-
-		for service, endpoint := range endpointsMap {
-			wg.Add(1)
-			go func(service, endpoint string) {
-				defer wg.Done()
-				result, err := fetchServiceResources(service, endpoint, shortNamesMap)
-				if err != nil {
-					errorChan <- fmt.Errorf("Error processing service %s: %v", service, err)
-					return
-				}
-				dataChan <- result
-			}(service, endpoint)
-		}
-
-		wg.Wait()
-		close(dataChan)
-		close(errorChan)
-
-		if len(errorChan) > 0 {
-			for err := range errorChan {
-				log.Println(err)
-			}
-		}
-
-		var allData [][]string
-		for data := range dataChan {
-			allData = append(allData, data...)
-		}
-
-		sort.Slice(allData, func(i, j int) bool {
-			return allData[i][0] < allData[j][0]
-		})
-
-		renderTable(allData)
-	},
 }
 
 func getConfigDirectory() string {

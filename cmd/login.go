@@ -512,7 +512,4 @@ func init() {
 	viper.SetConfigName("cfctl")
 	viper.SetConfigType("yaml")
 	viper.AddConfigPath("$HOME/.spaceone/")
-	if err := viper.ReadInConfig(); err != nil {
-		pterm.Warning.Println("No configuration file found.")
-	}
 }
