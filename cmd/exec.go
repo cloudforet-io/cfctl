@@ -26,6 +26,8 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+var parameters []string
+
 // Config structure to parse environment files
 type Config struct {
 	Token     string            `yaml:"token"`
@@ -216,4 +218,5 @@ var execCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(execCmd)
+	execCmd.Flags().StringArrayVarP(&parameters, "parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")
 }
