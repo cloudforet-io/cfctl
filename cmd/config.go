@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
@@ -25,7 +24,7 @@ var configCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage cfctl configuration files",
 	Long: `Manage configuration files for cfctl. You can initialize,
-	switch environments, and display the current configuration.`,
+switch environments, and display the current configuration.`,
 }
 
 // initCmd initializes a new environment configuration
@@ -33,11 +32,17 @@ var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new environment configuration",
 	Run: func(cmd *cobra.Command, args []string) {
+		// Retrieve environment name from the flag
 		environment, _ := cmd.Flags().GetString("environment")
 		importFile, _ := cmd.Flags().GetString("import-file")
 
+		// Prompt for environment if not provided
 		if environment == "" {
-			log.Fatalf("Environment name must be provided")
+			environment, _ = pterm.DefaultInteractiveTextInput.WithDefaultText("default").Show("Environment")
+			if environment == "" {
+				pterm.Error.Println("Environment name must be provided")
+				return
+			}
 		}
 
 		// Ensure environments directory exists
@@ -128,7 +133,8 @@ var initCmd = &cobra.Command{
 // envCmd manages environment switching and listing
 var envCmd = &cobra.Command{
 	Use:   "environment",
-	Short: "Manage and switch environments",
+	Short: "List and manage environments",
+	Long:  "List and manage environments",
 	Run: func(cmd *cobra.Command, args []string) {
 		// Update the global config file with the current list of environments
 		updateGlobalConfig()
@@ -155,27 +161,38 @@ var envCmd = &cobra.Command{
 				log.Fatalf("Failed to update environment.yml file: %v", err)
 			}
 
+			// Display only the success message without additional text
 			pterm.Success.Printf("Switched to '%s' environment.\n", switchEnv)
 			return
 		}
 
-		currentEnv := getCurrentEnvironment()
-		envDir := filepath.Join(getConfigDir(), "environments")
-		entries, err := os.ReadDir(envDir)
-		if err != nil {
-			log.Fatalf("Unable to list environments: %v", err)
+		// Check if the -l flag is provided
+		listOnly, _ := cmd.Flags().GetBool("list")
+
+		// List environments if the -l flag is set
+		if listOnly {
+			currentEnv := getCurrentEnvironment()
+			envDir := filepath.Join(getConfigDir(), "environments")
+			entries, err := os.ReadDir(envDir)
+			if err != nil {
+				log.Fatalf("Unable to list environments: %v", err)
+			}
+
+			pterm.Println("Available Environments:")
+			for _, entry := range entries {
+				name := entry.Name()
+				name = name[:len(name)-len(filepath.Ext(name))] // Remove ".yml" extension
+				if name == currentEnv {
+					pterm.FgGreen.Printf("  > %s (current)\n", name)
+				} else {
+					pterm.Printf("  %s\n", name)
+				}
+			}
+			return
 		}
 
-		pterm.Println("Available Environments:\n")
-		for _, entry := range entries {
-			name := entry.Name()
-			name = name[:len(name)-len(filepath.Ext(name))] // Remove ".yml" extension
-			if name == currentEnv {
-				pterm.FgGreen.Printf("  > %s (current)\n", name)
-			} else {
-				pterm.Printf("  %s\n", name)
-			}
-		}
+		// If -l is not set, show help by default
+		cmd.Help()
 	},
 }
 
@@ -184,9 +201,33 @@ var showCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Display the current cfctl configuration",
 	Run: func(cmd *cobra.Command, args []string) {
+		// Load the current environment from ~/.spaceone/environment.yml
+		currentEnv := getCurrentEnvironment()
+		if currentEnv == "" {
+			log.Fatal("No environment set in ~/.spaceone/environment.yml")
+		}
+
+		// Construct the path to the environment's YAML file
+		envDir := filepath.Join(getConfigDir(), "environments")
+		envFilePath := filepath.Join(envDir, currentEnv+".yml")
+
+		// Check if the environment file exists
+		if _, err := os.Stat(envFilePath); os.IsNotExist(err) {
+			log.Fatalf("Environment file '%s.yml' does not exist in ~/.spaceone/environments", currentEnv)
+		}
+
+		// Load and display the configuration from the environment YAML file
+		viper.SetConfigFile(envFilePath)
+		err := viper.ReadInConfig()
+		if err != nil {
+			log.Fatalf("Error reading environment file '%s': %v", envFilePath, err)
+		}
+
+		// Get output format from the flag
 		output, _ := cmd.Flags().GetString("output")
 		configData := viper.AllSettings()
 
+		// Display the configuration in the requested format
 		switch output {
 		case "json":
 			data, err := json.MarshalIndent(configData, "", "  ")
@@ -197,36 +238,13 @@ var showCmd = &cobra.Command{
 		case "yml":
 			data, err := yaml.Marshal(configData)
 			if err != nil {
-				log.Fatalf("Error formatting output as yml: %v", err)
+				log.Fatalf("Error formatting output as YAML: %v", err)
 			}
 			fmt.Println(string(data))
 		default:
 			log.Fatalf("Unsupported output format: %v", output)
 		}
 	},
-}
-
-func init() {
-	rootCmd.AddCommand(configCmd)
-
-	// Adding subcommands to configCmd
-	configCmd.AddCommand(initCmd)
-	configCmd.AddCommand(envCmd)
-	configCmd.AddCommand(showCmd)
-
-	// Defining flags for initCmd
-	initCmd.Flags().StringP("environment", "e", "", "Name of the environment (required)")
-	initCmd.Flags().StringP("import-file", "f", "", "Path to an import configuration file")
-	initCmd.MarkFlagRequired("environment")
-
-	// Defining flags for envCmd
-	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
-	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
-
-	// Defining flags for showCmd
-	showCmd.Flags().StringP("output", "o", "yml", "Output format (yml/json)")
-
-	viper.SetConfigType("yml")
 }
 
 func getConfigDir() string {
@@ -241,10 +259,8 @@ func getCurrentEnvironment() string {
 	envConfigPath := filepath.Join(getConfigDir(), "environment.yml")
 	viper.SetConfigFile(envConfigPath)
 
-	err := viper.ReadInConfig()
-	if err != nil {
-		log.Fatalf("Failed to read environment config file: %v", err)
-	}
+	// Prevent errors if the config file is missing
+	_ = viper.ReadInConfig()
 
 	return viper.GetString("environment")
 }
@@ -256,6 +272,7 @@ func updateGlobalConfig() {
 		log.Fatalf("Unable to list environments: %v", err)
 	}
 
+	// Open ~/.spaceone/config for writing (will overwrite existing contents)
 	configPath := filepath.Join(getConfigDir(), "config")
 	file, err := os.Create(configPath)
 	if err != nil {
@@ -266,24 +283,16 @@ func updateGlobalConfig() {
 	writer := bufio.NewWriter(file)
 	defer writer.Flush()
 
-	var wg sync.WaitGroup
-	existingEnvironments := make(map[string]bool)
-
+	// Write each environment that currently exists in ~/.spaceone/environments
 	for _, entry := range entries {
-		wg.Add(1)
-		go func(entry os.DirEntry) {
-			defer wg.Done()
-			name := entry.Name()
-			name = name[:len(name)-len(filepath.Ext(name))] // Remove ".yml" extension
-			existingEnvironments[name] = true
-			writer.WriteString(fmt.Sprintf("[%s]\n", name))
-			writer.WriteString(fmt.Sprintf("cfctl environments -s %s\n\n", name))
-		}(entry)
+		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".yml" {
+			name := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+			_, err := writer.WriteString(fmt.Sprintf("[%s]\ncfctl environments -s %s\n\n", name, name))
+			if err != nil {
+				log.Fatalf("Failed to write to config file: %v", err)
+			}
+		}
 	}
-
-	wg.Wait()
-
-	pterm.Info.Println("Updated global config file with available environments.")
 }
 
 // updateGlobalConfigWithEnvironment adds the new environment command to the global config file
@@ -292,8 +301,6 @@ func updateGlobalConfigWithEnvironment(environment string) {
 
 	var file *os.File
 	var err error
-	var message string
-	var isFileCreated bool
 
 	// Check if the config file already exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -302,8 +309,7 @@ func updateGlobalConfigWithEnvironment(environment string) {
 		if err != nil {
 			log.Fatalf("Failed to create config file: %v", err)
 		}
-		message = fmt.Sprintf("Created global config file with environment '%s'.\n", environment)
-		isFileCreated = true
+		pterm.Info.Printf("Created global config file with environment '%s'.\n", environment)
 	} else {
 		// Read the existing config file to check for duplicates
 		content, err := os.ReadFile(configPath)
@@ -314,6 +320,7 @@ func updateGlobalConfigWithEnvironment(environment string) {
 			pterm.Info.Printf("Environment '%s' already exists in the config file.\n", environment)
 			return
 		}
+
 		// Open the existing config file for appending
 		file, err = os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0600)
 		if err != nil {
@@ -327,8 +334,6 @@ func updateGlobalConfigWithEnvironment(environment string) {
 				log.Fatalf("Failed to write newline to config file: %v", err)
 			}
 		}
-		message = fmt.Sprintf("Added environment '%s' to global config file.\n", environment)
-		isFileCreated = false
 	}
 	defer file.Close()
 
@@ -341,9 +346,24 @@ func updateGlobalConfigWithEnvironment(environment string) {
 		log.Fatalf("Failed to write to config file: %v", err)
 	}
 
-	if isFileCreated {
-		pterm.Info.Print(message)
-	} else {
-		pterm.Success.Print(message)
-	}
+	//pterm.Success.Printf("Added environment '%s' to global config file.\n", environment)
+}
+
+func init() {
+	rootCmd.AddCommand(configCmd)
+
+	// Adding subcommands to configCmd
+	configCmd.AddCommand(initCmd)
+	configCmd.AddCommand(envCmd)
+	configCmd.AddCommand(showCmd)
+
+	// Defining flags for envCmd
+	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
+	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
+	envCmd.Flags().BoolP("list", "l", false, "List available environments")
+
+	// Defining flags for showCmd
+	showCmd.Flags().StringP("output", "o", "yml", "Output format (yml/json)")
+
+	viper.SetConfigType("yml")
 }
