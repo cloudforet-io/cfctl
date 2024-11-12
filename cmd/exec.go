@@ -3,12 +3,14 @@ package cmd
 import (
 	"context"
 	"crypto/tls"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
 	"os"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
@@ -36,10 +38,18 @@ var execCmd = &cobra.Command{
 }
 
 var parameters []string
+var jsonParameter string
+var fileParameter string
+var apiVersion string
+var outputFormat string
 
 func init() {
 	rootCmd.AddCommand(execCmd)
 	execCmd.Flags().StringArrayVarP(&parameters, "parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")
+	execCmd.Flags().StringVarP(&jsonParameter, "json-parameter", "j", "", "JSON type parameter")
+	execCmd.Flags().StringVarP(&fileParameter, "file-parameter", "f", "", "YAML file parameter")
+	execCmd.Flags().StringVarP(&apiVersion, "api-version", "v", "v1", "API Version")
+	execCmd.Flags().StringVarP(&outputFormat, "output", "o", "yaml", "Output format (yaml, json, table, csv)")
 }
 
 func loadConfig(environment string) (*Config, error) {
@@ -139,7 +149,7 @@ func runExecCommand(cmd *cobra.Command, args []string) {
 	reqMsg := dynamic.NewMessage(inputType)
 
 	// Parse the input parameters into a map
-	inputParams := parseParameters(parameters)
+	inputParams := parseParameters(fileParameter, jsonParameter, parameters)
 	for key, value := range inputParams {
 		if err := reqMsg.TrySetFieldByName(key, value); err != nil {
 			log.Fatalf("Failed to set field %s: %v", key, err)
@@ -162,30 +172,32 @@ func runExecCommand(cmd *cobra.Command, args []string) {
 		log.Fatalf("Failed to convert response message to map: %v", err)
 	}
 
-	// Convert response to JSON to properly decode UTF-8 characters
-	jsonData, err := json.Marshal(respMap)
-	if err != nil {
-		log.Fatalf("Failed to marshal response to JSON: %v", err)
-	}
-
-	// Unmarshal JSON data back into a map to maintain UTF-8 decoding
-	var prettyMap map[string]interface{}
-	if err := json.Unmarshal(jsonData, &prettyMap); err != nil {
-		log.Fatalf("Failed to unmarshal JSON data: %v", err)
-	}
-
-	// Convert response to YAML with proper formatting
-	yamlData, err := yaml.Marshal(prettyMap)
-	if err != nil {
-		log.Fatalf("Failed to marshal response to YAML: %v", err)
-	}
-
-	// Print the response in YAML format
-	fmt.Printf("---\n%s\n", yamlData)
+	formatAndPrintResponse(respMap, outputFormat)
 }
 
-func parseParameters(params []string) map[string]interface{} {
+func parseParameters(fileParameter, jsonParameter string, params []string) map[string]interface{} {
 	parsed := make(map[string]interface{})
+
+	// Load from file parameter if provided
+	if fileParameter != "" {
+		data, err := os.ReadFile(fileParameter)
+		if err != nil {
+			log.Fatalf("Failed to read file parameter: %v", err)
+		}
+
+		if err := yaml.Unmarshal(data, &parsed); err != nil {
+			log.Fatalf("Failed to unmarshal YAML file: %v", err)
+		}
+	}
+
+	// Load from JSON parameter if provided
+	if jsonParameter != "" {
+		if err := json.Unmarshal([]byte(jsonParameter), &parsed); err != nil {
+			log.Fatalf("Failed to unmarshal JSON parameter: %v", err)
+		}
+	}
+
+	// Parse key=value parameters
 	for _, param := range params {
 		parts := strings.SplitN(param, "=", 2)
 		if len(parts) != 2 {
@@ -193,6 +205,7 @@ func parseParameters(params []string) map[string]interface{} {
 		}
 		parsed[parts[0]] = parts[1]
 	}
+
 	return parsed
 }
 
@@ -229,4 +242,39 @@ func messageToMap(msg *dynamic.Message) (map[string]interface{}, error) {
 	}
 
 	return result, nil
+}
+
+func formatAndPrintResponse(respMap map[string]interface{}, format string) {
+	switch format {
+	case "json":
+		data, err := json.MarshalIndent(respMap, "", "  ")
+		if err != nil {
+			log.Fatalf("Failed to marshal response to JSON: %v", err)
+		}
+		fmt.Println(string(data))
+
+	case "yaml":
+		data, err := yaml.Marshal(respMap)
+		if err != nil {
+			log.Fatalf("Failed to marshal response to YAML: %v", err)
+		}
+		fmt.Printf("---\n%s\n", data)
+
+	case "table":
+		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.Debug)
+		for key, value := range respMap {
+			fmt.Fprintf(w, "%s:\t%v\n", key, value)
+		}
+		w.Flush()
+
+	case "csv":
+		writer := csv.NewWriter(os.Stdout)
+		for key, value := range respMap {
+			writer.Write([]string{key, fmt.Sprintf("%v", value)})
+		}
+		writer.Flush()
+
+	default:
+		log.Fatalf("Unsupported output format: %s", format)
+	}
 }
