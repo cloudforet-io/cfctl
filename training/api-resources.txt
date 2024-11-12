@@ -1,0 +1,117 @@
+Service       | Resource             | Short Names | Verb
+board         | Health               |             | Check, Watch
+board         | Post                 |             | create, update, send, delete, get, list, stat
+board         | ServerInfo           |             | get_version
+config        | Health               |             | Check, Watch
+config        | ServerInfo           |             | get_version
+config        | UserConfig           |             | create, update, set, delete, get, list, stat
+config        | PublicConfig         |             | create, update, delete, get, list, stat
+config        | DomainConfig         |             | create, update, set, delete, get, list, stat
+cost_analysis | ServerInfo           |             | get_version
+cost_analysis | Job                  |             | cancel, get, list, stat
+cost_analysis | Cost                 |             | create, delete, get, list, analyze, stat
+cost_analysis | Budget               |             | create, update, set_notification, delete, get, list, stat
+cost_analysis | Health               |             | Check, Watch
+cost_analysis | CostQuerySet         |             | create, update, delete, get, list, stat
+cost_analysis | CostReport           |             | send, get_url, get, list, stat
+cost_analysis | CostReportConfig     |             | create, update, update_recipients, enable, disable, delete, run, get, list, stat
+cost_analysis | CostReportData       |             | list, analyze, stat
+cost_analysis | DataSource           |             | register, update, update_permissions, update_plugin, update_secret_data, verify_plugin, enable, disable, deregister, sync, get, list, stat
+cost_analysis | DataSourceAccount    |             | update, reset, get, list, analyze, stat
+cost_analysis | BudgetUsage          |             | list, analyze, stat
+cost_analysis | DataSourceRule       |             | create, update, change_order, delete, get, list, stat
+cost_analysis | UnifiedCost          |             | get, list, analyze, stat
+cost_analysis | JobTask              |             | get, list, stat
+dashboard     | PrivateFolder        |             | create, update, delete, get, list, stat
+dashboard     | PublicWidget         |             | create, update, delete, load, get, list
+dashboard     | PublicFolder         |             | create, update, share, unshare, delete, get, list, stat
+dashboard     | PublicDataTable      |             | add, transform, update, delete, load, get, list
+dashboard     | PublicDashboard      |             | create, update, change_folder, share, unshare, delete, get, list, stat
+dashboard     | PrivateWidget        |             | create, update, delete, load, get, list
+dashboard     | Health               |             | Check, Watch
+dashboard     | PrivateDataTable     |             | add, transform, update, delete, load, get, list
+dashboard     | PrivateDashboard     |             | create, update, change_folder, delete, get, list, stat
+dashboard     | ServerInfo           |             | get_version
+file_manager  | Health               |             | Check, Watch
+file_manager  | File                 |             | add, update, delete, get_download_url, get, list, stat
+file_manager  | ServerInfo           |             | get_version
+identity      | RoleBinding          |             | create, update_role, delete, get, list, stat
+identity      | ServerInfo           |             | get_version
+identity      | Agent                |             | create, enable, disable, regenerate, delete, get, list
+identity      | App                  |             | create, update, generate_client_secret, enable, disable, delete, get, check, list, stat
+identity      | Domain               |             | create, update, delete, enable, disable, get, get_auth_info, get_public_key, list, stat
+identity      | Endpoint             |             | list
+identity      | ExternalAuth         |             | set, unset, get
+identity      | Job                  |             | delete, get, list, stat
+identity      | Project              |             | create, update, update_project_type, change_project_group, delete, add_users, remove_users, get, list, stat
+identity      | ProjectGroup         |             | create, update, change_parent_group, delete, add_users, remove_users, get, list, stat
+identity      | Health               |             | Check, Watch
+identity      | Provider             |             | create, update, update_plugin, delete, get, list, stat
+identity      | Role                 |             | create, update, enable, disable, delete, get, list, list_basic_role, stat
+identity      | System               |             | init
+identity      | Schema               |             | create, update, delete, get, list, stat
+identity      | ServiceAccount       |             | create, update, update_secret_data, delete_secret_data, delete, get, list, stat
+identity      | Token                | it          | issue, grant
+identity      | TrustedAccount       |             | create, update, update_secret_data, delete, sync, get, list, stat
+identity      | User                 | iu          | create, update, verify_email, disable_mfa, set_required_actions, set_refresh_timeout, enable, disable, delete, get, list, stat
+identity      | UserGroup            |             | create, update, delete, add_users, remove_users, get, list, stat
+identity      | UserProfile          |             | update, verify_email, confirm_email, reset_password, enable_mfa, disable_mfa, confirm_mfa, get, get_workspaces, get_workspace_groups
+identity      | Workspace            |             | create, update, change_workspace_group, delete, enable, disable, get, check, list, stat
+identity      | WorkspaceGroup       |             | create, update, delete, add_users, remove_users, update_role, get, list, stat
+identity      | WorkspaceGroupUser   |             | add, remove, update_role, find, get, list, stat
+identity      | WorkspaceUser        |             | create, get, find, list, stat
+inventory     | MetricExample        |             | create, update, delete, get, list, stat
+inventory     | Note                 |             | create, update, delete, get, list, stat
+inventory     | Region               |             | create, update, delete, get, list, stat
+inventory     | MetricData           |             | list, stat, analyze
+inventory     | Namespace            |             | create, update, delete, get, list, stat
+inventory     | Metric               |             | create, update, delete, run, test, get, list, stat
+inventory     | JobTask              |             | delete, get, list, stat
+inventory     | Job                  |             | delete, get, list, analyze, stat
+inventory     | CollectorRule        |             | create, update, change_order, delete, get, list, stat
+inventory     | Collector            |             | create, update, update_plugin, verify_plugin, delete, get, list, stat, collect
+inventory     | CloudServiceType     |             | create, update, delete, get, list, stat
+inventory     | CloudServiceStats    |             | list, analyze, stat
+inventory     | Health               |             | Check, Watch
+inventory     | ServerInfo           |             | get_version
+inventory     | ChangeHistory        |             | list, stat
+inventory     | CloudService         |             | create, update, delete, get, list, export, analyze, stat
+inventory     | CloudServiceQuerySet |             | create, update, delete, run, test, enable, disable, get, list, stat
+inventory     | CloudServiceReport   |             | create, update, delete, send, get, list, stat
+monitoring    | Health               |             | Check, Watch
+monitoring    | DataSource           |             | register, update, enable, disable, deregister, update_plugin, verify_plugin, get, list, stat
+monitoring    | EscalationPolicy     |             | create, update, set_default, delete, get, list, stat
+monitoring    | Event                |             | create, get, list, stat
+monitoring    | EventRule            |             | create, update, change_order, delete, get, list, stat
+monitoring    | Log                  |             | list
+monitoring    | Metric               |             | list, get_data
+monitoring    | ServerInfo           |             | get_version
+monitoring    | Alert                |             | create, update, assign_user, update_state, delete, get, list, stat
+monitoring    | Note                 |             | create, update, delete, get, list, stat
+monitoring    | ProjectAlertConfig   |             | create, update, delete, get, list, stat
+monitoring    | Webhook              |             | create, update, update_plugin, verify_plugin, enable, disable, delete, get, list, stat
+notification  | Health               |             | Check, Watch
+notification  | Protocol             |             | create, update, update_plugin, enable, disable, delete, get, list, stat
+notification  | ProjectChannel       |             | create, update, set_schedule, set_subscription, enable, disable, delete, get, list, stat
+notification  | Notification         |             | create, push, delete, set_read, get, list, stat
+notification  | ServerInfo           |             | get_version
+notification  | UserChannel          |             | create, update, set_schedule, set_subscription, enable, disable, delete, get, list, stat
+plugin        | Supervisor           |             | publish, register, update, deregister, enable, disable, recover_plugin, get, list, stat, list_plugins
+plugin        | Health               |             | Check, Watch
+plugin        | ServerInfo           |             | get_version
+plugin        | Plugin               |             | get_plugin_endpoint, get_plugin_metadata, notify_failure
+repository    | Health               |             | Check, Watch
+repository    | ServerInfo           |             | get_version
+repository    | Plugin               | rp          | register, update, deregister, enable, disable, get_versions, get, list
+repository    | DashboardTemplate    |             | register, update, deregister, enable, disable, get, list
+repository    | Repository           |             | list
+secret        | TrustedSecret        |             | create, update, delete, update_data, get_data, get, list, stat
+secret        | Health               |             | Check, Watch
+secret        | ServerInfo           |             | get_version
+secret        | Secret               |             | create, update, delete, enable, disable, update_data, get_data, get, list, stat
+secret        | UserSecret           |             | create, update, delete, update_data, get_data, get, list, stat
+statistics    | Schedule             |             | add, update, enable, disable, delete, get, list, stat
+statistics    | Health               |             | Check, Watch
+statistics    | ServerInfo           |             | get_version
+statistics    | History              |             | create, list, stat
+statistics    | Resource             |             | stat
