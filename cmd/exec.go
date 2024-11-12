@@ -90,11 +90,6 @@ func fetchCurrentEnvironment() (string, error) {
 }
 
 func runExecCommand(cmd *cobra.Command, args []string) {
-	// Disable styling if copy to clipboard is enabled
-	//if copyToClipboard {
-	//	pterm.DisableStyling() // Disable ANSI color codes
-	//}
-
 	environment, err := fetchCurrentEnvironment()
 	if err != nil {
 		log.Fatalf("Failed to get current environment: %v", err)
@@ -115,7 +110,6 @@ func runExecCommand(cmd *cobra.Command, args []string) {
 
 	serviceName := parts[0]
 	resourceName := parts[1]
-	fullServiceName := fmt.Sprintf("spaceone.api.%s.v2.%s", serviceName, resourceName)
 
 	endpoint, ok := config.Endpoints[serviceName]
 	if !ok {
@@ -140,17 +134,49 @@ func runExecCommand(cmd *cobra.Command, args []string) {
 
 	// Set up reflection client
 	refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	defer refClient.Reset()
+
+	// Find the package name dynamically
+	packageName := ""
+	serviceList, err := refClient.ListServices()
+	if err != nil {
+		log.Fatalf("Failed to list services: %v", err)
+	}
+
+	for _, fullServiceName := range serviceList {
+		serviceDesc, err := refClient.ResolveService(fullServiceName)
+		if err != nil {
+			log.Printf("Failed to resolve service %s: %v", fullServiceName, err)
+			continue
+		}
+
+		if serviceDesc.GetName() == resourceName {
+			for _, method := range serviceDesc.GetMethods() {
+				if method.GetName() == verbName {
+					packageName = serviceDesc.GetFullyQualifiedName()
+					break
+				}
+			}
+		}
+		if packageName != "" {
+			break
+		}
+	}
+
+	if packageName == "" {
+		log.Fatalf("Service and method not found for verb: %s", verbName)
+	}
 
 	// Get the service descriptor
-	serviceDesc, err := refClient.ResolveService(fullServiceName)
+	serviceDesc, err := refClient.ResolveService(packageName)
 	if err != nil {
-		log.Fatalf("Failed to resolve service %s: %v", fullServiceName, err)
+		log.Fatalf("Failed to resolve service %s: %v", packageName, err)
 	}
 
 	// Find the method descriptor
 	methodDesc := serviceDesc.FindMethodByName(verbName)
 	if methodDesc == nil {
-		log.Fatalf("Method %s not found in service %s", verbName, fullServiceName)
+		log.Fatalf("Method %s not found in service %s", verbName, packageName)
 	}
 
 	// Create a dynamic message for the request
