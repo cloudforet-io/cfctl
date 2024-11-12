@@ -1,32 +1,23 @@
-/*
-Copyright © 2024 NAME HERE <EMAIL ADDRESS>
-*/
 package cmd
 
 import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io/ioutil"
 	"log"
+	"net/url"
 	"os"
 	"strings"
 
-	"github.com/golang/protobuf/ptypes/empty"
-
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/descriptorpb"
-
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
-
+	"github.com/jhump/protoreflect/dynamic"
+	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"gopkg.in/yaml.v2"
 )
-
-var parameters []string
 
 // Config structure to parse environment files
 type Config struct {
@@ -34,10 +25,25 @@ type Config struct {
 	Endpoints map[string]string `yaml:"endpoints"`
 }
 
-// Load environment configuration
+var execCmd = &cobra.Command{
+	Use:   "exec [rpc] [service].[resource]",
+	Short: "Execute a gRPC request to a specified service and message",
+	Long: `Executes a gRPC command to a given service and message based on environment configuration.
+  For example: cfctl exec list identity.User`,
+	Args: cobra.ExactArgs(2),
+	Run:  runExecCommand,
+}
+
+var parameters []string
+
+func init() {
+	rootCmd.AddCommand(execCmd)
+	execCmd.Flags().StringArrayVarP(&parameters, "parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")
+}
+
 func loadConfig(environment string) (*Config, error) {
 	configPath := fmt.Sprintf("%s/.spaceone/environments/%s.yml", os.Getenv("HOME"), environment)
-	data, err := ioutil.ReadFile(configPath)
+	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("could not read config file: %w", err)
 	}
@@ -50,11 +56,9 @@ func loadConfig(environment string) (*Config, error) {
 	return &config, nil
 }
 
-// Load current environment from environment.yml
 func fetchCurrentEnvironment() (string, error) {
 	envPath := fmt.Sprintf("%s/.spaceone/environment.yml", os.Getenv("HOME"))
-
-	data, err := ioutil.ReadFile(envPath)
+	data, err := os.ReadFile(envPath)
 	if err != nil {
 		return "", fmt.Errorf("could not read environment file: %w", err)
 	}
@@ -70,153 +74,99 @@ func fetchCurrentEnvironment() (string, error) {
 	return envConfig.Environment, nil
 }
 
-// execCmd represents the exec command
-var execCmd = &cobra.Command{
-	Use:   "exec [verb] [service].[resource]",
-	Short: "Execute a gRPC request to a specified service and resource",
-	Long: `Executes a gRPC command to a given service and resource based on environment configuration.
-	For example: cfctl exec list identity.User`,
-	Args: cobra.ExactArgs(2),
-	Run: func(cmd *cobra.Command, args []string) {
-		// Verb and service resource extraction
-		serviceResource := args[1]
-		rpcVerb := args[0]
+func runExecCommand(cmd *cobra.Command, args []string) {
+	environment, err := fetchCurrentEnvironment()
+	if err != nil {
+		log.Fatalf("Failed to get current environment: %v", err)
+	}
 
-		// Load environment
-		environment, err := fetchCurrentEnvironment()
-		if err != nil {
-			log.Fatalf("Failed to get current environment: %v", err)
+	config, err := loadConfig(environment)
+	if err != nil {
+		log.Fatalf("Failed to load config for environment %s: %v", environment, err)
+	}
+
+	verbName := args[0]
+	serviceResource := args[1]
+	parts := strings.Split(serviceResource, ".")
+
+	if len(parts) != 2 {
+		log.Fatalf("Invalid service and resource format. Use [service].[resource]")
+	}
+
+	serviceName := parts[0]
+	resourceName := parts[1]
+	fullServiceName := fmt.Sprintf("spaceone.api.%s.v2.%s", serviceName, resourceName)
+
+	endpoint, ok := config.Endpoints[serviceName]
+	if !ok {
+		log.Fatalf("Service endpoint not found for service: %s", serviceName)
+	}
+
+	parsedURL, err := url.Parse(endpoint)
+	if err != nil {
+		log.Fatalf("Invalid endpoint URL %s: %v", endpoint, err)
+	}
+
+	grpcEndpoint := fmt.Sprintf("%s:%s", parsedURL.Hostname(), parsedURL.Port())
+
+	// Set up secure connection
+	conn, err := grpc.Dial(grpcEndpoint, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{})))
+	if err != nil {
+		log.Fatalf("Failed to connect to gRPC server: %v", err)
+	}
+	defer conn.Close()
+
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", config.Token)
+
+	// Set up reflection client
+	refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+
+	// Get the service descriptor
+	serviceDesc, err := refClient.ResolveService(fullServiceName)
+	if err != nil {
+		log.Fatalf("Failed to resolve service %s: %v", fullServiceName, err)
+	}
+
+	// Find the method descriptor
+	methodDesc := serviceDesc.FindMethodByName(verbName)
+	if methodDesc == nil {
+		log.Fatalf("Method %s not found in service %s", verbName, fullServiceName)
+	}
+
+	// Create a dynamic message for the request
+	inputType := methodDesc.GetInputType()
+	reqMsg := dynamic.NewMessage(inputType)
+
+	// Parse the input parameters into a map
+	inputParams := parseParameters(parameters)
+	for key, value := range inputParams {
+		if err := reqMsg.TrySetFieldByName(key, value); err != nil {
+			log.Fatalf("Failed to set field %s: %v", key, err)
 		}
+	}
 
-		config, err := loadConfig(environment)
-		if err != nil {
-			log.Fatalf("Failed to load config for environment %s: %v", environment, err)
-		}
+	// Prepare response placeholder
+	outputType := methodDesc.GetOutputType()
+	respMsg := dynamic.NewMessage(outputType)
 
-		// Extract service name
-		parts := strings.Split(serviceResource, ".")
-		if len(parts) != 2 {
-			log.Fatalf("Invalid service format. Use [service].[resource]")
-		}
-		serviceName := parts[0]
-		resourceName := parts[1]
+	// Make the RPC call using the client connection
+	err = conn.Invoke(ctx, fmt.Sprintf("/%s/%s", serviceDesc.GetFullyQualifiedName(), methodDesc.GetName()), reqMsg, respMsg)
+	if err != nil {
+		log.Fatalf("Failed to call method %s: %v", verbName, err)
+	}
 
-		// Modify endpoint format
-		endpoint := config.Endpoints[serviceName]
-		endpoint = strings.Replace(strings.Replace(endpoint, "grpc+ssl://", "", 1), "/v1", "", 1)
-
-		// Set up secure connection
-		conn, err := grpc.Dial(endpoint, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{})))
-		if err != nil {
-			log.Fatalf("Failed to connect to gRPC server: %v", err)
-		}
-		defer conn.Close()
-
-		// Set up gRPC reflection client
-		refClient := grpc_reflection_v1alpha.NewServerReflectionClient(conn)
-		ctx := metadata.AppendToOutgoingContext(context.Background(), "token", config.Token)
-
-		stream, err := refClient.ServerReflectionInfo(ctx)
-		if err != nil {
-			log.Fatalf("Failed to create reflection stream: %v", err)
-		}
-
-		// Request service list
-		req := &grpc_reflection_v1alpha.ServerReflectionRequest{
-			MessageRequest: &grpc_reflection_v1alpha.ServerReflectionRequest_ListServices{
-				ListServices: "*",
-			},
-		}
-
-		if err := stream.Send(req); err != nil {
-			log.Fatalf("Failed to send reflection request: %v", err)
-		}
-
-		// Receive and search for the specific service
-		resp, err := stream.Recv()
-		if err != nil {
-			log.Fatalf("Failed to receive reflection response: %v", err)
-		}
-
-		serviceFound := false
-		for _, svc := range resp.GetListServicesResponse().Service {
-			if strings.Contains(svc.Name, resourceName) {
-				serviceFound = true
-
-				// Request file descriptor for the specific service
-				fileDescriptorReq := &grpc_reflection_v1alpha.ServerReflectionRequest{
-					MessageRequest: &grpc_reflection_v1alpha.ServerReflectionRequest_FileContainingSymbol{
-						FileContainingSymbol: svc.Name,
-					},
-				}
-
-				if err := stream.Send(fileDescriptorReq); err != nil {
-					log.Fatalf("Failed to send file descriptor request: %v", err)
-				}
-
-				fileResp, err := stream.Recv()
-				if err != nil {
-					log.Fatalf("Failed to receive file descriptor response: %v", err)
-				}
-
-				// Parse the file descriptor response
-				fd := fileResp.GetFileDescriptorResponse()
-				if fd == nil {
-					log.Fatalf("No file descriptor found for service %s", svc.Name)
-				}
-
-				// Extract methods from the file descriptor
-				fmt.Printf("Available methods for service %s:\n", svc.Name)
-				methodFound := false
-				for _, b := range fd.FileDescriptorProto {
-					protoDescriptor := &descriptorpb.FileDescriptorProto{}
-					if err := proto.Unmarshal(b, protoDescriptor); err != nil {
-						log.Fatalf("Failed to unmarshal file descriptor proto: %v", err)
-					}
-
-					for _, service := range protoDescriptor.Service {
-						if service.GetName() == resourceName {
-							for _, method := range service.Method {
-								fmt.Printf("- %s\n", method.GetName())
-								if method.GetName() == rpcVerb {
-									methodFound = true
-									// Call the method if it matches
-									fmt.Printf("Calling method %s on service %s...\n", rpcVerb, svc.Name)
-
-									// Assuming the list method has no parameters
-									// Prepare the request message (in this case, an empty request)
-									req := &empty.Empty{}
-									response := new(empty.Empty) // Create a response placeholder
-
-									// Make the RPC call using the client connection
-									err = conn.Invoke(ctx, fmt.Sprintf("/%s/%s", svc.Name, method.GetName()), req, response)
-									if err != nil {
-										log.Fatalf("Failed to call method %s: %v", rpcVerb, err)
-									}
-
-									// Print the response
-									fmt.Printf("Response: %+v\n", response)
-								}
-							}
-						}
-					}
-				}
-
-				if !methodFound {
-					log.Fatalf("Method %s not found in service %s", rpcVerb, resourceName)
-				}
-
-				break
-			}
-		}
-
-		if !serviceFound {
-			log.Fatalf("Service %s not found", resourceName)
-		}
-	},
+	// Print the response
+	fmt.Printf("Response: %+v\n", respMsg)
 }
 
-func init() {
-	rootCmd.AddCommand(execCmd)
-	execCmd.Flags().StringArrayVarP(&parameters, "parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")
+func parseParameters(params []string) map[string]string {
+	parsed := make(map[string]string)
+	for _, param := range params {
+		parts := strings.SplitN(param, "=", 2)
+		if len(parts) != 2 {
+			log.Fatalf("Invalid parameter format. Use key=value")
+		}
+		parsed[parts[0]] = parts[1]
+	}
+	return parsed
 }
