@@ -272,9 +272,20 @@ func updateGlobalConfig() {
 		log.Fatalf("Unable to list environments: %v", err)
 	}
 
-	// Open ~/.spaceone/config for writing (will overwrite existing contents)
 	configPath := filepath.Join(getConfigDir(), "config")
-	file, err := os.Create(configPath)
+
+	// Read existing config file content to avoid overwriting
+	var content string
+	if _, err := os.Stat(configPath); err == nil {
+		data, err := os.ReadFile(configPath)
+		if err != nil {
+			log.Fatalf("Failed to read config file: %v", err)
+		}
+		content = string(data)
+	}
+
+	// Open the config file for writing
+	file, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE, 0600)
 	if err != nil {
 		log.Fatalf("Failed to open config file: %v", err)
 	}
@@ -283,70 +294,61 @@ func updateGlobalConfig() {
 	writer := bufio.NewWriter(file)
 	defer writer.Flush()
 
-	// Write each environment that currently exists in ~/.spaceone/environments
+	// Add each environment without duplicates
 	for _, entry := range entries {
 		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".yml" {
 			name := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-			_, err := writer.WriteString(fmt.Sprintf("[%s]\ncfctl environments -s %s\n\n", name, name))
-			if err != nil {
-				log.Fatalf("Failed to write to config file: %v", err)
+			envEntry := fmt.Sprintf("[%s]\ncfctl environments -s %s\n\n", name, name)
+			if !strings.Contains(content, fmt.Sprintf("[%s]", name)) {
+				_, err := writer.WriteString(envEntry)
+				if err != nil {
+					log.Fatalf("Failed to write to config file: %v", err)
+				}
 			}
 		}
 	}
+	pterm.Success.Println("Global config updated with existing environments.")
 }
 
-// updateGlobalConfigWithEnvironment adds the new environment command to the global config file
+// updateGlobalConfigWithEnvironment adds or updates the environment entry in the global config file
 func updateGlobalConfigWithEnvironment(environment string) {
 	configPath := filepath.Join(getConfigDir(), "config")
 
-	var file *os.File
-	var err error
-
-	// Check if the config file already exists
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		// Create a new config file if it does not exist
-		file, err = os.Create(configPath)
-		if err != nil {
-			log.Fatalf("Failed to create config file: %v", err)
-		}
-		pterm.Info.Printf("Created global config file with environment '%s'.\n", environment)
-	} else {
-		// Read the existing config file to check for duplicates
-		content, err := os.ReadFile(configPath)
+	// Read the existing config content if it exists
+	var content string
+	if _, err := os.Stat(configPath); err == nil {
+		data, err := os.ReadFile(configPath)
 		if err != nil {
 			log.Fatalf("Failed to read config file: %v", err)
 		}
-		if strings.Contains(string(content), fmt.Sprintf("[%s]", environment)) {
-			pterm.Info.Printf("Environment '%s' already exists in the config file.\n", environment)
-			return
-		}
+		content = string(data)
+	}
 
-		// Open the existing config file for appending
-		file, err = os.OpenFile(configPath, os.O_APPEND|os.O_WRONLY, 0600)
-		if err != nil {
-			log.Fatalf("Failed to open config file: %v", err)
-		}
+	// Check if the environment already exists
+	envEntry := fmt.Sprintf("[%s]\ncfctl environments -s %s\n", environment, environment)
+	if strings.Contains(content, fmt.Sprintf("[%s]", environment)) {
+		pterm.Info.Printf("Environment '%s' already exists in the config file.\n", environment)
+		return
+	}
 
-		// Ensure the last line ends with a newline
-		if len(content) > 0 && content[len(content)-1] != '\n' {
-			_, err = file.WriteString("\n")
-			if err != nil {
-				log.Fatalf("Failed to write newline to config file: %v", err)
-			}
-		}
+	// Append the new environment entry
+	file, err := os.OpenFile(configPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		log.Fatalf("Failed to open config file: %v", err)
 	}
 	defer file.Close()
 
-	writer := bufio.NewWriter(file)
-	defer writer.Flush()
+	// Ensure a newline at the end of existing content
+	if len(content) > 0 && content[len(content)-1] != '\n' {
+		_, _ = file.WriteString("\n")
+	}
 
-	// Append the new environment to the config file
-	_, err = writer.WriteString(fmt.Sprintf("[%s]\ncfctl environments -s %s\n\n", environment, environment))
+	_, err = file.WriteString(envEntry + "\n")
 	if err != nil {
 		log.Fatalf("Failed to write to config file: %v", err)
 	}
 
-	//pterm.Success.Printf("Added environment '%s' to global config file.\n", environment)
+	pterm.Success.Printf("Added environment '%s' to global config file.\n", environment)
 }
 
 func init() {
