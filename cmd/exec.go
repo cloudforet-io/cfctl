@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/url"
@@ -155,12 +156,36 @@ func runExecCommand(cmd *cobra.Command, args []string) {
 		log.Fatalf("Failed to call method %s: %v", verbName, err)
 	}
 
-	// Print the response
-	fmt.Printf("Response: %+v\n", respMsg)
+	// Convert the response to a map and format it as YAML
+	respMap, err := messageToMap(respMsg)
+	if err != nil {
+		log.Fatalf("Failed to convert response message to map: %v", err)
+	}
+
+	// Convert response to JSON to properly decode UTF-8 characters
+	jsonData, err := json.Marshal(respMap)
+	if err != nil {
+		log.Fatalf("Failed to marshal response to JSON: %v", err)
+	}
+
+	// Unmarshal JSON data back into a map to maintain UTF-8 decoding
+	var prettyMap map[string]interface{}
+	if err := json.Unmarshal(jsonData, &prettyMap); err != nil {
+		log.Fatalf("Failed to unmarshal JSON data: %v", err)
+	}
+
+	// Convert response to YAML with proper formatting
+	yamlData, err := yaml.Marshal(prettyMap)
+	if err != nil {
+		log.Fatalf("Failed to marshal response to YAML: %v", err)
+	}
+
+	// Print the response in YAML format
+	fmt.Printf("---\n%s\n", yamlData)
 }
 
-func parseParameters(params []string) map[string]string {
-	parsed := make(map[string]string)
+func parseParameters(params []string) map[string]interface{} {
+	parsed := make(map[string]interface{})
 	for _, param := range params {
 		parts := strings.SplitN(param, "=", 2)
 		if len(parts) != 2 {
@@ -169,4 +194,39 @@ func parseParameters(params []string) map[string]string {
 		parsed[parts[0]] = parts[1]
 	}
 	return parsed
+}
+
+func messageToMap(msg *dynamic.Message) (map[string]interface{}, error) {
+	result := make(map[string]interface{})
+	fields := msg.GetKnownFields()
+
+	for _, fd := range fields {
+		val := msg.GetField(fd)
+
+		switch v := val.(type) {
+		case *dynamic.Message:
+			subMap, err := messageToMap(v)
+			if err != nil {
+				return nil, err
+			}
+			result[fd.GetName()] = subMap
+		case []*dynamic.Message:
+			var subList []map[string]interface{}
+			for _, subMsg := range v {
+				subMap, err := messageToMap(subMsg)
+				if err != nil {
+					return nil, err
+				}
+				subList = append(subList, subMap)
+			}
+			result[fd.GetName()] = subList
+		case string:
+			// Properly decode UTF-8 strings for human readability
+			result[fd.GetName()] = v
+		default:
+			result[fd.GetName()] = v
+		}
+	}
+
+	return result, nil
 }
