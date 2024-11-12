@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/csv"
@@ -10,17 +11,25 @@ import (
 	"net/url"
 	"os"
 	"strings"
-	"text/tabwriter"
 
+	"github.com/atotto/clipboard"
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
+	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
-	"gopkg.in/yaml.v2"
+	"gopkg.in/yaml.v3"
 )
+
+var parameters []string
+var jsonParameter string
+var fileParameter string
+var apiVersion string
+var outputFormat string
+var copyToClipboard bool
 
 // Config structure to parse environment files
 type Config struct {
@@ -32,16 +41,10 @@ var execCmd = &cobra.Command{
 	Use:   "exec [rpc] [service].[resource]",
 	Short: "Execute a gRPC request to a specified service and message",
 	Long: `Executes a gRPC command to a given service and message based on environment configuration.
-  For example: cfctl exec list identity.User`,
+	For example: cfctl exec list identity.User`,
 	Args: cobra.ExactArgs(2),
 	Run:  runExecCommand,
 }
-
-var parameters []string
-var jsonParameter string
-var fileParameter string
-var apiVersion string
-var outputFormat string
 
 func init() {
 	rootCmd.AddCommand(execCmd)
@@ -50,6 +53,7 @@ func init() {
 	execCmd.Flags().StringVarP(&fileParameter, "file-parameter", "f", "", "YAML file parameter")
 	execCmd.Flags().StringVarP(&apiVersion, "api-version", "v", "v1", "API Version")
 	execCmd.Flags().StringVarP(&outputFormat, "output", "o", "yaml", "Output format (yaml, json, table, csv)")
+	execCmd.Flags().BoolVar(&copyToClipboard, "copy", false, "Copy the output to the clipboard")
 }
 
 func loadConfig(environment string) (*Config, error) {
@@ -166,13 +170,26 @@ func runExecCommand(cmd *cobra.Command, args []string) {
 		log.Fatalf("Failed to call method %s: %v", verbName, err)
 	}
 
-	// Convert the response to a map and format it as YAML
+	// Convert the response to a map and maintain UTF-8 decoding
 	respMap, err := messageToMap(respMsg)
 	if err != nil {
 		log.Fatalf("Failed to convert response message to map: %v", err)
 	}
 
-	formatAndPrintResponse(respMap, outputFormat)
+	// Convert response to JSON to properly decode UTF-8 characters
+	jsonData, err := json.Marshal(respMap)
+	if err != nil {
+		log.Fatalf("Failed to marshal response to JSON: %v", err)
+	}
+
+	// Unmarshal JSON data back into a map to maintain UTF-8 decoding
+	var prettyMap map[string]interface{}
+	if err := json.Unmarshal(jsonData, &prettyMap); err != nil {
+		log.Fatalf("Failed to unmarshal JSON data: %v", err)
+	}
+
+	// Print the response
+	printData(prettyMap, outputFormat)
 }
 
 func parseParameters(fileParameter, jsonParameter string, params []string) map[string]interface{} {
@@ -233,8 +250,14 @@ func messageToMap(msg *dynamic.Message) (map[string]interface{}, error) {
 				subList = append(subList, subMap)
 			}
 			result[fd.GetName()] = subList
+		case map[interface{}]interface{}:
+			// Convert map[interface{}]interface{} to map[string]interface{}
+			formattedMap := make(map[string]interface{})
+			for key, value := range v {
+				formattedMap[fmt.Sprintf("%v", key)] = value
+			}
+			result[fd.GetName()] = formattedMap
 		case string:
-			// Properly decode UTF-8 strings for human readability
 			result[fd.GetName()] = v
 		default:
 			result[fd.GetName()] = v
@@ -244,37 +267,117 @@ func messageToMap(msg *dynamic.Message) (map[string]interface{}, error) {
 	return result, nil
 }
 
-func formatAndPrintResponse(respMap map[string]interface{}, format string) {
+func printData(data map[string]interface{}, format string) {
+	var output string
+
 	switch format {
 	case "json":
-		data, err := json.MarshalIndent(respMap, "", "  ")
+		dataBytes, err := json.MarshalIndent(data, "", "  ")
 		if err != nil {
 			log.Fatalf("Failed to marshal response to JSON: %v", err)
 		}
-		fmt.Println(string(data))
+		output = string(dataBytes)
+		fmt.Println(output)
 
 	case "yaml":
-		data, err := yaml.Marshal(respMap)
+		var buf bytes.Buffer
+		encoder := yaml.NewEncoder(&buf)
+		encoder.SetIndent(2)
+		err := encoder.Encode(data)
 		if err != nil {
 			log.Fatalf("Failed to marshal response to YAML: %v", err)
 		}
-		fmt.Printf("---\n%s\n", data)
+		output = buf.String()
+		fmt.Printf("---\n%s\n", output)
 
 	case "table":
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', tabwriter.Debug)
-		for key, value := range respMap {
-			fmt.Fprintf(w, "%s:\t%v\n", key, value)
-		}
-		w.Flush()
+		printTable(data)
+		return
 
 	case "csv":
-		writer := csv.NewWriter(os.Stdout)
-		for key, value := range respMap {
-			writer.Write([]string{key, fmt.Sprintf("%v", value)})
-		}
-		writer.Flush()
+		printCSV(data)
+		return
 
 	default:
 		log.Fatalf("Unsupported output format: %s", format)
+	}
+
+	// Check if the copy flag is set
+	if copyToClipboard {
+		err := clipboard.WriteAll(output)
+		if err != nil {
+			log.Fatalf("Failed to copy to clipboard: %v", err)
+		}
+		// Use Pterm to notify the user
+		pterm.Success.Println("The output has been copied to your clipboard.")
+	}
+}
+
+func printTable(data map[string]interface{}) {
+	if results, ok := data["results"].([]interface{}); ok {
+		tableData := pterm.TableData{}
+
+		// Extract headers
+		headers := []string{}
+		if len(results) > 0 {
+			if row, ok := results[0].(map[string]interface{}); ok {
+				for key := range row {
+					headers = append(headers, key)
+				}
+			}
+		}
+
+		// Append headers to table data
+		tableData = append(tableData, headers)
+
+		// Extract rows
+		for _, result := range results {
+			if row, ok := result.(map[string]interface{}); ok {
+				rowData := []string{}
+				for _, key := range headers {
+					rowData = append(rowData, fmt.Sprintf("%v", row[key]))
+				}
+				tableData = append(tableData, rowData)
+			}
+		}
+
+		pterm.DefaultTable.WithHasHeader(true).WithData(tableData).Render()
+	}
+}
+
+func printCSV(data map[string]interface{}) {
+	if results, ok := data["results"].([]interface{}); ok {
+		writer := csv.NewWriter(os.Stdout)
+		var headers []string
+		var rows [][]string
+
+		// Extract headers
+		for _, result := range results {
+			if row, ok := result.(map[string]interface{}); ok {
+				if headers == nil {
+					for key := range row {
+						headers = append(headers, key)
+					}
+					writer.Write(headers)
+				}
+
+				// Extract row values
+				var rowValues []string
+				for _, key := range headers {
+					if val, ok := row[key]; ok {
+						rowValues = append(rowValues, fmt.Sprintf("%v", val))
+					} else {
+						rowValues = append(rowValues, "")
+					}
+				}
+				rows = append(rows, rowValues)
+			}
+		}
+
+		// Write rows
+		for _, row := range rows {
+			writer.Write(row)
+		}
+		writer.Flush()
 	}
 }
