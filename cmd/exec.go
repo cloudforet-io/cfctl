@@ -53,7 +53,7 @@ func init() {
 	execCmd.Flags().StringVarP(&fileParameter, "file-parameter", "f", "", "YAML file parameter")
 	execCmd.Flags().StringVarP(&apiVersion, "api-version", "v", "v1", "API Version")
 	execCmd.Flags().StringVarP(&outputFormat, "output", "o", "yaml", "Output format (yaml, json, table, csv)")
-	execCmd.Flags().BoolVar(&copyToClipboard, "copy", false, "Copy the output to the clipboard")
+	execCmd.Flags().BoolVarP(&copyToClipboard, "copy", "c", false, "Copy the output to the clipboard (copies any output format)")
 }
 
 func loadConfig(environment string) (*Config, error) {
@@ -90,6 +90,11 @@ func fetchCurrentEnvironment() (string, error) {
 }
 
 func runExecCommand(cmd *cobra.Command, args []string) {
+	// Disable styling if copy to clipboard is enabled
+	//if copyToClipboard {
+	//	pterm.DisableStyling() // Disable ANSI color codes
+	//}
+
 	environment, err := fetchCurrentEnvironment()
 	if err != nil {
 		log.Fatalf("Failed to get current environment: %v", err)
@@ -291,29 +296,26 @@ func printData(data map[string]interface{}, format string) {
 		fmt.Printf("---\n%s\n", output)
 
 	case "table":
-		printTable(data)
-		return
+		output = printTable(data)
 
 	case "csv":
-		printCSV(data)
-		return
+		output = printCSV(data)
 
 	default:
 		log.Fatalf("Unsupported output format: %s", format)
 	}
 
-	// Check if the copy flag is set
-	if copyToClipboard {
-		err := clipboard.WriteAll(output)
-		if err != nil {
+	// Copy to clipboard if requested
+	if copyToClipboard && output != "" {
+		if err := clipboard.WriteAll(output); err != nil {
 			log.Fatalf("Failed to copy to clipboard: %v", err)
 		}
-		// Use Pterm to notify the user
 		pterm.Success.Println("The output has been copied to your clipboard.")
 	}
 }
 
-func printTable(data map[string]interface{}) {
+func printTable(data map[string]interface{}) string {
+	var output string
 	if results, ok := data["results"].([]interface{}); ok {
 		tableData := pterm.TableData{}
 
@@ -341,15 +343,24 @@ func printTable(data map[string]interface{}) {
 			}
 		}
 
-		pterm.DefaultTable.WithHasHeader(true).WithData(tableData).Render()
+		// Disable styling only for the table output
+		pterm.DisableStyling()
+		renderedOutput, err := pterm.DefaultTable.WithHasHeader(true).WithData(tableData).Srender()
+		pterm.EnableStyling() // Re-enable styling for other outputs
+		if err != nil {
+			log.Fatalf("Failed to render table: %v", err)
+		}
+		output = renderedOutput
+		fmt.Println(output) // Print to console
 	}
+	return output
 }
 
-func printCSV(data map[string]interface{}) {
+func printCSV(data map[string]interface{}) string {
+	var buf bytes.Buffer
 	if results, ok := data["results"].([]interface{}); ok {
-		writer := csv.NewWriter(os.Stdout)
+		writer := csv.NewWriter(&buf)
 		var headers []string
-		var rows [][]string
 
 		// Extract headers
 		for _, result := range results {
@@ -370,14 +381,14 @@ func printCSV(data map[string]interface{}) {
 						rowValues = append(rowValues, "")
 					}
 				}
-				rows = append(rows, rowValues)
+				writer.Write(rowValues)
 			}
 		}
 
-		// Write rows
-		for _, row := range rows {
-			writer.Write(row)
-		}
 		writer.Flush()
+		output := buf.String()
+		fmt.Print(output) // Print to console
+		return output
 	}
+	return ""
 }
