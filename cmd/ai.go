@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,8 +17,9 @@ import (
 )
 
 var (
-	apiToken   string
-	configPath = filepath.Join(os.Getenv("HOME"), ".spaceone", "config")
+	apiToken    string
+	configPath  = filepath.Join(os.Getenv("HOME"), ".spaceone", "config")
+	resourceDir = filepath.Join(os.Getenv("HOME"), ".spaceone", "training_data") // 학습 전용 디렉터리 경로
 )
 
 // aiCmd represents the ai command
@@ -68,15 +70,46 @@ var aiConfigCmd = &cobra.Command{
 	},
 }
 
+// aiChatCmd represents the ai chat command
+var aiChatCmd = &cobra.Command{
+	Use:   "chat",
+	Short: "Ask questions about project resources",
+	Run: func(cmd *cobra.Command, args []string) {
+		// Use the query flag instead of args[0]
+		chat, err := cmd.Flags().GetString("query")
+		if err != nil || chat == "" {
+			pterm.Error.Println("Please provide a query with the -q flag.")
+			return
+		}
+
+		// Load resources context from directory
+		contextData, err := loadAPIResourcesContext(resourceDir)
+		if err != nil {
+			pterm.Error.Println("Failed to load resources context:", err)
+			return
+		}
+
+		// Call AI function with query and context
+		result, err := queryAIWithContext(chat, contextData)
+		if err != nil {
+			pterm.Error.Println("Error querying AI:", err)
+			return
+		}
+
+		pterm.Info.Println("AI Response:", result)
+	},
+}
+
 // runAIWithOpenAI processes input with OpenAI's streaming API
 func runAIWithOpenAI(input string, natural bool) (string, error) {
 	// Load the API key from config if it's not set in the environment
 	apiToken = os.Getenv("OPENAI_API_TOKEN")
 	if apiToken == "" {
-		apiToken, _ = readAPIKeyFromConfig()
-	}
-	if apiToken == "" {
-		return "", errors.New("OpenAI API key is not set. Run `cfctl ai config` to configure it.")
+		var err error
+		apiToken, err = readAPIKeyFromConfig()
+		if err != nil {
+			return "", errors.New("OpenAI API key is not set. Run `cfctl ai config` to configure it.")
+		}
 	}
 
 	client := openai.NewClient(apiToken)
@@ -132,7 +165,7 @@ func saveAPIKeyToConfig(apiKey string) error {
 
 	// Check if OPENAI_SECRET_KEY is already present
 	if strings.Contains(content, "OPENAI_SECRET_KEY=") {
-		// Update the existing key
+		// Update the existing key without adding an extra `=` character
 		content = strings.ReplaceAll(content,
 			"OPENAI_SECRET_KEY="+getAPIKeyFromContent(content),
 			"OPENAI_SECRET_KEY="+apiKey)
@@ -157,29 +190,89 @@ func getAPIKeyFromContent(content string) string {
 	return ""
 }
 
-// readAPIKeyFromConfig reads the OpenAI API key from the config file
+// readAPIKeyFromConfig reads the OpenAI API key from the config file and sets it to apiToken
 func readAPIKeyFromConfig() (string, error) {
 	file, err := os.Open(configPath)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to open config file: %v", err)
 	}
 	defer file.Close()
 
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if len(line) > 0 && line[0:17] == "OPENAI_SECRET_KEY=" {
-			return line[17:], nil
+		line = strings.TrimSpace(line) // 공백 제거
+		if strings.HasPrefix(line, "OPENAI_SECRET_KEY=") {
+			apiToken = strings.TrimPrefix(line, "OPENAI_SECRET_KEY=")
+			apiToken = strings.TrimSpace(apiToken)
+			return apiToken, nil
 		}
 	}
 	return "", errors.New("API key not found in config file")
+}
+
+// loadAPIResourcesContext loads all files in the given directory and concatenates their content as context
+func loadAPIResourcesContext(dirPath string) (string, error) {
+	files, err := ioutil.ReadDir(dirPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read resources directory: %v", err)
+	}
+
+	var contentBuilder strings.Builder
+	for _, file := range files {
+		if !file.IsDir() {
+			filePath := filepath.Join(dirPath, file.Name())
+			data, err := ioutil.ReadFile(filePath)
+			if err != nil {
+				return "", fmt.Errorf("failed to read file %s: %v", filePath, err)
+			}
+			contentBuilder.WriteString(string(data) + "\n")
+		}
+	}
+
+	return contentBuilder.String(), nil
+}
+
+// queryAIWithContext queries the OpenAI API with a specific context and user query
+func queryAIWithContext(query, contextData string) (string, error) {
+	apiToken = os.Getenv("OPENAI_API_TOKEN")
+	if apiToken == "" {
+		apiToken, _ = readAPIKeyFromConfig()
+	}
+	if apiToken == "" {
+		return "", errors.New("OpenAI API token is not set. Run `cfctl ai config` to configure it.")
+	}
+
+	client := openai.NewClient(apiToken)
+	ctx := context.Background()
+
+	// Prompt with context for AI model
+	prompt := fmt.Sprintf("Context: %s\n\nQuestion: %s\nAnswer:", contextData, query)
+
+	req := openai.CompletionRequest{
+		Model:     openai.GPT3Babbage002,
+		MaxTokens: 5, // Adjust as needed
+		Prompt:    prompt,
+		Stream:    false,
+	}
+
+	resp, err := client.CreateCompletion(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("AI query error: %v", err)
+	}
+
+	// Return the AI's response text
+	return strings.TrimSpace(resp.Choices[0].Text), nil
 }
 
 func init() {
 	rootCmd.AddCommand(aiCmd)
 	aiCmd.Flags().String("input", "", "Input text for the AI to process")
 	aiCmd.Flags().BoolP("natural", "n", false, "Enable natural language mode for the AI")
+	aiChatCmd.Flags().StringP("query", "q", "", "Query text for the AI to process")
+	aiChatCmd.MarkFlagRequired("query")
 
 	// Add config command as a subcommand to aiCmd
 	aiCmd.AddCommand(aiConfigCmd)
+	aiCmd.AddCommand(aiChatCmd)
 }
