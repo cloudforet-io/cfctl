@@ -35,19 +35,18 @@ func executeLogin(cmd *cobra.Command, args []string) {
 	loadEnvironmentConfig()
 
 	token := viper.GetString("token")
-	if token != "" {
-		if !isTokenExpired(token) {
-			pterm.Info.Println("Existing token found and it is still valid. Attempting to authenticate with saved credentials.")
-			if verifyToken(token) {
-				pterm.Success.Println("Successfully authenticated with saved token.")
-				return
-			}
+	if token != "" && !isTokenExpired(token) {
+		pterm.Info.Println("Existing token found and it is still valid. Attempting to authenticate with saved credentials.")
+		if verifyToken(token) {
+			pterm.Success.Println("Successfully authenticated with saved token.")
+			return
 		}
-		pterm.Warning.Println("Saved token is expired or invalid, proceeding with login.")
+		pterm.Warning.Println("Saved token is invalid, proceeding with login.")
 	}
 
+	// If no URL is provided, check if this is a first login
 	if providedUrl == "" {
-		pterm.Error.Println("URL must be provided with the -u flag.")
+		pterm.Error.Println("URL must be provided with the -u flag for initial login or a valid token must be provided.")
 		exitWithError()
 	}
 
@@ -441,7 +440,7 @@ func saveToken(newToken string) {
 	// Path to the environment-specific file
 	envFilePath := filepath.Join(homeDir, ".spaceone", "environments", currentEnvironment+".yml")
 
-	// Read the file line by line, replacing the token line if found
+	// Read the file line by line, replacing or adding the token line if needed
 	file, err := os.Open(envFilePath)
 	if err != nil {
 		pterm.Error.Println("Failed to open environment-specific configuration file:", err)
@@ -450,12 +449,14 @@ func saveToken(newToken string) {
 	defer file.Close()
 
 	var newContent []string
+	tokenFound := false
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := scanner.Text()
 		// Update the token line if it is not commented out
 		if strings.HasPrefix(line, "token:") && !strings.HasPrefix(line, "#") {
 			newContent = append(newContent, "token: "+newToken)
+			tokenFound = true
 		} else {
 			newContent = append(newContent, line)
 		}
@@ -463,6 +464,11 @@ func saveToken(newToken string) {
 	if err := scanner.Err(); err != nil {
 		pterm.Error.Println("Error reading environment-specific configuration file:", err)
 		exitWithError()
+	}
+
+	// If no uncommented token was found, add a new token line
+	if !tokenFound {
+		newContent = append(newContent, "token: "+newToken)
 	}
 
 	// Write the modified content back to the file
@@ -593,10 +599,5 @@ func selectScopeOrWorkspace(workspaces []map[string]interface{}) string {
 func init() {
 	rootCmd.AddCommand(loginCmd)
 	loginCmd.Flags().StringVarP(&providedUrl, "url", "u", "", "The URL to use for login (e.g. cfctl login -u https://example.com)")
-	loginCmd.MarkFlagRequired("url")
-
-	// Load configuration file
-	//viper.SetConfigName("cfctl")
-	//viper.SetConfigType("yaml")
-	//viper.AddConfigPath("$HOME/.spaceone/")
+	//loginCmd.MarkFlagRequired("url")
 }
