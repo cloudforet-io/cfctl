@@ -385,6 +385,7 @@ func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (str
 		"grant_type":   "REFRESH_TOKEN",
 		"token":        refreshToken,
 		"scope":        scope,
+		"timeout":      86400,
 		"domain_id":    domainID,
 		"workspace_id": workspaceID,
 	}
