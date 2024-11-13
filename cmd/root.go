@@ -16,8 +16,9 @@ var rootCmd = &cobra.Command{
 	Use:   "cfctl",
 	Short: "cfctl controls the SpaceONE services.",
 	Long: `cfctl controls the SpaceONE services.
-
-  Find more information at: https://docs.spaceone.megazone.io/cfctl`,
+  Find more information at: 
+    - https://docs.spaceone.megazone.io/developers/setup/cfctl (English)
+    - https://docs.spaceone.megazone.io/ko/developers/setup/cfctl (Korean)`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	// Run: func(cmd *cobra.Command, args []string) { },
