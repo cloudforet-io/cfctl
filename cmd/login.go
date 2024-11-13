@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net/http"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -29,7 +32,10 @@ It will prompt you for your User ID, Password, and fetch the Domain ID automatic
 }
 
 func executeLogin(cmd *cobra.Command, args []string) {
-	if token := viper.GetString("token"); token != "" {
+	loadEnvironmentConfig()
+
+	token := viper.GetString("token")
+	if token != "" {
 		if !isTokenExpired(token) {
 			pterm.Info.Println("Existing token found and it is still valid. Attempting to authenticate with saved credentials.")
 			if verifyToken(token) {
@@ -108,6 +114,36 @@ func executeLogin(cmd *cobra.Command, args []string) {
 
 	saveToken(newAccessToken)
 	pterm.Success.Println("Successfully logged in and saved token.")
+}
+
+// Load environment-specific configuration based on the selected environment
+func loadEnvironmentConfig() {
+	// Get the home directory of the current user
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		pterm.Error.Println("Failed to get user home directory:", err)
+		exitWithError()
+	}
+
+	// Load the main environment file to get the current environment
+	viper.SetConfigFile(filepath.Join(homeDir, ".spaceone", "environment.yml"))
+	if err := viper.ReadInConfig(); err != nil {
+		pterm.Error.Println("Failed to read environment file:", err)
+		exitWithError()
+	}
+
+	currentEnvironment := viper.GetString("environment")
+	if currentEnvironment == "" {
+		pterm.Error.Println("No environment specified in environment.yml")
+		exitWithError()
+	}
+
+	// Load the environment-specific configuration file
+	viper.SetConfigFile(filepath.Join(homeDir, ".spaceone", "environments", currentEnvironment+".yml"))
+	if err := viper.MergeInConfig(); err != nil {
+		pterm.Error.Println("Failed to read environment-specific configuration file:", err)
+		exitWithError()
+	}
 }
 
 func determineScope(roleType string, workspaceCount int) string {
@@ -380,12 +416,62 @@ func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (str
 	return accessToken, nil
 }
 
-func saveToken(token string) {
-	viper.Set("token", token)
-	if err := viper.WriteConfig(); err != nil {
-		pterm.Error.Println("Failed to save configuration file:", err)
+// saveToken updates the token in the environment-specific configuration file without altering the structure or comments.
+func saveToken(newToken string) {
+	// Get the home directory and current environment
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		pterm.Error.Println("Failed to get user home directory:", err)
 		exitWithError()
 	}
+
+	// Load the main environment file to get the current environment
+	viper.SetConfigFile(filepath.Join(homeDir, ".spaceone", "environment.yml"))
+	if err := viper.ReadInConfig(); err != nil {
+		pterm.Error.Println("Failed to read environment file:", err)
+		exitWithError()
+	}
+	currentEnvironment := viper.GetString("environment")
+	if currentEnvironment == "" {
+		pterm.Error.Println("No environment specified in environment.yml")
+		exitWithError()
+	}
+
+	// Path to the environment-specific file
+	envFilePath := filepath.Join(homeDir, ".spaceone", "environments", currentEnvironment+".yml")
+
+	// Read the file line by line, replacing the token line if found
+	file, err := os.Open(envFilePath)
+	if err != nil {
+		pterm.Error.Println("Failed to open environment-specific configuration file:", err)
+		exitWithError()
+	}
+	defer file.Close()
+
+	var newContent []string
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+		// Update the token line if it is not commented out
+		if strings.HasPrefix(line, "token:") && !strings.HasPrefix(line, "#") {
+			newContent = append(newContent, "token: "+newToken)
+		} else {
+			newContent = append(newContent, line)
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		pterm.Error.Println("Error reading environment-specific configuration file:", err)
+		exitWithError()
+	}
+
+	// Write the modified content back to the file
+	err = ioutil.WriteFile(envFilePath, []byte(strings.Join(newContent, "\n")), 0644)
+	if err != nil {
+		pterm.Error.Println("Failed to save updated token to environment-specific configuration file:", err)
+		exitWithError()
+	}
+
+	pterm.Success.Println("Token successfully saved to", envFilePath)
 }
 
 func selectWorkspace(workspaces []map[string]interface{}) string {
@@ -509,7 +595,7 @@ func init() {
 	loginCmd.MarkFlagRequired("url")
 
 	// Load configuration file
-	viper.SetConfigName("cfctl")
-	viper.SetConfigType("yaml")
-	viper.AddConfigPath("$HOME/.spaceone/")
+	//viper.SetConfigName("cfctl")
+	//viper.SetConfigType("yaml")
+	//viper.AddConfigPath("$HOME/.spaceone/")
 }
