@@ -27,8 +27,8 @@ var configCmd = &cobra.Command{
 switch environments, and display the current configuration.`,
 }
 
-// initCmd initializes a new environment configuration
-var initCmd = &cobra.Command{
+// configInitCmd initializes a new environment configuration
+var configInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new environment configuration",
 	Run: func(cmd *cobra.Command, args []string) {
@@ -355,7 +355,7 @@ func init() {
 	rootCmd.AddCommand(configCmd)
 
 	// Adding subcommands to configCmd
-	configCmd.AddCommand(initCmd)
+	configCmd.AddCommand(configInitCmd)
 	configCmd.AddCommand(envCmd)
 	configCmd.AddCommand(showCmd)
 
