@@ -46,18 +46,18 @@ var apiResourcesCmd = &cobra.Command{
 		endpointsMap := viper.GetStringMapString("endpoints")
 
 		// Load short names configuration
-		shortNamesFile := filepath.Join(getConfigDirectory(), "short_names.yml")
+		shortNamesFile := filepath.Join(getConfigDirectory(), "short_names.yaml")
 		shortNamesMap := make(map[string]string)
 		if _, err := os.Stat(shortNamesFile); err == nil {
 			file, err := os.Open(shortNamesFile)
 			if err != nil {
-				log.Fatalf("Failed to open short_names.yml file: %v", err)
+				log.Fatalf("Failed to open short_names.yaml file: %v", err)
 			}
 			defer file.Close()
 
 			err = yaml.NewDecoder(file).Decode(&shortNamesMap)
 			if err != nil {
-				log.Fatalf("Failed to decode short_names.yml: %v", err)
+				log.Fatalf("Failed to decode short_names.yaml: %v", err)
 			}
 		}
 
@@ -142,7 +142,7 @@ func getEnvironmentConfig() (string, error) {
 	}
 
 	// Load the main environment file
-	envConfigFile := filepath.Join(home, ".spaceone", "environment.yml")
+	envConfigFile := filepath.Join(home, ".spaceone", "config.yaml")
 	viper.SetConfigFile(envConfigFile)
 	if err := viper.ReadInConfig(); err != nil {
 		return "", fmt.Errorf("error reading main environment file: %v", err)
@@ -154,8 +154,8 @@ func getEnvironmentConfig() (string, error) {
 		return "", fmt.Errorf("no active environment specified in %s", envConfigFile)
 	}
 
-	// Path to the specific environment file (e.g., ~/.spaceone/environments/dev.yml)
-	return filepath.Join(home, ".spaceone", "environments", currentEnv+".yml"), nil
+	// Path to the specific environment file (e.g., ~/.spaceone/environments/dev.yaml)
+	return filepath.Join(home, ".spaceone", "environments", currentEnv+".yaml"), nil
 }
 
 func fetchServiceResources(service, endpoint string, shortNamesMap map[string]string) ([][]string, error) {
@@ -279,10 +279,14 @@ func renderTable(data [][]string) {
 		verbColumnWidth = 20 // Minimum width for Verb column
 	}
 
-	// Use unique colors for each service and its associated data
+	// Use a more extensive color palette to ensure distinct colors for each service
 	serviceColors := []pterm.Color{
 		pterm.FgLightGreen, pterm.FgLightYellow, pterm.FgLightBlue,
 		pterm.FgLightMagenta, pterm.FgLightCyan, pterm.FgWhite,
+		pterm.FgGreen, pterm.FgYellow, pterm.FgBlue,
+		pterm.FgMagenta, pterm.FgCyan, pterm.FgLightWhite,
+		pterm.FgRed, pterm.FgLightRed, pterm.FgLightYellow,
+		pterm.FgLightGreen, pterm.FgDarkGray, pterm.FgLightMagenta,
 	}
 
 	serviceColorMap := make(map[string]pterm.Color)
@@ -295,7 +299,7 @@ func renderTable(data [][]string) {
 		// Assign a unique color to each service if not already assigned
 		if _, exists := serviceColorMap[service]; !exists {
 			serviceColorMap[service] = serviceColors[colorIndex]
-			colorIndex = (colorIndex + 1) % len(serviceColors)
+			colorIndex = (colorIndex + 1) % len(serviceColors) // Cycle through the colors if necessary
 		}
 
 		// Get the color for this service
