@@ -49,8 +49,8 @@ var configInitCmd = &cobra.Command{
 		// Determine environment name
 		var envName string
 		if localEnv != "" {
-			// Use local environment name directly
-			envName = localEnv
+			// Use local environment name directly with '-user' suffix
+			envName = fmt.Sprintf("%s-user", localEnv)
 			if urlStr == "" {
 				urlStr = "http://localhost:8080"
 			}
@@ -151,9 +151,11 @@ var envCmd = &cobra.Command{
 
 		// Handle environment switching
 		if switchEnv != "" {
-			configPath := filepath.Join(getConfigDir(), "environments", switchEnv+".yaml")
-			if _, err := os.Stat(configPath); os.IsNotExist(err) {
-				log.Fatalf("Environment '%s' not found.", switchEnv)
+			// Check for both .yaml and .yml extensions
+			if _, err := os.Stat(filepath.Join(getConfigDir(), "environments", switchEnv+".yaml")); os.IsNotExist(err) {
+				if _, err := os.Stat(filepath.Join(getConfigDir(), "environments", switchEnv+".yml")); os.IsNotExist(err) {
+					log.Fatalf("Environment '%s' not found.", switchEnv)
+				}
 			}
 
 			// Update the environment in ~/.spaceone/config.yaml
@@ -183,9 +185,11 @@ var envCmd = &cobra.Command{
 
 		// Handle environment removal with confirmation
 		if removeEnv != "" {
-			configPath := filepath.Join(getConfigDir(), "environments", removeEnv+".yaml")
-			if _, err := os.Stat(configPath); os.IsNotExist(err) {
-				log.Fatalf("Environment '%s' not found.", removeEnv)
+			// Check for both .yaml and .yml extensions
+			if _, err := os.Stat(filepath.Join(getConfigDir(), "environments", removeEnv+".yaml")); os.IsNotExist(err) {
+				if _, err := os.Stat(filepath.Join(getConfigDir(), "environments", removeEnv+".yml")); os.IsNotExist(err) {
+					log.Fatalf("Environment '%s' not found.", removeEnv)
+				}
 			}
 
 			// Ask for confirmation before deletion
@@ -194,11 +198,10 @@ var envCmd = &cobra.Command{
 			fmt.Scanln(&response)
 			response = strings.ToLower(strings.TrimSpace(response))
 
-			if response == "Y" || response == "y" {
+			if response == "y" {
 				// Remove the environment file
-				if err := os.Remove(configPath); err != nil {
-					log.Fatalf("Failed to remove environment '%s': %v", removeEnv, err)
-				}
+				os.Remove(filepath.Join(getConfigDir(), "environments", removeEnv+".yaml"))
+				os.Remove(filepath.Join(getConfigDir(), "environments", removeEnv+".yml"))
 
 				// Check if this environment is set in config.yaml and clear it if so
 				configFilePath := filepath.Join(getConfigDir(), "config.yaml")
@@ -208,7 +211,7 @@ var envCmd = &cobra.Command{
 				// Update environment to "no-env" if the deleted environment was the current one
 				if viper.GetString("environment") == removeEnv {
 					viper.Set("environment", "no-env")
-					pterm.Info.WithShowLineNumber(false).Printfln("Cleared current environment(default: %s/config.yaml)", getConfigDir())
+					pterm.Info.WithShowLineNumber(false).Printfln("Cleared current environment (default: %s/config.yaml)", getConfigDir())
 				}
 
 				// Remove the environment from the environments map if it exists
@@ -249,7 +252,7 @@ var envCmd = &cobra.Command{
 			pterm.Println("Available Environments:")
 			for _, entry := range entries {
 				name := entry.Name()
-				name = name[:len(name)-len(filepath.Ext(name))] // Remove ".yaml" extension
+				name = strings.TrimSuffix(name, filepath.Ext(name)) // Remove ".yaml" or ".yml" extension
 				if name == currentEnv {
 					pterm.FgGreen.Printf("  > %s (current)\n", name)
 				} else {
@@ -312,6 +315,46 @@ var showCmd = &cobra.Command{
 		default:
 			log.Fatalf("Unsupported output format: %v", output)
 		}
+	},
+}
+
+// syncCmd syncs the environments in ~/.spaceone/environments with ~/.spaceone/config.yaml
+var syncCmd = &cobra.Command{
+	Use:   "sync",
+	Short: "Sync environments from the environments directory to config.yaml",
+	Long:  "Sync all environment files from the ~/.spaceone/environments directory to ~/.spaceone/config.yaml",
+	Run: func(cmd *cobra.Command, args []string) {
+		// Define paths
+		envDir := filepath.Join(getConfigDir(), "environments")
+		configPath := filepath.Join(getConfigDir(), "config.yaml")
+
+		// Ensure the config file is loaded
+		viper.SetConfigFile(configPath)
+		_ = viper.ReadInConfig()
+
+		// Iterate over each .yaml file in the environments directory
+		entries, err := os.ReadDir(envDir)
+		if err != nil {
+			log.Fatalf("Unable to read environments directory: %v", err)
+		}
+
+		for _, entry := range entries {
+			if !entry.IsDir() && (filepath.Ext(entry.Name()) == ".yaml" || filepath.Ext(entry.Name()) == ".yml") {
+				envName := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+
+				// Check if the environment already has a URL; if not, set it to an empty string
+				if viper.GetString(fmt.Sprintf("environments.%s.url", envName)) == "" {
+					viper.Set(fmt.Sprintf("environments.%s.url", envName), "")
+				}
+			}
+		}
+
+		// Save updated config to config.yaml
+		if err := viper.WriteConfig(); err != nil {
+			log.Fatalf("Failed to write updated config.yaml: %v", err)
+		}
+
+		pterm.Success.Println("Successfully synced environments from environments directory to config.yaml.")
 	},
 }
 
@@ -395,7 +438,7 @@ func parseEnvNameFromURL(urlStr string) (string, error) {
 		re := regexp.MustCompile(`^(.*?)\.spaceone`)
 		matches := re.FindStringSubmatch(hostname)
 		if len(matches) == 2 {
-			return fmt.Sprintf("prd-%s", matches[1]), nil
+			return fmt.Sprintf("prd-%s-user", matches[1]), nil
 		}
 	}
 
@@ -404,7 +447,7 @@ func parseEnvNameFromURL(urlStr string) (string, error) {
 		re := regexp.MustCompile(`(.*)\.console\.dev\.spaceone\.dev`)
 		matches := re.FindStringSubmatch(hostname)
 		if len(matches) == 2 {
-			return fmt.Sprintf("dev-%s", matches[1]), nil
+			return fmt.Sprintf("dev-%s-user", matches[1]), nil
 		}
 		pterm.Error.WithShowLineNumber(false).Println("Invalid URL format for dev environment. Expected format: '<prefix>.console.dev.spaceone.dev'")
 		return "", fmt.Errorf("invalid dev URL format")
@@ -415,7 +458,7 @@ func parseEnvNameFromURL(urlStr string) (string, error) {
 		re := regexp.MustCompile(`(.*)\.console\.stg\.spaceone\.dev`)
 		matches := re.FindStringSubmatch(hostname)
 		if len(matches) == 2 {
-			return fmt.Sprintf("stg-%s", matches[1]), nil
+			return fmt.Sprintf("stg-%s-user", matches[1]), nil
 		}
 		pterm.Error.WithShowLineNumber(false).Println("Invalid URL format for stg environment. Expected format: '<prefix>.console.stg.spaceone.dev'")
 		return "", fmt.Errorf("invalid stg URL format")
@@ -431,6 +474,7 @@ func init() {
 	configCmd.AddCommand(configInitCmd)
 	configCmd.AddCommand(envCmd)
 	configCmd.AddCommand(showCmd)
+	configCmd.AddCommand(syncCmd)
 
 	// Defining flags for configInitCmd
 	configInitCmd.Flags().StringP("environment", "e", "", "Override environment name")
