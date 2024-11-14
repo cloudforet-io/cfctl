@@ -40,26 +40,21 @@ var configInitCmd = &cobra.Command{
 		urlStr, _ := cmd.Flags().GetString("url")
 		localEnv, _ := cmd.Flags().GetString("local")
 
-		// If both url and local flags are empty, show help and return
 		if urlStr == "" && localEnv == "" {
 			cmd.Help()
 			return
 		}
 
-		// Determine environment name
 		var envName string
 		if localEnv != "" {
-			// Use local environment name directly with '-user' suffix
 			envName = fmt.Sprintf("%s-user", localEnv)
 			if urlStr == "" {
 				urlStr = "http://localhost:8080"
 			}
 		} else {
-			// Ensure URL has a scheme; default to "https" if missing
 			if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
 				urlStr = "https://" + urlStr
 			}
-			// Parse environment name from URL
 			parsedEnvName, err := parseEnvNameFromURL(urlStr)
 			if err != nil {
 				pterm.Error.WithShowLineNumber(false).Println("Invalid URL format:", err)
@@ -69,73 +64,60 @@ var configInitCmd = &cobra.Command{
 			envName = parsedEnvName
 		}
 
-		// Override the parsed name if an explicit environment is provided
 		if environment != "" {
 			envName = environment
 		}
 
 		// Ensure environments directory exists
-		configPath := filepath.Join(getConfigDir(), "config.yaml")
-
-		// Load existing config if it exists
-		viper.SetConfigFile(configPath)
-		_ = viper.ReadInConfig()
-
-		// Add or update the environment entry in viper
-		if urlStr != "" {
-			viper.Set(fmt.Sprintf("environments.%s.url", envName), urlStr)
-		} else {
-			viper.Set(fmt.Sprintf("environments.%s", envName), "local")
-		}
-
-		// Set the default environment to the new envName
-		viper.Set("environment", envName)
-
-		// Serialize config data with 2-space indentation
-		configData := viper.AllSettings()
-		yamlData, err := yaml.Marshal(configData)
-		if err != nil {
-			pterm.Error.WithShowLineNumber(false).Println("Failed to encode YAML data:", err)
+		configDir := filepath.Join(getConfigDir(), "environments")
+		if err := os.MkdirAll(configDir, 0755); err != nil {
+			pterm.Error.WithShowLineNumber(false).Println("Failed to create environments directory:", err)
 			return
 		}
+		envFilePath := filepath.Join(configDir, envName+".yaml")
 
-		// Write the serialized YAML to file with 2-space indentation
-		file, err := os.Create(configPath)
-		if err != nil {
-			pterm.Error.WithShowLineNumber(false).Println("Failed to write to config.yaml:", err)
-			return
-		}
-		defer file.Close()
-
-		if _, err := file.Write(yamlData); err != nil {
-			pterm.Error.WithShowLineNumber(false).Println("Failed to write YAML data to file:", err)
-			return
-		}
-
-		pterm.Success.WithShowLineNumber(false).
-			Printfln("Environment '%s' successfully initialized and set as the current environment in '%s/config.yaml'", envName, getConfigDir())
-
-		// After successfully writing to config.yaml, create the environment-specific YAML file
-		envFilePath := filepath.Join(getConfigDir(), "environments", fmt.Sprintf("%s.yaml", envName))
-
-		// Ensure the environments directory exists
-		environmentsDir := filepath.Dir(envFilePath)
-		if _, err := os.Stat(environmentsDir); os.IsNotExist(err) {
-			os.MkdirAll(environmentsDir, os.ModePerm)
-		}
-
-		// Create a blank environment-specific file if it doesn't exist
+		// Create an empty environment file if it doesn't already exist
 		if _, err := os.Stat(envFilePath); os.IsNotExist(err) {
 			file, err := os.Create(envFilePath)
 			if err != nil {
 				pterm.Error.WithShowLineNumber(false).Println("Failed to create environment file:", err)
 				return
 			}
-			defer file.Close()
-			pterm.Success.WithShowLineNumber(false).Printfln("Created environment-specific file: %s", envFilePath)
-		} else {
-			pterm.Info.WithShowLineNumber(false).Printfln("Environment file already exists: %s", envFilePath)
+			file.Close()
 		}
+
+		// Set configuration in config.yaml
+		configPath := filepath.Join(getConfigDir(), "config.yaml")
+		viper.SetConfigFile(configPath)
+		_ = viper.ReadInConfig()
+
+		// Add or update the environment entry in config.yaml
+		if !viper.IsSet(fmt.Sprintf("environments.%s", envName)) {
+			viper.Set(fmt.Sprintf("environments.%s.url", envName), urlStr)
+		}
+
+		var baseURL string
+		if strings.HasPrefix(envName, "dev") {
+			baseURL = "grpc+ssl://identity.api.dev.spaceone.dev:443/v1"
+		} else if strings.HasPrefix(envName, "stg") {
+			baseURL = "grpc+ssl://identity.api.stg.spaceone.dev:443/v1"
+		}
+
+		if baseURL != "" {
+			viper.Set(fmt.Sprintf("environments.%s.endpoint", envName), baseURL)
+		}
+
+		// Set the current environment
+		viper.Set("environment", envName)
+
+		// Write the updated configuration to config.yaml
+		if err := viper.WriteConfig(); err != nil {
+			pterm.Error.WithShowLineNumber(false).Println("Failed to write updated config.yaml:", err)
+			return
+		}
+
+		pterm.Success.WithShowLineNumber(false).
+			Printfln("Environment '%s' successfully initialized with configuration in '%s/config.yaml'", envName, getConfigDir())
 	},
 }
 
