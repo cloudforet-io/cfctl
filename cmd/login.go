@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -35,6 +34,13 @@ func executeLogin(cmd *cobra.Command, args []string) {
 	// Load the environment-specific configuration
 	loadEnvironmentConfig()
 
+	// Set baseUrl directly from providedUrl loaded in loadEnvironmentConfig
+	baseUrl := providedUrl
+	if baseUrl == "" {
+		pterm.Error.Println("No token endpoint specified in the configuration file.")
+		exitWithError()
+	}
+
 	token := viper.GetString("token")
 	if token != "" && !isTokenExpired(token) {
 		pterm.Info.Println("Existing token found and it is still valid. Attempting to authenticate with saved credentials.")
@@ -47,44 +53,44 @@ func executeLogin(cmd *cobra.Command, args []string) {
 
 	userID, password := promptCredentials()
 
-	re := regexp.MustCompile(`https://(.*?)\.`)
-	matches := re.FindStringSubmatch(providedUrl)
-	if len(matches) < 2 {
-		pterm.Error.Println("Invalid URL format.")
+	// Extract the middle part of the environment name for `name`
+	currentEnvironment := viper.GetString("environment")
+	nameParts := strings.Split(currentEnvironment, "-")
+	if len(nameParts) < 3 {
+		pterm.Error.Println("Environment name format is invalid.")
 		exitWithError()
 	}
-	name := matches[1]
+	name := nameParts[1] // Extract the middle part, e.g., "cloudone" from "dev-cloudone-user"
 
-	baseUrl := viper.GetString("base_url")
-	if baseUrl == "" {
-		pterm.Error.Println("No token endpoint specified in the configuration file.")
-		exitWithError()
-	}
-
+	// Fetch Domain ID using the base URL and domain name
 	domainID, err := fetchDomainID(baseUrl, name)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch Domain ID:", err)
 		exitWithError()
 	}
 
+	// Issue tokens (access token and refresh token) using user credentials
 	accessToken, refreshToken, err := issueToken(baseUrl, userID, password, domainID)
 	if err != nil {
 		pterm.Error.Println("Failed to retrieve token:", err)
 		exitWithError()
 	}
 
+	// Fetch workspaces available to the user
 	workspaces, err := fetchWorkspaces(baseUrl, accessToken)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch workspaces:", err)
 		exitWithError()
 	}
 
+	// Fetch Domain ID and Role Type using the access token
 	domainID, roleType, err := fetchDomainIDAndRole(baseUrl, accessToken)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch Domain ID and Role Type:", err)
 		exitWithError()
 	}
 
+	// Determine the appropriate scope and workspace ID based on the role type
 	scope := determineScope(roleType, len(workspaces))
 	var workspaceID string
 	if roleType == "DOMAIN_ADMIN" {
@@ -100,12 +106,14 @@ func executeLogin(cmd *cobra.Command, args []string) {
 		scope = "WORKSPACE"
 	}
 
+	// Grant a new access token using the refresh token and selected scope
 	newAccessToken, err := grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
 	if err != nil {
 		pterm.Error.Println("Failed to retrieve new access token:", err)
 		exitWithError()
 	}
 
+	// Save the new access token
 	saveToken(newAccessToken)
 	pterm.Success.Println("Successfully logged in and saved token.")
 }
@@ -122,24 +130,20 @@ func loadEnvironmentConfig() {
 	// Load the main environment file to get the current environment
 	viper.SetConfigFile(filepath.Join(homeDir, ".spaceone", "config.yaml"))
 	if err := viper.ReadInConfig(); err != nil {
-		pterm.Error.Println("Failed to read environment file:", err)
+		pterm.Error.Println("Failed to read config.yaml:", err)
 		exitWithError()
 	}
 
+	// Get the currently selected environment
 	currentEnvironment := viper.GetString("environment")
 	if currentEnvironment == "" {
 		pterm.Error.Println("No environment specified in config.yaml")
 		exitWithError()
 	}
 
-	// Load the environment-specific file to get the endpoint
-	envConfig := viper.Sub(fmt.Sprintf("environments.%s", currentEnvironment))
-	if envConfig == nil {
-		pterm.Error.Printf("No configuration found for environment '%s' in config.yaml\n", currentEnvironment)
-		exitWithError()
-	}
-
-	providedUrl = envConfig.GetString("endpoint")
+	// Retrieve the endpoint for the current environment
+	endpointKey := fmt.Sprintf("environments.%s.endpoint", currentEnvironment)
+	providedUrl = viper.GetString(endpointKey)
 	if providedUrl == "" {
 		pterm.Error.Printf("No endpoint found for the current environment '%s' in config.yaml\n", currentEnvironment)
 		exitWithError()
