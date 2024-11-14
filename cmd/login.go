@@ -32,6 +32,7 @@ It will prompt you for your User ID, Password, and fetch the Domain ID automatic
 }
 
 func executeLogin(cmd *cobra.Command, args []string) {
+	// Load the environment-specific configuration
 	loadEnvironmentConfig()
 
 	token := viper.GetString("token")
@@ -42,12 +43,6 @@ func executeLogin(cmd *cobra.Command, args []string) {
 			return
 		}
 		pterm.Warning.Println("Saved token is invalid, proceeding with login.")
-	}
-
-	// If no URL is provided, check if this is a first login
-	if providedUrl == "" {
-		pterm.Error.Println("URL must be provided with the -u flag for initial login or a valid token must be provided.")
-		exitWithError()
 	}
 
 	userID, password := promptCredentials()
@@ -125,7 +120,7 @@ func loadEnvironmentConfig() {
 	}
 
 	// Load the main environment file to get the current environment
-	viper.SetConfigFile(filepath.Join(homeDir, ".spaceone", "environment.yml"))
+	viper.SetConfigFile(filepath.Join(homeDir, ".spaceone", "config.yaml"))
 	if err := viper.ReadInConfig(); err != nil {
 		pterm.Error.Println("Failed to read environment file:", err)
 		exitWithError()
@@ -133,16 +128,24 @@ func loadEnvironmentConfig() {
 
 	currentEnvironment := viper.GetString("environment")
 	if currentEnvironment == "" {
-		pterm.Error.Println("No environment specified in environment.yml")
+		pterm.Error.Println("No environment specified in config.yaml")
 		exitWithError()
 	}
 
-	// Load the environment-specific configuration file
-	viper.SetConfigFile(filepath.Join(homeDir, ".spaceone", "environments", currentEnvironment+".yml"))
-	if err := viper.MergeInConfig(); err != nil {
-		pterm.Error.Println("Failed to read environment-specific configuration file:", err)
+	// Load the environment-specific file to get the endpoint
+	envConfig := viper.Sub(fmt.Sprintf("environments.%s", currentEnvironment))
+	if envConfig == nil {
+		pterm.Error.Printf("No configuration found for environment '%s' in config.yaml\n", currentEnvironment)
 		exitWithError()
 	}
+
+	providedUrl = envConfig.GetString("endpoint")
+	if providedUrl == "" {
+		pterm.Error.Printf("No endpoint found for the current environment '%s' in config.yaml\n", currentEnvironment)
+		exitWithError()
+	}
+
+	pterm.Info.Printf("Using endpoint: %s\n", providedUrl)
 }
 
 func determineScope(roleType string, workspaceCount int) string {
@@ -426,19 +429,19 @@ func saveToken(newToken string) {
 	}
 
 	// Load the main environment file to get the current environment
-	viper.SetConfigFile(filepath.Join(homeDir, ".spaceone", "environment.yml"))
+	viper.SetConfigFile(filepath.Join(homeDir, ".spaceone", "config.yaml"))
 	if err := viper.ReadInConfig(); err != nil {
 		pterm.Error.Println("Failed to read environment file:", err)
 		exitWithError()
 	}
 	currentEnvironment := viper.GetString("environment")
 	if currentEnvironment == "" {
-		pterm.Error.Println("No environment specified in environment.yml")
+		pterm.Error.Println("No environment specified in environment.yaml")
 		exitWithError()
 	}
 
 	// Path to the environment-specific file
-	envFilePath := filepath.Join(homeDir, ".spaceone", "environments", currentEnvironment+".yml")
+	envFilePath := filepath.Join(homeDir, ".spaceone", "environments", currentEnvironment+".yaml")
 
 	// Read the file line by line, replacing or adding the token line if needed
 	file, err := os.Open(envFilePath)
