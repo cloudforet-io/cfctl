@@ -57,7 +57,7 @@ func init() {
 }
 
 func loadConfig(environment string) (*Config, error) {
-	configPath := fmt.Sprintf("%s/.spaceone/environments/%s.yml", os.Getenv("HOME"), environment)
+	configPath := fmt.Sprintf("%s/.spaceone/environments/%s.yaml", os.Getenv("HOME"), environment)
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("could not read config file: %w", err)
@@ -72,7 +72,7 @@ func loadConfig(environment string) (*Config, error) {
 }
 
 func fetchCurrentEnvironment() (string, error) {
-	envPath := fmt.Sprintf("%s/.spaceone/environment.yml", os.Getenv("HOME"))
+	envPath := fmt.Sprintf("%s/.spaceone/config.yaml", os.Getenv("HOME"))
 	data, err := os.ReadFile(envPath)
 	if err != nil {
 		return "", fmt.Errorf("could not read environment file: %w", err)
