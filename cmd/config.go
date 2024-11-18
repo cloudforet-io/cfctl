@@ -91,9 +91,11 @@ var configInitCmd = &cobra.Command{
 			baseURL = "grpc+ssl://identity.api.stg.spaceone.dev:443"
 		}
 
+		// Set endpoint and token fields for the environment
 		if baseURL != "" {
 			viper.Set(fmt.Sprintf("environments.%s.endpoint", envName), baseURL)
 		}
+		viper.Set(fmt.Sprintf("environments.%s.token", envName), "") // Add token as an empty value
 
 		// Set the current environment
 		viper.Set("environment", envName)
@@ -121,11 +123,9 @@ var envCmd = &cobra.Command{
 
 		// Handle environment switching
 		if switchEnv != "" {
-			// Check for both .yaml and .yml extensions
+			// Check only for .yaml extensions
 			if _, err := os.Stat(filepath.Join(getConfigDir(), "environments", switchEnv+".yaml")); os.IsNotExist(err) {
-				if _, err := os.Stat(filepath.Join(getConfigDir(), "environments", switchEnv+".yml")); os.IsNotExist(err) {
-					log.Fatalf("Environment '%s' not found.", switchEnv)
-				}
+				log.Fatalf("Environment '%s' not found.", switchEnv)
 			}
 
 			// Update the environment in ~/.spaceone/config.yaml
@@ -155,11 +155,9 @@ var envCmd = &cobra.Command{
 
 		// Handle environment removal with confirmation
 		if removeEnv != "" {
-			// Check for both .yaml and .yml extensions
+			// Check only for .yaml extensions
 			if _, err := os.Stat(filepath.Join(getConfigDir(), "environments", removeEnv+".yaml")); os.IsNotExist(err) {
-				if _, err := os.Stat(filepath.Join(getConfigDir(), "environments", removeEnv+".yml")); os.IsNotExist(err) {
-					log.Fatalf("Environment '%s' not found.", removeEnv)
-				}
+				log.Fatalf("Environment '%s' not found.", removeEnv)
 			}
 
 			// Ask for confirmation before deletion
@@ -171,7 +169,6 @@ var envCmd = &cobra.Command{
 			if response == "y" {
 				// Remove the environment file
 				os.Remove(filepath.Join(getConfigDir(), "environments", removeEnv+".yaml"))
-				os.Remove(filepath.Join(getConfigDir(), "environments", removeEnv+".yml"))
 
 				// Check if this environment is set in config.yaml and clear it if so
 				configFilePath := filepath.Join(getConfigDir(), "config.yaml")
@@ -222,7 +219,7 @@ var envCmd = &cobra.Command{
 			pterm.Println("Available Environments:")
 			for _, entry := range entries {
 				name := entry.Name()
-				name = strings.TrimSuffix(name, filepath.Ext(name)) // Remove ".yaml" or ".yml" extension
+				name = strings.TrimSuffix(name, ".yaml") // Remove ".yaml" extension
 				if name == currentEnv {
 					pterm.FgGreen.Printf("  > %s (current)\n", name)
 				} else {
@@ -309,7 +306,7 @@ var syncCmd = &cobra.Command{
 		}
 
 		for _, entry := range entries {
-			if !entry.IsDir() && (filepath.Ext(entry.Name()) == ".yaml" || filepath.Ext(entry.Name()) == ".yml") {
+			if !entry.IsDir() && (filepath.Ext(entry.Name()) == ".yaml") {
 				envName := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
 
 				// Check if the environment already has a URL; if not, set it to an empty string
