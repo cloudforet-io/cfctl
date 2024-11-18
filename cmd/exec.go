@@ -12,6 +12,8 @@ import (
 	"os"
 	"strings"
 
+	"google.golang.org/grpc/credentials/insecure"
+
 	"github.com/atotto/clipboard"
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
@@ -33,8 +35,14 @@ var copyToClipboard bool
 
 // Config structure to parse environment files
 type Config struct {
-	Token     string            `yaml:"token"`
-	Endpoints map[string]string `yaml:"endpoints"`
+	Environment  string                 `yaml:"environment"`
+	Environments map[string]Environment `yaml:"environments"`
+}
+
+type Environment struct {
+	Endpoint string `yaml:"endpoint"`
+	Proxy    bool   `yaml:"proxy"`
+	Token    string `yaml:"token"`
 }
 
 var execCmd = &cobra.Command{
@@ -56,8 +64,8 @@ func init() {
 	execCmd.Flags().BoolVarP(&copyToClipboard, "copy", "c", false, "Copy the output to the clipboard (copies any output format)")
 }
 
-func loadConfig(environment string) (*Config, error) {
-	configPath := fmt.Sprintf("%s/.spaceone/environments/%s.yaml", os.Getenv("HOME"), environment)
+func loadConfig() (*Config, error) {
+	configPath := fmt.Sprintf("%s/.spaceone/config.yaml", os.Getenv("HOME"))
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("could not read config file: %w", err)
@@ -71,47 +79,41 @@ func loadConfig(environment string) (*Config, error) {
 	return &config, nil
 }
 
-func fetchCurrentEnvironment() (string, error) {
-	envPath := fmt.Sprintf("%s/.spaceone/config.yaml", os.Getenv("HOME"))
-	data, err := os.ReadFile(envPath)
-	if err != nil {
-		return "", fmt.Errorf("could not read environment file: %w", err)
+func fetchCurrentEnvironment(config *Config) (*Environment, error) {
+	currentEnv, ok := config.Environments[config.Environment]
+	if !ok {
+		return nil, fmt.Errorf("current environment '%s' not found in config", config.Environment)
 	}
-
-	var envConfig struct {
-		Environment string `yaml:"environment"`
-	}
-
-	if err := yaml.Unmarshal(data, &envConfig); err != nil {
-		return "", fmt.Errorf("could not unmarshal environment config: %w", err)
-	}
-
-	return envConfig.Environment, nil
+	return &currentEnv, nil
 }
 
 func runExecCommand(cmd *cobra.Command, args []string) {
-	environment, err := fetchCurrentEnvironment()
+	config, err := loadConfig()
 	if err != nil {
-		log.Fatalf("Failed to get current environment: %v", err)
+		log.Fatalf("Failed to load config: %v", err)
 	}
 
-	config, err := loadConfig(environment)
+	currentEnv, err := fetchCurrentEnvironment(config)
 	if err != nil {
-		log.Fatalf("Failed to load config for environment %s: %v", environment, err)
+		log.Fatalf("Failed to get current environment: %v", err)
 	}
 
 	verbName := args[0]
 	serviceResource := args[1]
 	parts := strings.Split(serviceResource, ".")
-
 	if len(parts) != 2 {
 		log.Fatalf("Invalid service and resource format. Use [service].[resource]")
 	}
-
 	serviceName := parts[0]
 	resourceName := parts[1]
 
-	endpoint, ok := config.Endpoints[serviceName]
+	// Fetch endpoints map
+	endpointsMap, err := fetchEndpointsMap(currentEnv.Endpoint)
+	if err != nil {
+		log.Fatalf("Failed to fetch endpoints map: %v", err)
+	}
+
+	endpoint, ok := endpointsMap[serviceName]
 	if !ok {
 		log.Fatalf("Service endpoint not found for service: %s", serviceName)
 	}
@@ -120,70 +122,53 @@ func runExecCommand(cmd *cobra.Command, args []string) {
 	if err != nil {
 		log.Fatalf("Invalid endpoint URL %s: %v", endpoint, err)
 	}
-
 	grpcEndpoint := fmt.Sprintf("%s:%s", parsedURL.Hostname(), parsedURL.Port())
 
 	// Set up secure connection
-	conn, err := grpc.Dial(grpcEndpoint, grpc.WithTransportCredentials(credentials.NewTLS(&tls.Config{})))
+	var opts []grpc.DialOption
+	if parsedURL.Scheme == "grpc+ssl" {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false,
+		}
+		creds := credentials.NewTLS(tlsConfig)
+		opts = append(opts, grpc.WithTransportCredentials(creds))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	conn, err := grpc.Dial(grpcEndpoint, opts...)
 	if err != nil {
 		log.Fatalf("Failed to connect to gRPC server: %v", err)
 	}
 	defer conn.Close()
 
-	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", config.Token)
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", currentEnv.Token)
 
-	// Set up reflection client
+	// Use Reflection to discover services
 	refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
 	defer refClient.Reset()
 
-	// Find the package name dynamically
-	packageName := ""
-	serviceList, err := refClient.ListServices()
+	// Construct the full service name
+	fullServiceName, err := discoverService(refClient, serviceName, resourceName)
 	if err != nil {
-		log.Fatalf("Failed to list services: %v", err)
+		log.Fatalf("Failed to discover service: %v", err)
 	}
 
-	for _, fullServiceName := range serviceList {
-		serviceDesc, err := refClient.ResolveService(fullServiceName)
-		if err != nil {
-			log.Printf("Failed to resolve service %s: %v", fullServiceName, err)
-			continue
-		}
-
-		if serviceDesc.GetName() == resourceName {
-			for _, method := range serviceDesc.GetMethods() {
-				if method.GetName() == verbName {
-					packageName = serviceDesc.GetFullyQualifiedName()
-					break
-				}
-			}
-		}
-		if packageName != "" {
-			break
-		}
-	}
-
-	if packageName == "" {
-		log.Fatalf("Service and method not found for verb: %s", verbName)
-	}
-
-	// Get the service descriptor
-	serviceDesc, err := refClient.ResolveService(packageName)
+	// Resolve the service and method
+	serviceDesc, err := refClient.ResolveService(fullServiceName)
 	if err != nil {
-		log.Fatalf("Failed to resolve service %s: %v", packageName, err)
+		log.Fatalf("Failed to resolve service %s: %v", fullServiceName, err)
 	}
 
-	// Find the method descriptor
 	methodDesc := serviceDesc.FindMethodByName(verbName)
 	if methodDesc == nil {
-		log.Fatalf("Method %s not found in service %s", verbName, packageName)
+		log.Fatalf("Method %s not found in service %s", verbName, fullServiceName)
 	}
 
 	// Create a dynamic message for the request
-	inputType := methodDesc.GetInputType()
-	reqMsg := dynamic.NewMessage(inputType)
+	reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
 
-	// Parse the input parameters into a map
+	// Parse the input parameters into the request message
 	inputParams := parseParameters(fileParameter, jsonParameter, parameters)
 	for key, value := range inputParams {
 		if err := reqMsg.TrySetFieldByName(key, value); err != nil {
@@ -192,35 +177,45 @@ func runExecCommand(cmd *cobra.Command, args []string) {
 	}
 
 	// Prepare response placeholder
-	outputType := methodDesc.GetOutputType()
-	respMsg := dynamic.NewMessage(outputType)
+	respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
 
-	// Make the RPC call using the client connection
-	err = conn.Invoke(ctx, fmt.Sprintf("/%s/%s", serviceDesc.GetFullyQualifiedName(), methodDesc.GetName()), reqMsg, respMsg)
+	// Make the RPC call
+	fullMethod := fmt.Sprintf("/%s/%s", fullServiceName, verbName)
+	err = conn.Invoke(ctx, fullMethod, reqMsg, respMsg)
 	if err != nil {
 		log.Fatalf("Failed to call method %s: %v", verbName, err)
 	}
 
-	// Convert the response to a map and maintain UTF-8 decoding
+	// Convert the response to a map
 	respMap, err := messageToMap(respMsg)
 	if err != nil {
 		log.Fatalf("Failed to convert response message to map: %v", err)
 	}
 
-	// Convert response to JSON to properly decode UTF-8 characters
 	jsonData, err := json.Marshal(respMap)
 	if err != nil {
 		log.Fatalf("Failed to marshal response to JSON: %v", err)
 	}
 
-	// Unmarshal JSON data back into a map to maintain UTF-8 decoding
 	var prettyMap map[string]interface{}
 	if err := json.Unmarshal(jsonData, &prettyMap); err != nil {
 		log.Fatalf("Failed to unmarshal JSON data: %v", err)
 	}
 
-	// Print the response
 	printData(prettyMap, outputFormat)
+}
+
+func discoverService(refClient *grpcreflect.Client, serviceName, resourceName string) (string, error) {
+	possibleVersions := []string{"v1", "v2"}
+
+	for _, version := range possibleVersions {
+		fullServiceName := fmt.Sprintf("spaceone.api.%s.%s.%s", serviceName, version, resourceName)
+		if _, err := refClient.ResolveService(fullServiceName); err == nil {
+			return fullServiceName, nil
+		}
+	}
+
+	return "", fmt.Errorf("service not found for %s.%s", serviceName, resourceName)
 }
 
 func parseParameters(fileParameter, jsonParameter string, params []string) map[string]interface{} {
