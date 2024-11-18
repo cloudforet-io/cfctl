@@ -6,6 +6,8 @@ package cmd
 import (
 	"os"
 
+	"github.com/cloudforet-io/cfctl/cmd/other"
+
 	"github.com/spf13/cobra"
 )
 
@@ -40,11 +42,11 @@ func init() {
 	}
 	rootCmd.AddGroup(OtherCommands)
 
-	rootCmd.AddCommand(aiCmd)
-	rootCmd.AddCommand(apiResourcesCmd)
-	rootCmd.AddCommand(configCmd)
-	rootCmd.AddCommand(execCmd)
-	rootCmd.AddCommand(loginCmd)
+	rootCmd.AddCommand(other.AiCmd)
+	rootCmd.AddCommand(other.ApiResourcesCmd)
+	rootCmd.AddCommand(other.ConfigCmd)
+	rootCmd.AddCommand(other.ExecCmd)
+	rootCmd.AddCommand(other.LoginCmd)
 
 	for _, cmd := range rootCmd.Commands() {
 		if cmd.Name() != "help" && cmd.Name() != "completion" {

@@ -1,4 +1,4 @@
-package cmd
+package other
 
 import (
 	"bytes"
@@ -45,7 +45,7 @@ type Environment struct {
 	Token    string `yaml:"token"`
 }
 
-var execCmd = &cobra.Command{
+var ExecCmd = &cobra.Command{
 	Use:   "exec [rpc] [service].[resource]",
 	Short: "Execute a gRPC request to a specified service and message",
 	Long: `Executes a gRPC command to a given service and message based on environment configuration.
@@ -405,10 +405,10 @@ func printCSV(data map[string]interface{}) string {
 }
 
 func init() {
-	execCmd.Flags().StringArrayVarP(&parameters, "parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")
-	execCmd.Flags().StringVarP(&jsonParameter, "json-parameter", "j", "", "JSON type parameter")
-	execCmd.Flags().StringVarP(&fileParameter, "file-parameter", "f", "", "YAML file parameter")
-	execCmd.Flags().StringVarP(&apiVersion, "api-version", "v", "v1", "API Version")
-	execCmd.Flags().StringVarP(&outputFormat, "output", "o", "yaml", "Output format (yaml, json, table, csv)")
-	execCmd.Flags().BoolVarP(&copyToClipboard, "copy", "c", false, "Copy the output to the clipboard (copies any output format)")
+	ExecCmd.Flags().StringArrayVarP(&parameters, "parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")
+	ExecCmd.Flags().StringVarP(&jsonParameter, "json-parameter", "j", "", "JSON type parameter")
+	ExecCmd.Flags().StringVarP(&fileParameter, "file-parameter", "f", "", "YAML file parameter")
+	ExecCmd.Flags().StringVarP(&apiVersion, "api-version", "v", "v1", "API Version")
+	ExecCmd.Flags().StringVarP(&outputFormat, "output", "o", "yaml", "Output format (yaml, json, table, csv)")
+	ExecCmd.Flags().BoolVarP(&copyToClipboard, "copy", "c", false, "Copy the output to the clipboard (copies any output format)")
 }

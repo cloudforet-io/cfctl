@@ -1,4 +1,4 @@
-package cmd
+package other
 
 import (
 	"bufio"
@@ -21,8 +21,8 @@ import (
 
 var providedUrl string
 
-// loginCmd represents the login command
-var loginCmd = &cobra.Command{
+// LoginCmd represents the login command
+var LoginCmd = &cobra.Command{
 	Use:   "login",
 	Short: "Login to SpaceONE",
 	Long: `A command that allows you to login to SpaceONE.
@@ -604,6 +604,6 @@ func selectScopeOrWorkspace(workspaces []map[string]interface{}) string {
 }
 
 func init() {
-	loginCmd.Flags().StringVarP(&providedUrl, "url", "u", "", "The URL to use for login (e.g. cfctl login -u https://example.com)")
-	//loginCmd.MarkFlagRequired("url")
+	LoginCmd.Flags().StringVarP(&providedUrl, "url", "u", "", "The URL to use for login (e.g. cfctl login -u https://example.com)")
+	//LoginCmd.MarkFlagRequired("url")
 }
