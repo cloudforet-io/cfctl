@@ -476,8 +476,6 @@ func parseEnvNameFromURL(urlStr string) (string, error) {
 }
 
 func init() {
-	rootCmd.AddCommand(configCmd)
-
 	// Adding subcommands to configCmd
 	configCmd.AddCommand(configInitCmd)
 	configCmd.AddCommand(envCmd)

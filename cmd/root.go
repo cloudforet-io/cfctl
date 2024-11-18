@@ -34,11 +34,21 @@ func Execute() {
 }
 
 func init() {
-	// Here you will define your flags and configuration settings.
-	// Cobra supports persistent flags, which, if defined here,
-	// will be global for your application.
+	OtherCommands := &cobra.Group{
+		ID:    "other",
+		Title: "Other Commands:",
+	}
+	rootCmd.AddGroup(OtherCommands)
 
-	// Cobra also supports local flags, which will only run
-	// when this action is called directly.
-	//rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	rootCmd.AddCommand(aiCmd)
+	rootCmd.AddCommand(apiResourcesCmd)
+	rootCmd.AddCommand(configCmd)
+	rootCmd.AddCommand(execCmd)
+	rootCmd.AddCommand(loginCmd)
+
+	for _, cmd := range rootCmd.Commands() {
+		if cmd.Name() != "help" && cmd.Name() != "completion" {
+			cmd.GroupID = "other"
+		}
+	}
 }

@@ -471,6 +471,5 @@ func splitIntoLinesWithComma(text string, maxWidth int) []string {
 }
 
 func init() {
-	rootCmd.AddCommand(apiResourcesCmd)
 	apiResourcesCmd.Flags().StringVarP(&endpoints, "service", "s", "", "Specify the services to connect to, separated by commas (e.g., 'identity', 'identity,inventory')")
 }

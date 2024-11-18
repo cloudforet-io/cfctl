@@ -604,7 +604,6 @@ func selectScopeOrWorkspace(workspaces []map[string]interface{}) string {
 }
 
 func init() {
-	rootCmd.AddCommand(loginCmd)
 	loginCmd.Flags().StringVarP(&providedUrl, "url", "u", "", "The URL to use for login (e.g. cfctl login -u https://example.com)")
 	//loginCmd.MarkFlagRequired("url")
 }
