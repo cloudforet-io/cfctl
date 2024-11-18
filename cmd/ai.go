@@ -18,8 +18,8 @@ import (
 
 var (
 	apiToken    string
-	configPath  = filepath.Join(os.Getenv("HOME"), ".spaceone", "config")
-	resourceDir = filepath.Join(os.Getenv("HOME"), ".spaceone", "training_data") // 학습 전용 디렉터리 경로
+	configPath  = filepath.Join(os.Getenv("HOME"), ".cfctl", "config")
+	resourceDir = filepath.Join(os.Getenv("HOME"), ".cfctl", "training_data") // 학습 전용 디렉터리 경로
 )
 
 // aiCmd represents the ai command

@@ -128,7 +128,7 @@ func loadEnvironmentConfig() {
 	}
 
 	// Load the main environment file to get the current environment
-	viper.SetConfigFile(filepath.Join(homeDir, ".spaceone", "config.yaml"))
+	viper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
 	if err := viper.ReadInConfig(); err != nil {
 		pterm.Error.Println("Failed to read config.yaml:", err)
 		exitWithError()
@@ -433,7 +433,7 @@ func saveToken(newToken string) {
 	}
 
 	// Load the main environment file to get the current environment
-	viper.SetConfigFile(filepath.Join(homeDir, ".spaceone", "config.yaml"))
+	viper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
 	if err := viper.ReadInConfig(); err != nil {
 		pterm.Error.Println("Failed to read environment file:", err)
 		exitWithError()
@@ -445,7 +445,7 @@ func saveToken(newToken string) {
 	}
 
 	// Path to the environment-specific file
-	envFilePath := filepath.Join(homeDir, ".spaceone", "environments", currentEnvironment+".yaml")
+	envFilePath := filepath.Join(homeDir, ".cfctl", "environments", currentEnvironment+".yaml")
 
 	// Read the file line by line, replacing or adding the token line if needed
 	file, err := os.Open(envFilePath)

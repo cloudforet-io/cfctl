@@ -42,7 +42,7 @@ var apiResourcesCmd = &cobra.Command{
 			log.Fatalf("Unable to find home directory: %v", err)
 		}
 
-		configFile := filepath.Join(home, ".spaceone", "config.yaml")
+		configFile := filepath.Join(home, ".cfctl", "config.yaml")
 		viper.SetConfigFile(configFile)
 		if err := viper.ReadInConfig(); err != nil {
 			log.Fatalf("Error reading config file: %v", err)
@@ -75,7 +75,7 @@ var apiResourcesCmd = &cobra.Command{
 		}
 
 		// Load short names configuration
-		shortNamesFile := filepath.Join(home, ".spaceone", "short_names.yaml")
+		shortNamesFile := filepath.Join(home, ".cfctl", "short_names.yaml")
 		shortNamesMap := make(map[string]string)
 		if _, err := os.Stat(shortNamesFile); err == nil {
 			file, err := os.Open(shortNamesFile)

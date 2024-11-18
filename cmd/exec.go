@@ -65,7 +65,7 @@ func init() {
 }
 
 func loadConfig() (*Config, error) {
-	configPath := fmt.Sprintf("%s/.spaceone/config.yaml", os.Getenv("HOME"))
+	configPath := fmt.Sprintf("%s/.cfctl/config.yaml", os.Getenv("HOME"))
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("could not read config file: %w", err)

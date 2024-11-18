@@ -40,7 +40,6 @@ var configInitCmd = &cobra.Command{
 	Short: "Initialize a new environment configuration",
 	Long:  `Initialize a new environment configuration for cfctl by specifying a URL with -u or a local environment name with -l.`,
 	Run: func(cmd *cobra.Command, args []string) {
-		// Retrieve flags
 		environment, _ := cmd.Flags().GetString("environment")
 		urlStr, _ := cmd.Flags().GetString("url")
 		localEnv, _ := cmd.Flags().GetString("local")
@@ -67,25 +66,14 @@ var configInitCmd = &cobra.Command{
 			envName = environment
 		}
 
-		// Ensure environments directory exists
-		configDir := filepath.Join(getConfigDir(), "environments")
+		// Ensure ~/.cfctl directory exists
+		configDir := getConfigDir()
 		if err := os.MkdirAll(configDir, 0755); err != nil {
-			pterm.Error.WithShowLineNumber(false).Println("Failed to create environments directory:", err)
+			pterm.Error.WithShowLineNumber(false).Println("Failed to create config directory:", err)
 			return
 		}
-		envFilePath := filepath.Join(configDir, envName+".yaml")
 
-		// Create an empty environment file if it doesn't already exist
-		if _, err := os.Stat(envFilePath); os.IsNotExist(err) {
-			file, err := os.Create(envFilePath)
-			if err != nil {
-				pterm.Error.WithShowLineNumber(false).Println("Failed to create environment file:", err)
-				return
-			}
-			file.Close()
-		}
-
-		// Set configuration in config.yaml
+		// Set configuration directly in config.yaml
 		configPath := filepath.Join(getConfigDir(), "config.yaml")
 		viper.SetConfigFile(configPath)
 		_ = viper.ReadInConfig()
@@ -101,8 +89,8 @@ var configInitCmd = &cobra.Command{
 		if baseURL != "" {
 			viper.Set(fmt.Sprintf("environments.%s.endpoint", envName), baseURL)
 		}
-		viper.Set(fmt.Sprintf("environments.%s.token", envName), "")   // Add token as an empty value
-		viper.Set(fmt.Sprintf("environments.%s.proxy", envName), true) // Set proxy to true
+		viper.Set(fmt.Sprintf("environments.%s.token", envName), "")
+		viper.Set(fmt.Sprintf("environments.%s.proxy", envName), true)
 
 		// Set the current environment
 		viper.Set("environment", envName)
@@ -114,7 +102,7 @@ var configInitCmd = &cobra.Command{
 		}
 
 		pterm.Success.WithShowLineNumber(false).
-			Printfln("Environment '%s' successfully initialized with configuration in '%s/config.yaml'", envName, getConfigDir())
+			Printfln("Environment '%s' successfully initialized in '%s/config.yaml'", envName, getConfigDir())
 	},
 }
 
@@ -135,7 +123,7 @@ var envCmd = &cobra.Command{
 				log.Fatalf("Environment '%s' not found.", switchEnv)
 			}
 
-			// Update the environment in ~/.spaceone/config.yaml
+			// Update the environment in ~/.cfctl/config.yaml
 			configFilePath := filepath.Join(getConfigDir(), "config.yaml")
 			viper.SetConfigFile(configFilePath)
 
@@ -246,10 +234,10 @@ var showCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Display the current cfctl configuration",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Load the current environment from ~/.spaceone/config.yaml
+		// Load the current environment from ~/.cfctl/config.yaml
 		currentEnv := getCurrentEnvironment()
 		if currentEnv == "" {
-			log.Fatal("No environment set in ~/.spaceone/config.yaml")
+			log.Fatal("No environment set in ~/.cfctl/config.yaml")
 		}
 
 		// Construct the path to the environment's YAML file
@@ -258,7 +246,7 @@ var showCmd = &cobra.Command{
 
 		// Check if the environment file exists
 		if _, err := os.Stat(envFilePath); os.IsNotExist(err) {
-			log.Fatalf("Environment file '%s.yaml' does not exist in ~/.spaceone/environments", currentEnv)
+			log.Fatalf("Environment file '%s.yaml' does not exist in ~/.cfctl/environments", currentEnv)
 		}
 
 		// Load and display the configuration from the environment YAML file
@@ -379,11 +367,11 @@ Available Services:
 	},
 }
 
-// syncCmd syncs the environments in ~/.spaceone/environments with ~/.spaceone/config.yaml
+// syncCmd syncs the environments in ~/.cfctl/environments with ~/.cfctl/config.yaml
 var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Sync environments from the environments directory to config.yaml",
-	Long:  "Sync all environment files from the ~/.spaceone/environments directory to ~/.spaceone/config.yaml",
+	Long:  "Sync all environment files from the ~/.cfctl/environments directory to ~/.cfctl/config.yaml",
 	Run: func(cmd *cobra.Command, args []string) {
 		// Define paths
 		envDir := filepath.Join(getConfigDir(), "environments")
@@ -425,10 +413,10 @@ func getConfigDir() string {
 	if err != nil {
 		log.Fatalf("Unable to find home directory: %v", err)
 	}
-	return filepath.Join(home, ".spaceone")
+	return filepath.Join(home, ".cfctl")
 }
 
-// getCurrentEnvironment reads the current environment from ~/.spaceone/config.yaml
+// getCurrentEnvironment reads the current environment from ~/.cfctl/config.yaml
 func getCurrentEnvironment() string {
 	// Set config file path to ~/.spaceone/config.yaml
 	configPath := filepath.Join(getConfigDir(), "config.yaml")
