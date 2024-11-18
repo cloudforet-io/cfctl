@@ -32,21 +32,46 @@ var apiResourcesCmd = &cobra.Command{
 	Use:   "api-resources",
 	Short: "Displays supported API resources",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Load the active environment configuration file
-		cfgFile, err := getEnvironmentConfig()
+		// Load the main configuration file
+		home, err := os.UserHomeDir()
 		if err != nil {
-			log.Fatalf("Failed to load active environment configuration: %v", err)
+			log.Fatalf("Unable to find home directory: %v", err)
 		}
 
-		viper.SetConfigFile(cfgFile)
+		configFile := filepath.Join(home, ".spaceone", "config.yaml")
+		viper.SetConfigFile(configFile)
 		if err := viper.ReadInConfig(); err != nil {
 			log.Fatalf("Error reading config file: %v", err)
 		}
 
-		endpointsMap := viper.GetStringMapString("endpoints")
+		// Get the current environment
+		currentEnv := viper.GetString("environment")
+		if currentEnv == "" {
+			log.Fatalf("No active environment specified in %s", configFile)
+		}
+
+		// Get environment-specific configurations
+		envConfig := viper.Sub(fmt.Sprintf("environments.%s", currentEnv))
+		if envConfig == nil {
+			log.Fatalf("No configuration found for environment: %s", currentEnv)
+		}
+
+		endpoint := envConfig.GetString("endpoint")
+		proxy := envConfig.GetBool("proxy")
+
+		// Validate endpoint and proxy
+		if !proxy || !strings.Contains(endpoint, "identity") {
+			log.Fatalf("Endpoint for environment '%s' is not valid for fetching resources.", currentEnv)
+		}
+
+		// Fetch endpointsMap dynamically
+		endpointsMap, err := fetchEndpointsMap(endpoint)
+		if err != nil {
+			log.Fatalf("Failed to fetch endpointsMap from '%s': %v", endpoint, err)
+		}
 
 		// Load short names configuration
-		shortNamesFile := filepath.Join(getConfigDirectory(), "short_names.yaml")
+		shortNamesFile := filepath.Join(home, ".spaceone", "short_names.yaml")
 		shortNamesMap := make(map[string]string)
 		if _, err := os.Stat(shortNamesFile); err == nil {
 			file, err := os.Open(shortNamesFile)
@@ -70,7 +95,6 @@ var apiResourcesCmd = &cobra.Command{
 			var allData [][]string
 
 			for _, endpointName := range selectedEndpoints {
-				endpointName = strings.TrimSpace(endpointName)
 				serviceEndpoint, ok := endpointsMap[endpointName]
 				if !ok {
 					log.Printf("No endpoint found for %s", endpointName)
@@ -94,7 +118,7 @@ var apiResourcesCmd = &cobra.Command{
 			return
 		}
 
-		// If -e flag is not provided, list all services as before
+		// If no specific endpoints are provided, list all services
 		var wg sync.WaitGroup
 		dataChan := make(chan [][]string, len(endpointsMap))
 		errorChan := make(chan error, len(endpointsMap))
@@ -135,27 +159,61 @@ var apiResourcesCmd = &cobra.Command{
 	},
 }
 
-func getEnvironmentConfig() (string, error) {
-	home, err := os.UserHomeDir()
+func fetchEndpointsMap(endpoint string) (map[string]string, error) {
+	// Configure gRPC connection
+	parts := strings.Split(endpoint, "://")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
+	}
+
+	scheme := parts[0]
+	hostPort := strings.SplitN(parts[1], "/", 2)[0]
+
+	var opts []grpc.DialOption
+	if scheme == "grpc+ssl" {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false, // Enable server certificate verification
+		}
+		creds := credentials.NewTLS(tlsConfig)
+		opts = append(opts, grpc.WithTransportCredentials(creds))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	conn, err := grpc.Dial(hostPort, opts...)
 	if err != nil {
-		return "", fmt.Errorf("unable to find home directory: %v", err)
+		return nil, fmt.Errorf("connection failed: unable to connect to %s: %v", endpoint, err)
+	}
+	defer conn.Close()
+
+	// Replace this with your gRPC client and request logic
+	// Example assumes a gRPC client `IdentityClient` with `ListEndpoints` RPC
+	client := grpc_reflection_v1alpha.NewServerReflectionClient(conn)
+	stream, err := client.ServerReflectionInfo(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("failed to create reflection client: %v", err)
 	}
 
-	// Load the main environment file
-	envConfigFile := filepath.Join(home, ".spaceone", "config.yaml")
-	viper.SetConfigFile(envConfigFile)
-	if err := viper.ReadInConfig(); err != nil {
-		return "", fmt.Errorf("error reading main environment file: %v", err)
+	req := &grpc_reflection_v1alpha.ServerReflectionRequest{
+		MessageRequest: &grpc_reflection_v1alpha.ServerReflectionRequest_ListServices{ListServices: ""},
 	}
 
-	// Get the current environment name (e.g., 'dev')
-	currentEnv := viper.GetString("environment")
-	if currentEnv == "" {
-		return "", fmt.Errorf("no active environment specified in %s", envConfigFile)
+	if err := stream.Send(req); err != nil {
+		return nil, fmt.Errorf("failed to send reflection request: %v", err)
 	}
 
-	// Path to the specific environment file (e.g., ~/.spaceone/environments/dev.yaml)
-	return filepath.Join(home, ".spaceone", "environments", currentEnv+".yaml"), nil
+	resp, err := stream.Recv()
+	if err != nil {
+		return nil, fmt.Errorf("failed to receive reflection response: %v", err)
+	}
+
+	// Convert response to map
+	endpointsMap := make(map[string]string)
+	for _, s := range resp.GetListServicesResponse().Service {
+		endpointsMap[s.Name] = s.Name // Replace with appropriate key-value parsing
+	}
+
+	return endpointsMap, nil
 }
 
 func fetchServiceResources(service, endpoint string, shortNamesMap map[string]string) ([][]string, error) {
