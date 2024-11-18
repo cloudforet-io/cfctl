@@ -12,17 +12,17 @@ import (
 	"os"
 	"strings"
 
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 
 	"github.com/atotto/clipboard"
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"gopkg.in/yaml.v3"
 )
 
@@ -52,29 +52,6 @@ var ExecCmd = &cobra.Command{
 	For example: cfctl exec list identity.User`,
 	Args: cobra.ExactArgs(2),
 	Run:  runExecCommand,
-}
-
-func loadConfig() (*Config, error) {
-	configPath := fmt.Sprintf("%s/.cfctl/config.yaml", os.Getenv("HOME"))
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil, fmt.Errorf("could not read config file: %w", err)
-	}
-
-	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("could not unmarshal config: %w", err)
-	}
-
-	return &config, nil
-}
-
-func fetchCurrentEnvironment(config *Config) (*Environment, error) {
-	currentEnv, ok := config.Environments[config.Environment]
-	if !ok {
-		return nil, fmt.Errorf("current environment '%s' not found in config", config.Environment)
-	}
-	return &currentEnv, nil
 }
 
 func runExecCommand(cmd *cobra.Command, args []string) {
@@ -193,6 +170,29 @@ func runExecCommand(cmd *cobra.Command, args []string) {
 	}
 
 	printData(prettyMap, outputFormat)
+}
+
+func loadConfig() (*Config, error) {
+	configPath := fmt.Sprintf("%s/.cfctl/config.yaml", os.Getenv("HOME"))
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("could not read config file: %w", err)
+	}
+
+	var config Config
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return nil, fmt.Errorf("could not unmarshal config: %w", err)
+	}
+
+	return &config, nil
+}
+
+func fetchCurrentEnvironment(config *Config) (*Environment, error) {
+	currentEnv, ok := config.Environments[config.Environment]
+	if !ok {
+		return nil, fmt.Errorf("current environment '%s' not found in config", config.Environment)
+	}
+	return &currentEnv, nil
 }
 
 func discoverService(refClient *grpcreflect.Client, serviceName, resourceName string) (string, error) {
