@@ -233,7 +233,7 @@ func fetchEndpointsMap(endpoint string) (map[string]string, error) {
 		return nil, fmt.Errorf("failed to invoke method %s: %v", fullMethod, err)
 	}
 
-	// Process the response
+	// Process the response to extract `service` and `endpoint`
 	endpointsMap := make(map[string]string)
 	resultsField := respMsg.FindFieldDescriptorByName("results")
 	if resultsField == nil {
@@ -243,8 +243,9 @@ func fetchEndpointsMap(endpoint string) (map[string]string, error) {
 	results := respMsg.GetField(resultsField).([]interface{})
 	for _, result := range results {
 		resultMsg := result.(*dynamic.Message)
-		name := resultMsg.GetFieldByName("name").(string)
-		endpointsMap[name] = name
+		serviceName := resultMsg.GetFieldByName("service").(string)
+		serviceEndpoint := resultMsg.GetFieldByName("endpoint").(string)
+		endpointsMap[serviceName] = serviceEndpoint
 	}
 
 	return endpointsMap, nil
@@ -395,14 +396,6 @@ func getServiceMethods(client grpc_reflection_v1alpha.ServerReflectionClient, se
 	return methods
 }
 
-func getConfigDirectory() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		log.Fatalf("Unable to find home directory: %v", err)
-	}
-	return filepath.Join(home, ".spaceone")
-}
-
 func renderTable(data [][]string) {
 	// Calculate the dynamic width for the "Verb" column
 	terminalWidth := pterm.GetTerminalWidth()
@@ -412,31 +405,27 @@ func renderTable(data [][]string) {
 		verbColumnWidth = 20 // Minimum width for Verb column
 	}
 
-	// Use a more extensive color palette to ensure distinct colors for each service
-	serviceColors := []pterm.Color{
-		pterm.FgLightGreen, pterm.FgLightYellow, pterm.FgLightBlue,
-		pterm.FgLightMagenta, pterm.FgLightCyan, pterm.FgWhite,
-		pterm.FgGreen, pterm.FgYellow, pterm.FgBlue,
-		pterm.FgMagenta, pterm.FgCyan, pterm.FgLightWhite,
-		pterm.FgRed, pterm.FgLightRed, pterm.FgLightYellow,
-		pterm.FgLightGreen, pterm.FgDarkGray, pterm.FgLightMagenta,
+	// Use two distinct colors for alternating services
+	alternateColors := []pterm.Color{
+		pterm.FgLightBlue, pterm.FgLightYellow, pterm.FgLightMagenta, pterm.FgGreen, pterm.FgLightRed, pterm.FgBlue, pterm.FgLightGreen,
 	}
 
-	serviceColorMap := make(map[string]pterm.Color)
-	colorIndex := 0
+	currentColorIndex := 0
+	previousService := ""
 
-	table := pterm.TableData{{"Service", "Resource", "Short Names", "Verb"}}
+	table := pterm.TableData{{"Service", "Verb", "Resource", "Short Names"}} // Column order updated
 
 	for _, row := range data {
 		service := row[0]
-		// Assign a unique color to each service if not already assigned
-		if _, exists := serviceColorMap[service]; !exists {
-			serviceColorMap[service] = serviceColors[colorIndex]
-			colorIndex = (colorIndex + 1) % len(serviceColors) // Cycle through the colors if necessary
+
+		// Switch color if the service name changes
+		if service != previousService {
+			currentColorIndex = (currentColorIndex + 1) % len(alternateColors)
+			previousService = service
 		}
 
-		// Get the color for this service
-		color := serviceColorMap[service]
+		// Apply the current color
+		color := alternateColors[currentColorIndex]
 		coloredStyle := pterm.NewStyle(color)
 
 		// Color the entire row (Service, Resource, Short Names, Verb)
@@ -447,9 +436,9 @@ func renderTable(data [][]string) {
 		verbs := splitIntoLinesWithComma(row[3], verbColumnWidth)
 		for i, line := range verbs {
 			if i == 0 {
-				table = append(table, []string{serviceColored, resourceColored, shortNamesColored, coloredStyle.Sprint(line)})
+				table = append(table, []string{serviceColored, coloredStyle.Sprint(line), resourceColored, shortNamesColored})
 			} else {
-				table = append(table, []string{"", "", "", coloredStyle.Sprint(line)})
+				table = append(table, []string{"", coloredStyle.Sprint(line), "", ""})
 			}
 		}
 	}
