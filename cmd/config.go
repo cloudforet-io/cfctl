@@ -3,7 +3,6 @@
 package cmd
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -48,13 +47,7 @@ var configInitCmd = &cobra.Command{
 		var envName string
 		if localEnv != "" {
 			envName = fmt.Sprintf("%s-user", localEnv)
-			if urlStr == "" {
-				urlStr = "http://localhost:8080"
-			}
 		} else {
-			if !strings.HasPrefix(urlStr, "http://") && !strings.HasPrefix(urlStr, "https://") {
-				urlStr = "https://" + urlStr
-			}
 			parsedEnvName, err := parseEnvNameFromURL(urlStr)
 			if err != nil {
 				pterm.Error.WithShowLineNumber(false).Println("Invalid URL format:", err)
@@ -91,16 +84,11 @@ var configInitCmd = &cobra.Command{
 		viper.SetConfigFile(configPath)
 		_ = viper.ReadInConfig()
 
-		// Add or update the environment entry in config.yaml
-		if !viper.IsSet(fmt.Sprintf("environments.%s", envName)) {
-			viper.Set(fmt.Sprintf("environments.%s.url", envName), urlStr)
-		}
-
 		var baseURL string
 		if strings.HasPrefix(envName, "dev") {
-			baseURL = "grpc+ssl://identity.api.dev.spaceone.dev:443/v1"
+			baseURL = "grpc+ssl://identity.api.dev.spaceone.dev:443"
 		} else if strings.HasPrefix(envName, "stg") {
-			baseURL = "grpc+ssl://identity.api.stg.spaceone.dev:443/v1"
+			baseURL = "grpc+ssl://identity.api.stg.spaceone.dev:443"
 		}
 
 		if baseURL != "" {
@@ -363,47 +351,6 @@ func getCurrentEnvironment() string {
 }
 
 func updateGlobalConfig() {
-	envDir := filepath.Join(getConfigDir(), "environments")
-	entries, err := os.ReadDir(envDir)
-	if err != nil {
-		log.Fatalf("Unable to list environments: %v", err)
-	}
-
-	configPath := filepath.Join(getConfigDir(), "config")
-
-	// Read existing config file content to avoid overwriting
-	var content string
-	if _, err := os.Stat(configPath); err == nil {
-		data, err := os.ReadFile(configPath)
-		if err != nil {
-			log.Fatalf("Failed to read config file: %v", err)
-		}
-		content = string(data)
-	}
-
-	// Open the config file for writing
-	file, err := os.OpenFile(configPath, os.O_WRONLY|os.O_CREATE, 0600)
-	if err != nil {
-		log.Fatalf("Failed to open config file: %v", err)
-	}
-	defer file.Close()
-
-	writer := bufio.NewWriter(file)
-	defer writer.Flush()
-
-	// Add each environment without duplicates
-	for _, entry := range entries {
-		if !entry.IsDir() && filepath.Ext(entry.Name()) == ".yaml" {
-			name := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-			envEntry := fmt.Sprintf("[%s]\ncfctl config environments -s %s\n\n", name, name)
-			if !strings.Contains(content, fmt.Sprintf("[%s]", name)) {
-				_, err := writer.WriteString(envEntry)
-				if err != nil {
-					log.Fatalf("Failed to write to config file: %v", err)
-				}
-			}
-		}
-	}
 	pterm.Success.WithShowLineNumber(false).Printfln("Global config updated with existing environments. (default: %s/config.yaml)", getConfigDir())
 }
 
@@ -420,7 +367,7 @@ func parseEnvNameFromURL(urlStr string) (string, error) {
 		re := regexp.MustCompile(`^(.*?)\.spaceone`)
 		matches := re.FindStringSubmatch(hostname)
 		if len(matches) == 2 {
-			return fmt.Sprintf("prd-%s-user", matches[1]), nil
+			return fmt.Sprintf("prd-%s", matches[1]), nil
 		}
 	}
 
@@ -429,7 +376,7 @@ func parseEnvNameFromURL(urlStr string) (string, error) {
 		re := regexp.MustCompile(`(.*)\.console\.dev\.spaceone\.dev`)
 		matches := re.FindStringSubmatch(hostname)
 		if len(matches) == 2 {
-			return fmt.Sprintf("dev-%s-user", matches[1]), nil
+			return fmt.Sprintf("dev-%s", matches[1]), nil
 		}
 		pterm.Error.WithShowLineNumber(false).Println("Invalid URL format for dev environment. Expected format: '<prefix>.console.dev.spaceone.dev'")
 		return "", fmt.Errorf("invalid dev URL format")
@@ -440,7 +387,7 @@ func parseEnvNameFromURL(urlStr string) (string, error) {
 		re := regexp.MustCompile(`(.*)\.console\.stg\.spaceone\.dev`)
 		matches := re.FindStringSubmatch(hostname)
 		if len(matches) == 2 {
-			return fmt.Sprintf("stg-%s-user", matches[1]), nil
+			return fmt.Sprintf("stg-%s", matches[1]), nil
 		}
 		pterm.Error.WithShowLineNumber(false).Println("Invalid URL format for stg environment. Expected format: '<prefix>.console.stg.spaceone.dev'")
 		return "", fmt.Errorf("invalid stg URL format")
