@@ -6,6 +6,7 @@ package cmd
 import (
 	"os"
 
+	"github.com/cloudforet-io/cfctl/cmd/available"
 	"github.com/cloudforet-io/cfctl/cmd/other"
 
 	"github.com/spf13/cobra"
@@ -36,12 +37,18 @@ func Execute() {
 }
 
 func init() {
+	AvailableCommands := &cobra.Group{
+		ID:    "available",
+		Title: "Available Commands:",
+	}
+	rootCmd.AddGroup(AvailableCommands)
+	rootCmd.AddCommand(available.IdentityCmd)
+
 	OtherCommands := &cobra.Group{
 		ID:    "other",
 		Title: "Other Commands:",
 	}
 	rootCmd.AddGroup(OtherCommands)
-
 	rootCmd.AddCommand(other.AiCmd)
 	rootCmd.AddCommand(other.ApiResourcesCmd)
 	rootCmd.AddCommand(other.ConfigCmd)
@@ -49,7 +56,7 @@ func init() {
 	rootCmd.AddCommand(other.LoginCmd)
 
 	for _, cmd := range rootCmd.Commands() {
-		if cmd.Name() != "help" && cmd.Name() != "completion" {
+		if cmd.Name() != "help" && cmd.Name() != "completion" && cmd.GroupID == "" {
 			cmd.GroupID = "other"
 		}
 	}
