@@ -1,6 +1,6 @@
 // config.go
 
-package cmd
+package other
 
 import (
 	"encoding/json"
@@ -26,8 +26,8 @@ var availableServices = []string{
 	"cost_analysis", "board", "file_manager", "dashboard",
 }
 
-// configCmd represents the config command
-var configCmd = &cobra.Command{
+// ConfigCmd represents the config command
+var ConfigCmd = &cobra.Command{
 	Use:   "config",
 	Short: "Manage cfctl configuration files",
 	Long: `Manage configuration files for cfctl. You can initialize,
@@ -476,12 +476,12 @@ func parseEnvNameFromURL(urlStr string) (string, error) {
 }
 
 func init() {
-	// Adding subcommands to configCmd
-	configCmd.AddCommand(configInitCmd)
-	configCmd.AddCommand(envCmd)
-	configCmd.AddCommand(showCmd)
-	configCmd.AddCommand(configEndpointCmd)
-	configCmd.AddCommand(syncCmd)
+	// Adding subcommands to ConfigCmd
+	ConfigCmd.AddCommand(configInitCmd)
+	ConfigCmd.AddCommand(envCmd)
+	ConfigCmd.AddCommand(showCmd)
+	ConfigCmd.AddCommand(configEndpointCmd)
+	ConfigCmd.AddCommand(syncCmd)
 
 	// Defining flags for configInitCmd
 	configInitCmd.Flags().StringP("environment", "e", "", "Override environment name")

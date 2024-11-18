@@ -1,4 +1,4 @@
-package cmd
+package other
 
 import (
 	"bufio"
@@ -22,8 +22,8 @@ var (
 	resourceDir = filepath.Join(os.Getenv("HOME"), ".cfctl", "training_data")
 )
 
-// aiCmd represents the ai command
-var aiCmd = &cobra.Command{
+// AiCmd represents the ai command
+var AiCmd = &cobra.Command{
 	Use:   "ai",
 	Short: "Run AI-powered tasks",
 	Long: `Run various AI-powered tasks, including general text processing or natural language
@@ -266,12 +266,12 @@ func queryAIWithContext(query, contextData string) (string, error) {
 }
 
 func init() {
-	aiCmd.Flags().String("input", "", "Input text for the AI to process")
-	aiCmd.Flags().BoolP("natural", "n", false, "Enable natural language mode for the AI")
+	AiCmd.Flags().String("input", "", "Input text for the AI to process")
+	AiCmd.Flags().BoolP("natural", "n", false, "Enable natural language mode for the AI")
 	aiChatCmd.Flags().StringP("query", "q", "", "Query text for the AI to process")
 	aiChatCmd.MarkFlagRequired("query")
 
-	// Add config command as a subcommand to aiCmd
-	aiCmd.AddCommand(aiConfigCmd)
-	aiCmd.AddCommand(aiChatCmd)
+	// Add config command as a subcommand to AiCmd
+	AiCmd.AddCommand(aiConfigCmd)
+	AiCmd.AddCommand(aiChatCmd)
 }

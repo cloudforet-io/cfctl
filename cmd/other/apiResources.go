@@ -1,6 +1,6 @@
 // apiResources.go
 
-package cmd
+package other
 
 import (
 	"context"
@@ -32,7 +32,7 @@ import (
 
 var endpoints string
 
-var apiResourcesCmd = &cobra.Command{
+var ApiResourcesCmd = &cobra.Command{
 	Use:   "api-resources",
 	Short: "Displays supported API resources",
 	Run: func(cmd *cobra.Command, args []string) {
@@ -471,5 +471,5 @@ func splitIntoLinesWithComma(text string, maxWidth int) []string {
 }
 
 func init() {
-	apiResourcesCmd.Flags().StringVarP(&endpoints, "service", "s", "", "Specify the services to connect to, separated by commas (e.g., 'identity', 'identity,inventory')")
+	ApiResourcesCmd.Flags().StringVarP(&endpoints, "service", "s", "", "Specify the services to connect to, separated by commas (e.g., 'identity', 'identity,inventory')")
 }
