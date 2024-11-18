@@ -20,6 +20,12 @@ import (
 
 var envFile string
 
+var availableServices = []string{
+	"identity", "inventory", "plugin", "repository", "secret",
+	"monitoring", "config", "statistics", "notification",
+	"cost_analysis", "board", "file_manager", "dashboard",
+}
+
 // configCmd represents the config command
 var configCmd = &cobra.Command{
 	Use:   "config",
@@ -91,11 +97,12 @@ var configInitCmd = &cobra.Command{
 			baseURL = "grpc+ssl://identity.api.stg.spaceone.dev:443"
 		}
 
-		// Set endpoint and token fields for the environment
+		// Set endpoint, token, and proxy fields for the environment
 		if baseURL != "" {
 			viper.Set(fmt.Sprintf("environments.%s.endpoint", envName), baseURL)
 		}
-		viper.Set(fmt.Sprintf("environments.%s.token", envName), "") // Add token as an empty value
+		viper.Set(fmt.Sprintf("environments.%s.token", envName), "")   // Add token as an empty value
+		viper.Set(fmt.Sprintf("environments.%s.proxy", envName), true) // Set proxy to true
 
 		// Set the current environment
 		viper.Set("environment", envName)
@@ -285,6 +292,93 @@ var showCmd = &cobra.Command{
 	},
 }
 
+// configEndpointCmd updates the endpoint for the current environment
+var configEndpointCmd = &cobra.Command{
+	Use:   "endpoint",
+	Short: "Set the endpoint for the current environment",
+	Long: `Update the endpoint for the current environment based on the specified service.
+If the service is not 'identity', the proxy setting will be updated to false.
+
+Available Services:
+  identity, inventory, plugin, repository, secret, monitoring, config, statistics,
+  notification, cost_analysis, board, file_manager, dashboard`,
+	Run: func(cmd *cobra.Command, args []string) {
+		service, _ := cmd.Flags().GetString("service")
+		if service == "" {
+			pterm.Error.Println("Please specify a service using -s or --service.")
+			pterm.Println()
+			pterm.DefaultBox.WithTitle("Available Services").
+				WithRightPadding(1).WithLeftPadding(1).WithTopPadding(0).WithBottomPadding(0).
+				Println(strings.Join(availableServices, "\n"))
+			return
+		}
+
+		// Validate the service name
+		isValidService := false
+		for _, validService := range availableServices {
+			if service == validService {
+				isValidService = true
+				break
+			}
+		}
+
+		if !isValidService {
+			pterm.Error.Printf("Invalid service '%s'.\n", service)
+			pterm.Println()
+			pterm.DefaultBox.WithTitle("Available Services").
+				WithRightPadding(1).WithLeftPadding(1).WithTopPadding(0).WithBottomPadding(0).
+				Println(strings.Join(availableServices, "\n"))
+			return
+		}
+
+		currentEnv := getCurrentEnvironment()
+		if currentEnv == "" {
+			pterm.Error.Println("No environment is set. Please initialize or switch to an environment.")
+			return
+		}
+
+		// Determine prefix from the current environment
+		var prefix string
+		if strings.HasPrefix(currentEnv, "dev-") {
+			prefix = "dev"
+		} else if strings.HasPrefix(currentEnv, "stg-") {
+			prefix = "stg"
+		} else {
+			pterm.Error.Printf("Unsupported environment prefix for '%s'.\n", currentEnv)
+			return
+		}
+
+		// Construct new endpoint
+		newEndpoint := fmt.Sprintf("grpc+ssl://%s.api.%s.spaceone.dev:443", service, prefix)
+
+		// Load config
+		configPath := filepath.Join(getConfigDir(), "config.yaml")
+		viper.SetConfigFile(configPath)
+		if err := viper.ReadInConfig(); err != nil {
+			pterm.Error.Printf("Failed to read config.yaml: %v\n", err)
+			return
+		}
+
+		// Update endpoint
+		viper.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), newEndpoint)
+
+		// Update proxy based on service
+		if service != "identity" {
+			viper.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
+		} else {
+			viper.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
+		}
+
+		// Save updated config
+		if err := viper.WriteConfig(); err != nil {
+			pterm.Error.Printf("Failed to update config.yaml: %v\n", err)
+			return
+		}
+
+		pterm.Success.Printf("Updated endpoint for '%s' to '%s'.\n", currentEnv, newEndpoint)
+	},
+}
+
 // syncCmd syncs the environments in ~/.spaceone/environments with ~/.spaceone/config.yaml
 var syncCmd = &cobra.Command{
 	Use:   "sync",
@@ -400,6 +494,7 @@ func init() {
 	configCmd.AddCommand(configInitCmd)
 	configCmd.AddCommand(envCmd)
 	configCmd.AddCommand(showCmd)
+	configCmd.AddCommand(configEndpointCmd)
 	configCmd.AddCommand(syncCmd)
 
 	// Defining flags for configInitCmd
@@ -414,6 +509,9 @@ func init() {
 
 	// Defining flags for showCmd
 	showCmd.Flags().StringP("output", "o", "yaml", "Output format (yaml/json)")
+
+	// Add flags for configEndpointCmd
+	configEndpointCmd.Flags().StringP("service", "s", "", "Service to set the endpoint for")
 
 	viper.SetConfigType("yaml")
 }
