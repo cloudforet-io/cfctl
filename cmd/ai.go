@@ -19,7 +19,7 @@ import (
 var (
 	apiToken    string
 	configPath  = filepath.Join(os.Getenv("HOME"), ".cfctl", "config")
-	resourceDir = filepath.Join(os.Getenv("HOME"), ".cfctl", "training_data") // 학습 전용 디렉터리 경로
+	resourceDir = filepath.Join(os.Getenv("HOME"), ".cfctl", "training_data")
 )
 
 // aiCmd represents the ai command
@@ -266,7 +266,6 @@ func queryAIWithContext(query, contextData string) (string, error) {
 }
 
 func init() {
-	rootCmd.AddCommand(aiCmd)
 	aiCmd.Flags().String("input", "", "Input text for the AI to process")
 	aiCmd.Flags().BoolP("natural", "n", false, "Enable natural language mode for the AI")
 	aiChatCmd.Flags().StringP("query", "q", "", "Query text for the AI to process")

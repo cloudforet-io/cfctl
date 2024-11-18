@@ -54,16 +54,6 @@ var execCmd = &cobra.Command{
 	Run:  runExecCommand,
 }
 
-func init() {
-	rootCmd.AddCommand(execCmd)
-	execCmd.Flags().StringArrayVarP(&parameters, "parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")
-	execCmd.Flags().StringVarP(&jsonParameter, "json-parameter", "j", "", "JSON type parameter")
-	execCmd.Flags().StringVarP(&fileParameter, "file-parameter", "f", "", "YAML file parameter")
-	execCmd.Flags().StringVarP(&apiVersion, "api-version", "v", "v1", "API Version")
-	execCmd.Flags().StringVarP(&outputFormat, "output", "o", "yaml", "Output format (yaml, json, table, csv)")
-	execCmd.Flags().BoolVarP(&copyToClipboard, "copy", "c", false, "Copy the output to the clipboard (copies any output format)")
-}
-
 func loadConfig() (*Config, error) {
 	configPath := fmt.Sprintf("%s/.cfctl/config.yaml", os.Getenv("HOME"))
 	data, err := os.ReadFile(configPath)
@@ -412,4 +402,13 @@ func printCSV(data map[string]interface{}) string {
 		return output
 	}
 	return ""
+}
+
+func init() {
+	execCmd.Flags().StringArrayVarP(&parameters, "parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")
+	execCmd.Flags().StringVarP(&jsonParameter, "json-parameter", "j", "", "JSON type parameter")
+	execCmd.Flags().StringVarP(&fileParameter, "file-parameter", "f", "", "YAML file parameter")
+	execCmd.Flags().StringVarP(&apiVersion, "api-version", "v", "v1", "API Version")
+	execCmd.Flags().StringVarP(&outputFormat, "output", "o", "yaml", "Output format (yaml, json, table, csv)")
+	execCmd.Flags().BoolVarP(&copyToClipboard, "copy", "c", false, "Copy the output to the clipboard (copies any output format)")
 }
