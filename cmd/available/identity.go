@@ -19,14 +19,13 @@ var IdentityCmd = &cobra.Command{
 }
 
 func init() {
+	IdentityCmd.AddCommand(apiResourcesCmd)
+}
 
-	// Here you will define your flags and configuration settings.
-
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// IdentityCmd.PersistentFlags().String("foo", "", "A help for foo")
-
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	//IdentityCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+var apiResourcesCmd = &cobra.Command{
+	Use:   "api-resources",
+	Short: "Displays supported API resources for the Identity service",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return common.ListAPIResources("identity")
+	},
 }
