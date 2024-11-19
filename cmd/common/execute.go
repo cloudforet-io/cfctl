@@ -49,9 +49,15 @@ func ExecuteCommand(serviceName, verb, resourceName string) error {
 		return fmt.Errorf("failed to load config: %v", err)
 	}
 
-	respMap, err := fetchEndpointsMap(config, serviceName, verb, resourceName)
+	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName)
 	if err != nil {
-		return fmt.Errorf("failed to fetch endpoints map: %v", err)
+		return fmt.Errorf("failed to fetch JSON response: %v", err)
+	}
+
+	// Unmarshal JSON bytes to a map
+	var respMap map[string]interface{}
+	if err := json.Unmarshal(jsonBytes, &respMap); err != nil {
+		return fmt.Errorf("failed to unmarshal JSON: %v", err)
 	}
 
 	printData(respMap, outputFormat)
@@ -82,7 +88,7 @@ func fetchCurrentEnvironment(config *Config) (*Environment, error) {
 	return &currentEnv, nil
 }
 
-func fetchEndpointsMap(config *Config, serviceName, verb, resourceName string) (map[string]interface{}, error) {
+func fetchJSONResponse(config *Config, serviceName, verb, resourceName string) ([]byte, error) {
 	var envPrefix string
 	if strings.HasPrefix(config.Environment, "dev-") {
 		envPrefix = "dev"
@@ -135,12 +141,12 @@ func fetchEndpointsMap(config *Config, serviceName, verb, resourceName string) (
 		return nil, fmt.Errorf("failed to invoke method %s: %v", fullMethod, err)
 	}
 
-	respMap, err := messageToMap(respMsg)
+	jsonBytes, err := respMsg.MarshalJSON()
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert response message to map: %v", err)
+		return nil, fmt.Errorf("failed to marshal response message to JSON: %v", err)
 	}
 
-	return respMap, nil
+	return jsonBytes, nil
 }
 
 func discoverService(refClient *grpcreflect.Client, serviceName, resourceName string) (string, error) {
