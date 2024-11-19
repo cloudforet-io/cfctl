@@ -42,8 +42,8 @@ type Environment struct {
 	Token string `yaml:"token"`
 }
 
-// ExecuteCommand handles the execution of gRPC commands for all services
-func ExecuteCommand(serviceName, verb, resourceName string) error {
+// FetchService handles the execution of gRPC commands for all services
+func FetchService(serviceName string, verb string, resourceName string) error {
 	config, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %v", err)
@@ -80,15 +80,7 @@ func loadConfig() (*Config, error) {
 	return &config, nil
 }
 
-func fetchCurrentEnvironment(config *Config) (*Environment, error) {
-	currentEnv, ok := config.Environments[config.Environment]
-	if !ok {
-		return nil, fmt.Errorf("current environment '%s' not found in config", config.Environment)
-	}
-	return &currentEnv, nil
-}
-
-func fetchJSONResponse(config *Config, serviceName, verb, resourceName string) ([]byte, error) {
+func fetchJSONResponse(config *Config, serviceName string, verb string, resourceName string) ([]byte, error) {
 	var envPrefix string
 	if strings.HasPrefix(config.Environment, "dev-") {
 		envPrefix = "dev"
@@ -149,7 +141,7 @@ func fetchJSONResponse(config *Config, serviceName, verb, resourceName string) (
 	return jsonBytes, nil
 }
 
-func discoverService(refClient *grpcreflect.Client, serviceName, resourceName string) (string, error) {
+func discoverService(refClient *grpcreflect.Client, serviceName string, resourceName string) (string, error) {
 	possibleVersions := []string{"v1", "v2"}
 
 	for _, version := range possibleVersions {
@@ -160,35 +152,6 @@ func discoverService(refClient *grpcreflect.Client, serviceName, resourceName st
 	}
 
 	return "", fmt.Errorf("service not found for %s.%s", serviceName, resourceName)
-}
-
-func messageToMap(msg *dynamic.Message) (map[string]interface{}, error) {
-	result := make(map[string]interface{})
-	fields := msg.GetKnownFields()
-	for _, fd := range fields {
-		val := msg.GetField(fd)
-		switch v := val.(type) {
-		case *dynamic.Message:
-			subMap, err := messageToMap(v)
-			if err != nil {
-				return nil, err
-			}
-			result[fd.GetName()] = subMap
-		case []*dynamic.Message:
-			var subList []map[string]interface{}
-			for _, subMsg := range v {
-				subMap, err := messageToMap(subMsg)
-				if err != nil {
-					return nil, err
-				}
-				subList = append(subList, subMap)
-			}
-			result[fd.GetName()] = subList
-		default:
-			result[fd.GetName()] = v
-		}
-	}
-	return result, nil
 }
 
 func printData(data map[string]interface{}, format string) {
