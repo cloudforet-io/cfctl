@@ -1,32 +1,47 @@
+// identity.go
+
 package available
 
 import (
+	"fmt"
+	"os"
+
 	"github.com/cloudforet-io/cfctl/cmd/common"
 	"github.com/spf13/cobra"
 )
 
 var IdentityCmd = &cobra.Command{
-	Use:     "identity <verb> <resource>",
+	Use:     "identity",
 	Short:   "Interact with the Identity service",
-	Long:    `Use this command to interact with the Identity service. Available verbs: list, get, create, update, delete, ...`,
-	Args:    cobra.ExactArgs(2),
+	Long:    `Use this command to interact with the Identity service.`,
 	GroupID: "available",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		verb := args[0]
-		resource := args[1]
-		return common.ExecuteCommand("identity", verb, resource)
-	},
 }
 
 func init() {
+	IdentityCmd.AddGroup(&cobra.Group{
+		ID:    "available",
+		Title: "Available Commands:",
+	}, &cobra.Group{
+		ID:    "other",
+		Title: "Other Commands:",
+	})
 
-	// Here you will define your flags and configuration settings.
+	// Set custom help function using common.CustomHelpFunc
+	IdentityCmd.SetHelpFunc(common.CustomHelpFunc("identity"))
 
-	// Cobra supports Persistent Flags which will work for this command
-	// and all subcommands, e.g.:
-	// IdentityCmd.PersistentFlags().String("foo", "", "A help for foo")
+	apiResourcesCmd.GroupID = "available"
+	IdentityCmd.AddCommand(apiResourcesCmd)
 
-	// Cobra supports local flags which will only run when this command
-	// is called directly, e.g.:
-	//IdentityCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	err := common.AddVerbCommands(IdentityCmd, "identity", "other")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error adding verb commands: %v\n", err)
+	}
+}
+
+var apiResourcesCmd = &cobra.Command{
+	Use:   "api-resources",
+	Short: "Displays supported API resources for the Identity service",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return common.ListAPIResources("identity")
+	},
 }
