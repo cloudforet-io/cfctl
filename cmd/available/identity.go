@@ -11,13 +11,13 @@ import (
 )
 
 var IdentityCmd = &cobra.Command{
-	Use:   "identity",
-	Short: "Interact with the Identity service",
-	Long:  `Use this command to interact with the Identity service.`,
+	Use:     "identity",
+	Short:   "Interact with the Identity service",
+	Long:    `Use this command to interact with the Identity service.`,
+	GroupID: "available",
 }
 
 func init() {
-	// 1. identity 명령에 그룹 추
 	IdentityCmd.AddGroup(&cobra.Group{
 		ID:    "available",
 		Title: "Available Commands:",
@@ -25,6 +25,9 @@ func init() {
 		ID:    "other",
 		Title: "Other Commands:",
 	})
+
+	// Set custom help function using common.CustomHelpFunc
+	IdentityCmd.SetHelpFunc(common.CustomHelpFunc("identity"))
 
 	apiResourcesCmd.GroupID = "available"
 	IdentityCmd.AddCommand(apiResourcesCmd)
