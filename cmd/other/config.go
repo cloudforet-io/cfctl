@@ -118,18 +118,25 @@ var envCmd = &cobra.Command{
 
 		// Handle environment switching
 		if switchEnv != "" {
-			// Check only for .yaml extensions
-			if _, err := os.Stat(filepath.Join(getConfigDir(), "environments", switchEnv+".yaml")); os.IsNotExist(err) {
-				log.Fatalf("Environment '%s' not found.", switchEnv)
-			}
-
-			// Update the environment in ~/.cfctl/config.yaml
+			// Load config.yaml
 			configFilePath := filepath.Join(getConfigDir(), "config.yaml")
 			viper.SetConfigFile(configFilePath)
 
-			// Read existing config.yaml file to avoid overwriting other fields
+			// Read existing config.yaml file
 			if err := viper.ReadInConfig(); err != nil {
 				log.Fatalf("Failed to read config.yaml: %v", err)
+			}
+
+			// Check if the environment exists in the environments map
+			home, err := os.UserHomeDir()
+			if err != nil {
+				log.Fatalf("Unable to find home directory: %v", err)
+			}
+			envMap := viper.GetStringMap("environments")
+			if _, exists := envMap[switchEnv]; !exists {
+				//log.Fatalf("Environment '%s' not found in config.yaml.", switchEnv)
+				pterm.Error.Printf("Environment '%s' not found in %s/.cfctl/config.yaml\n", switchEnv, home)
+				return
 			}
 
 			// Update only the environment field
@@ -150,9 +157,17 @@ var envCmd = &cobra.Command{
 
 		// Handle environment removal with confirmation
 		if removeEnv != "" {
-			// Check only for .yaml extensions
-			if _, err := os.Stat(filepath.Join(getConfigDir(), "environments", removeEnv+".yaml")); os.IsNotExist(err) {
-				log.Fatalf("Environment '%s' not found.", removeEnv)
+			// Load config.yaml
+			configFilePath := filepath.Join(getConfigDir(), "config.yaml")
+			viper.SetConfigFile(configFilePath)
+			if err := viper.ReadInConfig(); err != nil {
+				log.Fatalf("Failed to read config.yaml: %v", err)
+			}
+
+			// Check if the environment exists in the environments map
+			envMap := viper.GetStringMap("environments")
+			if _, exists := envMap[removeEnv]; !exists {
+				log.Fatalf("Environment '%s' not found in config.yaml.", removeEnv)
 			}
 
 			// Ask for confirmation before deletion
@@ -162,25 +177,14 @@ var envCmd = &cobra.Command{
 			response = strings.ToLower(strings.TrimSpace(response))
 
 			if response == "y" {
-				// Remove the environment file
-				os.Remove(filepath.Join(getConfigDir(), "environments", removeEnv+".yaml"))
+				// Remove the environment from the environments map
+				delete(envMap, removeEnv)
+				viper.Set("environments", envMap)
 
-				// Check if this environment is set in config.yaml and clear it if so
-				configFilePath := filepath.Join(getConfigDir(), "config.yaml")
-				viper.SetConfigFile(configFilePath)
-				_ = viper.ReadInConfig() // Read config.yaml
-
-				// Update environment to "no-env" if the deleted environment was the current one
+				// If the deleted environment was the current one, unset it
 				if viper.GetString("environment") == removeEnv {
-					viper.Set("environment", "no-env")
-					pterm.Info.WithShowLineNumber(false).Printfln("Cleared current environment (default: %s/config.yaml)", getConfigDir())
-				}
-
-				// Remove the environment from the environments map if it exists
-				envMap := viper.GetStringMap("environments")
-				if _, exists := envMap[removeEnv]; exists {
-					delete(envMap, removeEnv)
-					viper.Set("environments", envMap)
+					viper.Set("environment", "")
+					pterm.Info.WithShowLineNumber(false).Printfln("Cleared current environment in config.yaml")
 				}
 
 				// Write the updated configuration back to config.yaml
@@ -190,9 +194,6 @@ var envCmd = &cobra.Command{
 
 				// Display success message
 				pterm.Success.Printf("Removed '%s' environment.\n", removeEnv)
-
-				// Update global config only after successful deletion
-				updateGlobalConfig()
 			} else {
 				pterm.Info.Println("Environment deletion canceled.")
 			}
@@ -205,20 +206,26 @@ var envCmd = &cobra.Command{
 		// List environments if the -l flag is set
 		if listOnly {
 			currentEnv := getCurrentEnvironment()
-			envDir := filepath.Join(getConfigDir(), "environments")
-			entries, err := os.ReadDir(envDir)
-			if err != nil {
-				log.Fatalf("Unable to list environments: %v", err)
+
+			// Load config.yaml
+			configPath := filepath.Join(getConfigDir(), "config.yaml")
+			viper.SetConfigFile(configPath)
+			if err := viper.ReadInConfig(); err != nil {
+				log.Fatalf("Failed to read config.yaml: %v", err)
+			}
+
+			envMap := viper.GetStringMap("environments")
+			if len(envMap) == 0 {
+				pterm.Println("No environments found in config.yaml")
+				return
 			}
 
 			pterm.Println("Available Environments:")
-			for _, entry := range entries {
-				name := entry.Name()
-				name = strings.TrimSuffix(name, ".yaml") // Remove ".yaml" extension
-				if name == currentEnv {
-					pterm.FgGreen.Printf("  > %s (current)\n", name)
+			for envName := range envMap {
+				if envName == currentEnv {
+					pterm.FgGreen.Printf("  %s (current)\n", envName)
 				} else {
-					pterm.Printf("  %s\n", name)
+					pterm.Printf("  %s\n", envName)
 				}
 			}
 			return
@@ -234,42 +241,34 @@ var showCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Display the current cfctl configuration",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Load the current environment from ~/.cfctl/config.yaml
 		currentEnv := getCurrentEnvironment()
 		if currentEnv == "" {
 			log.Fatal("No environment set in ~/.cfctl/config.yaml")
 		}
 
-		// Construct the path to the environment's YAML file
-		envDir := filepath.Join(getConfigDir(), "environments")
-		envFilePath := filepath.Join(envDir, currentEnv+".yaml") // Use .yaml as extension
-
-		// Check if the environment file exists
-		if _, err := os.Stat(envFilePath); os.IsNotExist(err) {
-			log.Fatalf("Environment file '%s.yaml' does not exist in ~/.cfctl/environments", currentEnv)
-		}
-
-		// Load and display the configuration from the environment YAML file
-		viper.SetConfigFile(envFilePath)
+		configPath := filepath.Join(getConfigDir(), "config.yaml")
+		viper.SetConfigFile(configPath)
 		err := viper.ReadInConfig()
 		if err != nil {
-			log.Fatalf("Error reading environment file '%s': %v", envFilePath, err)
+			log.Fatalf("Failed to read config.yaml: %v", err)
 		}
 
-		// Get output format from the flag
-		output, _ := cmd.Flags().GetString("output")
-		configData := viper.AllSettings()
+		envConfig := viper.GetStringMap(fmt.Sprintf("environments.%s", currentEnv))
+		if len(envConfig) == 0 {
+			log.Fatalf("Environment '%s' not found in config.yaml", currentEnv)
+		}
 
-		// Display the configuration in the requested format
+		output, _ := cmd.Flags().GetString("output")
+
 		switch output {
 		case "json":
-			data, err := json.MarshalIndent(configData, "", "  ")
+			data, err := json.MarshalIndent(envConfig, "", "  ")
 			if err != nil {
 				log.Fatalf("Error formatting output as JSON: %v", err)
 			}
 			fmt.Println(string(data))
 		case "yaml":
-			data, err := yaml.Marshal(configData)
+			data, err := yaml.Marshal(envConfig)
 			if err != nil {
 				log.Fatalf("Error formatting output as YAML: %v", err)
 			}
@@ -367,46 +366,6 @@ Available Services:
 	},
 }
 
-// syncCmd syncs the environments in ~/.cfctl/environments with ~/.cfctl/config.yaml
-var syncCmd = &cobra.Command{
-	Use:   "sync",
-	Short: "Sync environments from the environments directory to config.yaml",
-	Long:  "Sync all environment files from the ~/.cfctl/environments directory to ~/.cfctl/config.yaml",
-	Run: func(cmd *cobra.Command, args []string) {
-		// Define paths
-		envDir := filepath.Join(getConfigDir(), "environments")
-		configPath := filepath.Join(getConfigDir(), "config.yaml")
-
-		// Ensure the config file is loaded
-		viper.SetConfigFile(configPath)
-		_ = viper.ReadInConfig()
-
-		// Iterate over each .yaml file in the environments directory
-		entries, err := os.ReadDir(envDir)
-		if err != nil {
-			log.Fatalf("Unable to read environments directory: %v", err)
-		}
-
-		for _, entry := range entries {
-			if !entry.IsDir() && (filepath.Ext(entry.Name()) == ".yaml") {
-				envName := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-
-				// Check if the environment already has a URL; if not, set it to an empty string
-				if viper.GetString(fmt.Sprintf("environments.%s.url", envName)) == "" {
-					viper.Set(fmt.Sprintf("environments.%s.url", envName), "")
-				}
-			}
-		}
-
-		// Save updated config to config.yaml
-		if err := viper.WriteConfig(); err != nil {
-			log.Fatalf("Failed to write updated config.yaml: %v", err)
-		}
-
-		pterm.Success.Println("Successfully synced environments from environments directory to config.yaml.")
-	},
-}
-
 // getConfigDir returns the directory where config files are stored
 func getConfigDir() string {
 	home, err := os.UserHomeDir()
@@ -435,6 +394,9 @@ func updateGlobalConfig() {
 
 // parseEnvNameFromURL parses environment name from the given URL and validates based on URL structure
 func parseEnvNameFromURL(urlStr string) (string, error) {
+	if !strings.Contains(urlStr, "://") {
+		urlStr = "https://" + urlStr
+	}
 	parsedURL, err := url.Parse(urlStr)
 	if err != nil {
 		return "", err
@@ -481,7 +443,6 @@ func init() {
 	ConfigCmd.AddCommand(envCmd)
 	ConfigCmd.AddCommand(showCmd)
 	ConfigCmd.AddCommand(configEndpointCmd)
-	ConfigCmd.AddCommand(syncCmd)
 
 	// Defining flags for configInitCmd
 	configInitCmd.Flags().StringP("environment", "e", "", "Override environment name")
