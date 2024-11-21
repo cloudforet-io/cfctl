@@ -11,7 +11,7 @@ import (
 )
 
 var IdentityCmd = &cobra.Command{
-	Use:     "identity <verb> <resource> [flags]",
+	Use:     "identity",
 	Short:   "Interact with the Identity service",
 	Long:    `Use this command to interact with the Identity service.`,
 	GroupID: "available",
