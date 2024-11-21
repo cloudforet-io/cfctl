@@ -40,7 +40,11 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
 				resource := args[0]
-				return ExecuteCommand(serviceName, currentVerb, resource)
+				err := FetchService(serviceName, currentVerb, resource)
+				if err != nil {
+					return fmt.Errorf("failed to call grpc: %v", err)
+				}
+				return nil
 			},
 			GroupID: groupID,
 			Annotations: map[string]string{
@@ -49,17 +53,6 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 		}
 		parentCmd.AddCommand(verbCmd)
 	}
-
-	return nil
-}
-
-func ExecuteCommand(serviceName, verb, resource string) error {
-	// Implement the logic to execute the command
-	// For example, make a gRPC call to the service with the specified verb and resource
-
-	fmt.Printf("Executing %s %s %s\n", serviceName, verb, resource)
-
-	// TODO: Add the actual execution logic here
 
 	return nil
 }
