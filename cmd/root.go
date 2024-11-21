@@ -20,6 +20,7 @@ var rootCmd = &cobra.Command{
 	Short: "cfctl controls the SpaceONE services.",
 	Long: `cfctl controls the SpaceONE services.
   Find more information at: 
+    - https://github.com/cloudforet-io/cfctl
     - https://docs.spaceone.megazone.io/developers/setup/cfctl (English)
     - https://docs.spaceone.megazone.io/ko/developers/setup/cfctl (Korean)`,
 	// Uncomment the following line if your bare application
@@ -50,10 +51,8 @@ func init() {
 		Title: "Other Commands:",
 	}
 	rootCmd.AddGroup(OtherCommands)
-	rootCmd.AddCommand(other.AiCmd)
 	rootCmd.AddCommand(other.ApiResourcesCmd)
 	rootCmd.AddCommand(other.ConfigCmd)
-	rootCmd.AddCommand(other.ExecCmd)
 	rootCmd.AddCommand(other.LoginCmd)
 
 	for _, cmd := range rootCmd.Commands() {
