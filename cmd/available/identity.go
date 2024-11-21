@@ -27,7 +27,7 @@ func init() {
 	})
 
 	// Set custom help function using common.CustomHelpFunc
-	IdentityCmd.SetHelpFunc(common.CustomHelpFunc("identity"))
+	IdentityCmd.SetHelpFunc(common.CustomVerbHelpFunc)
 
 	apiResourcesCmd.GroupID = "available"
 	IdentityCmd.AddCommand(apiResourcesCmd)

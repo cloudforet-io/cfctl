@@ -108,56 +108,37 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 	return result, nil
 }
 
-func CustomHelpFunc(serviceName string) func(cmd *cobra.Command, args []string) {
-	return func(cmd *cobra.Command, args []string) {
-		// Print usage
-		cmd.Println(cmd.Long)
-		cmd.Println()
-		cmd.Printf("Usage:\n  %s [command] [flags]\n  %s [verb] [resource] [flags]\n\n", cmd.CommandPath(), cmd.CommandPath())
+// CustomVerbHelpFunc customizes the help output for verb commands
+func CustomVerbHelpFunc(cmd *cobra.Command, args []string) {
+	// Print usage at the top
+	cmd.Printf("Usage:\n  %s\n\n", cmd.UseLine())
 
-		// Print available commands
-		if len(cmd.Commands()) > 0 {
-			groups := cmd.Groups()
+	// Print short description if available
+	if cmd.Short != "" {
+		cmd.Println(cmd.Short)
+	}
 
-			for _, group := range groups {
-				cmd.Println(group.Title)
-				if group.ID == "available" {
-					for _, c := range cmd.Commands() {
-						if c.GroupID == group.ID && !c.Hidden {
-							cmd.Printf("  %s\t%s\n", c.Name(), c.Short)
-						}
-					}
-					cmd.Println()
-				} else if group.ID == "other" {
-					headers := []string{"Verb", "Resources"}
-					data := [][]string{}
-
-					for _, c := range cmd.Commands() {
-						if c.GroupID == group.ID && !c.Hidden {
-							verb := c.Name()
-							resources := c.Annotations["resources"]
-							resources = strings.TrimSpace(resources)
-							data = append(data, []string{verb, resources})
-						}
-					}
-
-					// Sort data by Verb
-					sort.Slice(data, func(i, j int) bool {
-						return data[i][0] < data[j][0]
-					})
-
-					// Render the table
-					RenderTable(headers, data)
-					cmd.Println()
-				}
-			}
+	// Print resources using pterm
+	if resourcesStr, ok := cmd.Annotations["resources"]; ok && resourcesStr != "" {
+		resources := strings.Split(resourcesStr, ", ")
+		sort.Strings(resources)
+		pterm.DefaultSection.Print("Resources")
+		// Use pterm to format the resources list
+		listItems := []pterm.BulletListItem{}
+		for _, resource := range resources {
+			listItems = append(listItems, pterm.BulletListItem{Level: 2, Text: resource})
 		}
-
-		// Print flags
-		cmd.Println("Flags:")
-		cmd.Print(cmd.Flags().FlagUsages())
+		pterm.DefaultBulletList.WithItems(listItems).Render()
 		cmd.Println()
+	}
 
+	// Print flags
+	cmd.Println("Flags:")
+	cmd.Print(cmd.Flags().FlagUsages())
+	cmd.Println()
+
+	// Suggest help for subcommands (if any)
+	if len(cmd.Commands()) > 0 {
 		cmd.Printf("Use \"%s [command] --help\" for more information about a command.\n", cmd.CommandPath())
 	}
 }
