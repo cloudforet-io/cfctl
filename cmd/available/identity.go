@@ -39,6 +39,7 @@ func init() {
 	// Set custom help function using common.CustomHelpFunc
 	IdentityCmd.SetHelpFunc(common.CustomParentHelpFunc)
 
+	apiResourcesCmd := common.FetchApiResourcesCmd("identity")
 	apiResourcesCmd.GroupID = "available"
 	IdentityCmd.AddCommand(apiResourcesCmd)
 
@@ -47,11 +48,3 @@ func init() {
 		fmt.Fprintf(os.Stderr, "Error adding verb commands: %v\n", err)
 	}
 }
-
-//var apiResourcesCmd = &cobra.Command{
-//	Use:   "api-resources",
-//	Short: "Displays supported API resources for the Identity service",
-//	RunE: func(cmd *cobra.Command, args []string) error {
-//		return common.ListAPIResources("identity")
-//	},
-//}

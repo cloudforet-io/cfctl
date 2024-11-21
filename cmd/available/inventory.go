@@ -39,6 +39,7 @@ func init() {
 	// Set custom help function using common.CustomParentHelpFunc
 	InventoryCmd.SetHelpFunc(common.CustomParentHelpFunc)
 
+	apiResourcesCmd := common.FetchApiResourcesCmd("inventory")
 	apiResourcesCmd.GroupID = "available"
 	InventoryCmd.AddCommand(apiResourcesCmd)
 
@@ -46,12 +47,4 @@ func init() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error adding verb commands: %v\n", err)
 	}
-}
-
-var apiResourcesCmd = &cobra.Command{
-	Use:   "api-resources",
-	Short: "Displays supported API resources for the Inventory service",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return common.ListAPIResources("inventory")
-	},
 }
