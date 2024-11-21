@@ -11,10 +11,20 @@ import (
 )
 
 var IdentityCmd = &cobra.Command{
-	Use:     "identity",
+	Use:     "identity <verb> <resource> [flags]",
 	Short:   "Interact with the Identity service",
 	Long:    `Use this command to interact with the Identity service.`,
 	GroupID: "available",
+	Run: func(cmd *cobra.Command, args []string) {
+		// If no arguments are provided, display the available verbs
+		if len(args) == 0 {
+			common.PrintAvailableVerbs(cmd)
+			return
+		}
+
+		// If arguments are provided, proceed normally
+		cmd.Help()
+	},
 }
 
 func init() {

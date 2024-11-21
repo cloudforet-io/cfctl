@@ -108,6 +108,44 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 	return result, nil
 }
 
+// CustomParentHelpFunc customizes the help output for the parent command
+func CustomParentHelpFunc(cmd *cobra.Command, args []string) {
+	// Print usage at the top
+	cmd.Printf("Usage:\n  %s\n\n", cmd.UseLine())
+
+	// Print short description if available
+	if cmd.Short != "" {
+		cmd.Println(cmd.Short)
+		cmd.Println()
+	}
+
+	// List available verbs
+	if len(cmd.Commands()) > 0 {
+		pterm.DefaultSection.Println("Available Verbs")
+		verbs := []string{}
+		for _, verbCmd := range cmd.Commands() {
+			if !verbCmd.Hidden {
+				verbs = append(verbs, verbCmd.Name())
+			}
+		}
+		sort.Strings(verbs)
+		for _, verb := range verbs {
+			pterm.Println(fmt.Sprintf("  • %s", verb))
+		}
+		cmd.Println()
+	}
+
+	// Print flags
+	cmd.Println("Flags:")
+	cmd.Print(cmd.Flags().FlagUsages())
+	cmd.Println()
+
+	// Suggest help for subcommands (verbs)
+	if len(cmd.Commands()) > 0 {
+		cmd.Printf("Use \"%s [verb] --help\" for more information about a verb.\n", cmd.CommandPath())
+	}
+}
+
 // CustomVerbHelpFunc customizes the help output for verb commands
 func CustomVerbHelpFunc(cmd *cobra.Command, args []string) {
 	// Print usage at the top
@@ -141,6 +179,44 @@ func CustomVerbHelpFunc(cmd *cobra.Command, args []string) {
 	if len(cmd.Commands()) > 0 {
 		cmd.Printf("Use \"%s [command] --help\" for more information about a command.\n", cmd.CommandPath())
 	}
+}
+
+// PrintAvailableVerbs prints the available verbs in a structured format
+func PrintAvailableVerbs(cmd *cobra.Command) {
+	// Print usage
+	cmd.Printf("Usage:\n  %s\n\n", cmd.UseLine())
+
+	// Print short description
+	if cmd.Short != "" {
+		cmd.Println(cmd.Short)
+		cmd.Println()
+	}
+
+	// Get and sort verbs
+	verbs := []string{}
+	for _, verbCmd := range cmd.Commands() {
+		if !verbCmd.Hidden {
+			verbs = append(verbs, verbCmd.Name())
+		}
+	}
+	sort.Strings(verbs)
+
+	// Print number of verbs
+	pterm.Printf("Supports %d verbs\n\n", len(verbs))
+
+	// Print # Verbs section
+	pterm.DefaultSection.Println("Verbs")
+	listItems := []pterm.BulletListItem{}
+	for _, verb := range verbs {
+		listItems = append(listItems, pterm.BulletListItem{Level: 2, Text: verb})
+	}
+	pterm.DefaultBulletList.WithItems(listItems).Render()
+	cmd.Println()
+
+	// Print flags
+	cmd.Println("Flags:")
+	cmd.Print(cmd.Flags().FlagUsages())
+	cmd.Println()
 }
 
 // RenderTable renders a table with given headers and data.
