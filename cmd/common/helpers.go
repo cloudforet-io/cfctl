@@ -124,7 +124,7 @@ func CustomParentHelpFunc(cmd *cobra.Command, args []string) {
 	cmd.Println()
 
 	if len(cmd.Commands()) > 0 {
-		cmd.Printf("Use \"%s [verb] --help\" for more information about a verb.\n", cmd.CommandPath())
+		cmd.Printf("Use \"%s <verb> --help\" for more information about a verb.\n", cmd.CommandPath())
 	}
 }
 
@@ -155,7 +155,7 @@ func PrintAvailableVerbs(cmd *cobra.Command) {
 	cmd.Println()
 
 	if len(cmd.Commands()) > 0 {
-		cmd.Printf("Use \"%s [verb] --help\" for more information about a verb.\n", cmd.CommandPath())
+		cmd.Printf("Use \"%s <verb> --help\" for more information about a verb.\n", cmd.CommandPath())
 	}
 }
 
@@ -186,7 +186,7 @@ func CustomVerbHelpFunc(cmd *cobra.Command, args []string) {
 	cmd.Println()
 
 	if len(cmd.Commands()) > 0 {
-		cmd.Printf("Use \"%s [resource] --help\" for more information about a resource.\n", cmd.CommandPath())
+		cmd.Printf("Use \"%s <resource> --help\" for more information about a resource.\n", cmd.CommandPath())
 	}
 }
 
@@ -194,7 +194,7 @@ func CustomVerbHelpFunc(cmd *cobra.Command, args []string) {
 func getAlternativeUsage(cmd *cobra.Command) string {
 	// Extract the base command without flags
 	baseCommand := cmd.CommandPath()
-	return fmt.Sprintf("%s [verb] <resource> [flags]", baseCommand)
+	return fmt.Sprintf("%s <verb> <resource> [flags]", baseCommand)
 }
 
 // printSortedBulletList prints a sorted bullet list under a given section title.
