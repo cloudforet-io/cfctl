@@ -5,7 +5,6 @@ go 1.23.1
 require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/jhump/protoreflect v1.17.0
-	github.com/mattn/go-runewidth v0.0.15
 	github.com/pterm/pterm v0.12.79
 	github.com/sashabaranov/go-openai v1.35.6
 	github.com/spf13/cobra v1.8.1
@@ -29,6 +28,7 @@ require (
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
 	github.com/lithammer/fuzzysearch v1.1.8 // indirect
 	github.com/magiconair/properties v1.8.7 // indirect
+	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
 	github.com/pelletier/go-toml/v2 v2.2.2 // indirect
 	github.com/rivo/uniseg v0.4.4 // indirect

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/atotto/clipboard"
@@ -36,26 +37,29 @@ type Environment struct {
 }
 
 // FetchService handles the execution of gRPC commands for all services
-func FetchService(serviceName string, verb string, resourceName string, options *FetchOptions) error {
+func FetchService(serviceName string, verb string, resourceName string, options *FetchOptions) (map[string]interface{}, error) {
 	config, err := loadConfig()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %v", err)
+		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
 
 	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// Unmarshal JSON bytes to a map
 	var respMap map[string]interface{}
 	if err := json.Unmarshal(jsonBytes, &respMap); err != nil {
-		return fmt.Errorf("failed to unmarshal JSON: %v", err)
+		return nil, fmt.Errorf("failed to unmarshal JSON: %v", err)
 	}
 
-	printData(respMap, options)
+	// Print the data if not in watch mode
+	if options.OutputFormat != "" {
+		printData(respMap, options)
+	}
 
-	return nil
+	return respMap, nil
 }
 
 func loadConfig() (*Config, error) {
@@ -262,9 +266,11 @@ func printData(data map[string]interface{}, options *FetchOptions) {
 }
 
 func printTable(data map[string]interface{}) string {
-	var output string
 	if results, ok := data["results"].([]interface{}); ok {
-		tableData := pterm.TableData{}
+		pageSize := 5
+		currentPage := 0
+		totalItems := len(results)
+		totalPages := (totalItems + pageSize - 1) / pageSize
 
 		// Extract headers
 		headers := []string{}
@@ -273,34 +279,60 @@ func printTable(data map[string]interface{}) string {
 				for key := range row {
 					headers = append(headers, key)
 				}
+				sort.Strings(headers)
 			}
 		}
 
-		// Append headers to table data
-		tableData = append(tableData, headers)
+		for {
+			tableData := pterm.TableData{headers}
 
-		// Extract rows
-		for _, result := range results {
-			if row, ok := result.(map[string]interface{}); ok {
-				rowData := []string{}
-				for _, key := range headers {
-					rowData = append(rowData, formatTableValue(row[key]))
+			// Calculate current page items
+			startIdx := currentPage * pageSize
+			endIdx := startIdx + pageSize
+			if endIdx > totalItems {
+				endIdx = totalItems
+			}
+
+			// Add rows for current page
+			for _, result := range results[startIdx:endIdx] {
+				if row, ok := result.(map[string]interface{}); ok {
+					rowData := make([]string, len(headers))
+					for i, key := range headers {
+						rowData[i] = formatTableValue(row[key])
+					}
+					tableData = append(tableData, rowData)
 				}
-				tableData = append(tableData, rowData)
+			}
+
+			// Clear screen
+			fmt.Print("\033[H\033[2J")
+
+			// Print table
+			pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
+
+			// Print pagination info and controls
+			fmt.Printf("\nPage %d of %d (Total items: %d)\n", currentPage+1, totalPages, totalItems)
+			fmt.Println("Navigation: [p]revious page, [n]ext page, [q]uit")
+
+			// Get user input
+			var input string
+			fmt.Scanln(&input)
+
+			switch strings.ToLower(input) {
+			case "n":
+				if currentPage < totalPages-1 {
+					currentPage++
+				}
+			case "p":
+				if currentPage > 0 {
+					currentPage--
+				}
+			case "q":
+				return ""
 			}
 		}
-
-		// Disable styling only for the table output
-		pterm.DisableStyling()
-		renderedOutput, err := pterm.DefaultTable.WithHasHeader(true).WithData(tableData).Srender()
-		pterm.EnableStyling() // Re-enable styling for other outputs
-		if err != nil {
-			log.Fatalf("Failed to render table: %v", err)
-		}
-		output = renderedOutput
-		fmt.Println(output) // Print to console
 	}
-	return output
+	return ""
 }
 
 func formatTableValue(val interface{}) string {
@@ -308,7 +340,19 @@ func formatTableValue(val interface{}) string {
 	case nil:
 		return ""
 	case string:
-		return v
+		// Add colors for status values
+		switch strings.ToUpper(v) {
+		case "SUCCESS":
+			return pterm.FgGreen.Sprint(v)
+		case "FAILURE":
+			return pterm.FgRed.Sprint(v)
+		case "PENDING":
+			return pterm.FgYellow.Sprint(v)
+		case "RUNNING":
+			return pterm.FgBlue.Sprint(v)
+		default:
+			return v
+		}
 	case float64, float32, int, int32, int64, uint, uint32, uint64:
 		return fmt.Sprintf("%v", v)
 	case bool:
