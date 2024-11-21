@@ -25,13 +25,6 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-var parameters []string
-var jsonParameter string
-var fileParameter string
-var apiVersion string
-var outputFormat string
-var copyToClipboard bool
-
 // Config structure to parse environment files
 type Config struct {
 	Environment  string                 `yaml:"environment"`
@@ -43,15 +36,15 @@ type Environment struct {
 }
 
 // FetchService handles the execution of gRPC commands for all services
-func FetchService(serviceName string, verb string, resourceName string) error {
+func FetchService(serviceName string, verb string, resourceName string, options *FetchOptions) error {
 	config, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %v", err)
 	}
 
-	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName)
+	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options)
 	if err != nil {
-		return fmt.Errorf("failed to fetch JSON response: %v", err)
+		return err
 	}
 
 	// Unmarshal JSON bytes to a map
@@ -60,7 +53,7 @@ func FetchService(serviceName string, verb string, resourceName string) error {
 		return fmt.Errorf("failed to unmarshal JSON: %v", err)
 	}
 
-	printData(respMap, outputFormat)
+	printData(respMap, options)
 
 	return nil
 }
@@ -80,7 +73,7 @@ func loadConfig() (*Config, error) {
 	return &config, nil
 }
 
-func fetchJSONResponse(config *Config, serviceName string, verb string, resourceName string) ([]byte, error) {
+func fetchJSONResponse(config *Config, serviceName string, verb string, resourceName string, options *FetchOptions) ([]byte, error) {
 	var envPrefix string
 	if strings.HasPrefix(config.Environment, "dev-") {
 		envPrefix = "dev"
@@ -126,6 +119,27 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 	reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
 	respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
 
+	// Parse the input parameters into the request message
+	inputParams, err := parseParameters(options)
+	if err != nil {
+		return nil, err
+	}
+
+	for key, value := range inputParams {
+		if err := reqMsg.TrySetFieldByName(key, value); err != nil {
+			// If the error indicates an unknown field, list valid fields
+			if strings.Contains(err.Error(), "unknown field") {
+				validFields := []string{}
+				fieldDescs := reqMsg.GetKnownFields()
+				for _, fd := range fieldDescs {
+					validFields = append(validFields, fd.GetName())
+				}
+				return nil, fmt.Errorf("failed to set field '%s': unknown field name. Valid fields are: %s", key, strings.Join(validFields, ", "))
+			}
+			return nil, fmt.Errorf("failed to set field '%s': %v", key, err)
+		}
+	}
+
 	fullMethod := fmt.Sprintf("/%s/%s", fullServiceName, verb)
 
 	err = conn.Invoke(ctx, fullMethod, reqMsg, respMsg)
@@ -141,6 +155,49 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 	return jsonBytes, nil
 }
 
+func parseParameters(options *FetchOptions) (map[string]interface{}, error) {
+	parsed := make(map[string]interface{})
+
+	// Load from file parameter if provided
+	if options.FileParameter != "" {
+		data, err := os.ReadFile(options.FileParameter)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read file parameter: %v", err)
+		}
+
+		if err := yaml.Unmarshal(data, &parsed); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal YAML file: %v", err)
+		}
+	}
+
+	// Load from JSON parameter if provided
+	if options.JSONParameter != "" {
+		if err := json.Unmarshal([]byte(options.JSONParameter), &parsed); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal JSON parameter: %v", err)
+		}
+	}
+
+	// Parse key=value parameters
+	for _, param := range options.Parameters {
+		parts := strings.SplitN(param, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid parameter format. Use key=value")
+		}
+		key := parts[0]
+		value := parts[1]
+
+		// Attempt to parse value as JSON
+		var jsonValue interface{}
+		if err := json.Unmarshal([]byte(value), &jsonValue); err == nil {
+			parsed[key] = jsonValue
+		} else {
+			parsed[key] = value
+		}
+	}
+
+	return parsed, nil
+}
+
 func discoverService(refClient *grpcreflect.Client, serviceName string, resourceName string) (string, error) {
 	possibleVersions := []string{"v1", "v2"}
 
@@ -154,10 +211,10 @@ func discoverService(refClient *grpcreflect.Client, serviceName string, resource
 	return "", fmt.Errorf("service not found for %s.%s", serviceName, resourceName)
 }
 
-func printData(data map[string]interface{}, format string) {
+func printData(data map[string]interface{}, options *FetchOptions) {
 	var output string
 
-	switch format {
+	switch options.OutputFormat {
 	case "json":
 		dataBytes, err := json.MarshalIndent(data, "", "  ")
 		if err != nil {
@@ -196,7 +253,7 @@ func printData(data map[string]interface{}, format string) {
 	}
 
 	// Copy to clipboard if requested
-	if copyToClipboard && output != "" {
+	if options.CopyToClipboard && output != "" {
 		if err := clipboard.WriteAll(output); err != nil {
 			log.Fatalf("Failed to copy to clipboard: %v", err)
 		}
@@ -227,7 +284,7 @@ func printTable(data map[string]interface{}) string {
 			if row, ok := result.(map[string]interface{}); ok {
 				rowData := []string{}
 				for _, key := range headers {
-					rowData = append(rowData, fmt.Sprintf("%v", row[key]))
+					rowData = append(rowData, formatTableValue(row[key]))
 				}
 				tableData = append(tableData, rowData)
 			}
@@ -244,6 +301,27 @@ func printTable(data map[string]interface{}) string {
 		fmt.Println(output) // Print to console
 	}
 	return output
+}
+
+func formatTableValue(val interface{}) string {
+	switch v := val.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case float64, float32, int, int32, int64, uint, uint32, uint64:
+		return fmt.Sprintf("%v", v)
+	case bool:
+		return fmt.Sprintf("%v", v)
+	case map[string]interface{}, []interface{}:
+		jsonBytes, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(jsonBytes)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 func printCSV(data map[string]interface{}) string {
@@ -266,7 +344,7 @@ func printCSV(data map[string]interface{}) string {
 				var rowValues []string
 				for _, key := range headers {
 					if val, ok := row[key]; ok {
-						rowValues = append(rowValues, fmt.Sprintf("%v", val))
+						rowValues = append(rowValues, formatCSVValue(val))
 					} else {
 						rowValues = append(rowValues, "")
 					}
@@ -281,4 +359,25 @@ func printCSV(data map[string]interface{}) string {
 		return output
 	}
 	return ""
+}
+
+func formatCSVValue(val interface{}) string {
+	switch v := val.(type) {
+	case nil:
+		return ""
+	case string:
+		return v
+	case float64, float32, int, int32, int64, uint, uint32, uint64:
+		return fmt.Sprintf("%v", v)
+	case bool:
+		return fmt.Sprintf("%v", v)
+	case map[string]interface{}, []interface{}:
+		jsonBytes, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(jsonBytes)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }
