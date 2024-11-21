@@ -1,4 +1,4 @@
-// identity.go
+// inventory.go
 
 package available
 
@@ -10,10 +10,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var IdentityCmd = &cobra.Command{
-	Use:     "identity",
-	Short:   "Interact with the Identity service",
-	Long:    `Use this command to interact with the Identity service.`,
+var InventoryCmd = &cobra.Command{
+	Use:     "inventory",
+	Short:   "Interact with the Inventory service",
+	Long:    `Use this command to interact with the Inventory service.`,
 	GroupID: "available",
 	Run: func(cmd *cobra.Command, args []string) {
 		// If no arguments are provided, display the available verbs
@@ -28,7 +28,7 @@ var IdentityCmd = &cobra.Command{
 }
 
 func init() {
-	IdentityCmd.AddGroup(&cobra.Group{
+	InventoryCmd.AddGroup(&cobra.Group{
 		ID:    "available",
 		Title: "Available Commands:",
 	}, &cobra.Group{
@@ -36,14 +36,14 @@ func init() {
 		Title: "Other Commands:",
 	})
 
-	// Set custom help function using common.CustomHelpFunc
-	IdentityCmd.SetHelpFunc(common.CustomParentHelpFunc)
+	// Set custom help function using common.CustomParentHelpFunc
+	InventoryCmd.SetHelpFunc(common.CustomParentHelpFunc)
 
-	apiResourcesCmd := common.FetchApiResourcesCmd("identity")
+	apiResourcesCmd := common.FetchApiResourcesCmd("inventory")
 	apiResourcesCmd.GroupID = "available"
-	IdentityCmd.AddCommand(apiResourcesCmd)
+	InventoryCmd.AddCommand(apiResourcesCmd)
 
-	err := common.AddVerbCommands(IdentityCmd, "identity", "other")
+	err := common.AddVerbCommands(InventoryCmd, "inventory", "available")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error adding verb commands: %v\n", err)
 	}

@@ -42,7 +42,7 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 		resources := verbResourceMap[currentVerb]
 
 		// Prepare Short and Long descriptions
-		shortDesc := fmt.Sprintf("Supports %d resources", len(resources))
+		shortDesc := fmt.Sprintf("Supported %d resources", len(resources))
 
 		verbCmd := &cobra.Command{
 			Use:   currentVerb + " <resource>",
