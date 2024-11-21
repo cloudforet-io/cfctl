@@ -110,18 +110,17 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 
 // CustomParentHelpFunc customizes the help output for the parent command
 func CustomParentHelpFunc(cmd *cobra.Command, args []string) {
-	cmd.Printf("Usage:\n")
-	cmd.Printf("  %s\n", cmd.UseLine())
+	cmd.Printf("Usage:\n %s\n", cmd.UseLine())
 	cmd.Printf("  %s\n\n", getAlternativeUsage(cmd))
 
 	if cmd.Short != "" {
 		cmd.Println(cmd.Short)
-		cmd.Println()
 	}
 
 	if len(cmd.Commands()) > 0 {
-		pterm.DefaultSection.Println("Verbs")
+		pterm.DefaultSection.Print("Verbs")
 		verbs := []string{}
+		listItems := []pterm.BulletListItem{}
 		for _, verbCmd := range cmd.Commands() {
 			if !verbCmd.Hidden {
 				verbs = append(verbs, verbCmd.Name())
@@ -129,8 +128,9 @@ func CustomParentHelpFunc(cmd *cobra.Command, args []string) {
 		}
 		sort.Strings(verbs)
 		for _, verb := range verbs {
-			pterm.Println(fmt.Sprintf("  • %s", verb))
+			listItems = append(listItems, pterm.BulletListItem{Level: 2, Text: verb})
 		}
+		pterm.DefaultBulletList.WithItems(listItems).Render()
 		cmd.Println()
 	}
 
@@ -163,9 +163,9 @@ func PrintAvailableVerbs(cmd *cobra.Command) {
 	}
 	sort.Strings(verbs)
 
-	pterm.Printf("Supports %d verbs\n\n", len(verbs))
+	pterm.Printf("Supports %d verbs\n", len(verbs))
 
-	pterm.DefaultSection.Println("Verbs")
+	pterm.DefaultSection.Print("Verbs")
 	listItems := []pterm.BulletListItem{}
 	for _, verb := range verbs {
 		listItems = append(listItems, pterm.BulletListItem{Level: 2, Text: verb})
@@ -281,7 +281,6 @@ func CustomVerbHelpFunc(cmd *cobra.Command, args []string) {
 	cmd.Println("Flags:")
 	cmd.Print(cmd.Flags().FlagUsages())
 	cmd.Println()
-	// 추가적인 도움말 안내
 	if len(cmd.Commands()) > 0 {
 		cmd.Printf("Use \"%s [resource] --help\" for more information about a resource.\n", cmd.CommandPath())
 	}

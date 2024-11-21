@@ -43,6 +43,7 @@ func init() {
 	}
 	rootCmd.AddGroup(AvailableCommands)
 	rootCmd.AddCommand(available.IdentityCmd)
+	rootCmd.AddCommand(available.InventoryCmd)
 
 	OtherCommands := &cobra.Group{
 		ID:    "other",

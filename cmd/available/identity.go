@@ -37,7 +37,7 @@ func init() {
 	})
 
 	// Set custom help function using common.CustomHelpFunc
-	IdentityCmd.SetHelpFunc(common.CustomVerbHelpFunc)
+	IdentityCmd.SetHelpFunc(common.CustomParentHelpFunc)
 
 	apiResourcesCmd.GroupID = "available"
 	IdentityCmd.AddCommand(apiResourcesCmd)
@@ -48,10 +48,10 @@ func init() {
 	}
 }
 
-var apiResourcesCmd = &cobra.Command{
-	Use:   "api-resources",
-	Short: "Displays supported API resources for the Identity service",
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return common.ListAPIResources("identity")
-	},
-}
+//var apiResourcesCmd = &cobra.Command{
+//	Use:   "api-resources",
+//	Short: "Displays supported API resources for the Identity service",
+//	RunE: func(cmd *cobra.Command, args []string) error {
+//		return common.ListAPIResources("identity")
+//	},
+//}
