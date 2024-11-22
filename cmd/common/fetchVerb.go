@@ -30,7 +30,7 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 	// Build the verb-resource map
 	verbResourceMap, err := BuildVerbResourceMap(serviceName)
 	if err != nil {
-		return fmt.Errorf("failed to build verb-resource map for service %s: %v", serviceName, err)
+		return nil // Return nil to prevent Cobra from showing additional error messages
 	}
 
 	// Get a sorted list of verbs

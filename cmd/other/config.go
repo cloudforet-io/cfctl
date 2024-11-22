@@ -38,71 +38,77 @@ switch environments, and display the current configuration.`,
 var configInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new environment configuration",
-	Long:  `Initialize a new environment configuration for cfctl by specifying a URL with -u or a local environment name with -l.`,
-	Run: func(cmd *cobra.Command, args []string) {
-		environment, _ := cmd.Flags().GetString("environment")
-		urlStr, _ := cmd.Flags().GetString("url")
-		localEnv, _ := cmd.Flags().GetString("local")
+	Long:  `Initialize a new environment configuration for cfctl by specifying either a URL or a local environment name.`,
+}
 
-		if urlStr == "" && localEnv == "" {
+var configInitURLCmd = &cobra.Command{
+	Use:   "url",
+	Short: "Initialize configuration with a URL",
+	Long:  `Specify a URL to initialize the environment configuration.`,
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		urlStr, _ := cmd.Flags().GetString("url")
+		appFlag, _ := cmd.Flags().GetBool("app")
+		userFlag, _ := cmd.Flags().GetBool("user")
+
+		if urlStr == "" {
+			pterm.Error.Println("The --url flag is required.")
+			cmd.Help()
+			return
+		}
+		if !appFlag && !userFlag {
+			pterm.Error.Println("You must specify either --app or --user flag.")
 			cmd.Help()
 			return
 		}
 
-		var envName string
-		if localEnv != "" {
-			envName = fmt.Sprintf("%s-user", localEnv)
+		envName, err := parseEnvNameFromURL(urlStr)
+		if err != nil {
+			pterm.Error.Println("Invalid URL:", err)
+			return
+		}
+
+		// Add suffix based on the flag
+		if appFlag {
+			envName = fmt.Sprintf("%s-app", envName)
+			updateConfig(envName, urlStr, "app")
 		} else {
-			parsedEnvName, err := parseEnvNameFromURL(urlStr)
-			if err != nil {
-				pterm.Error.WithShowLineNumber(false).Println("Invalid URL format:", err)
-				cmd.Help()
-				return
-			}
-			envName = parsedEnvName
+			envName = fmt.Sprintf("%s-user", envName)
+			updateConfig(envName, urlStr, "user")
 		}
+	},
+}
 
-		if environment != "" {
-			envName = environment
+var configInitLocalCmd = &cobra.Command{
+	Use:   "local",
+	Short: "Initialize configuration with a local environment",
+	Long:  `Specify a local environment name to initialize the configuration.`,
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		localEnv, _ := cmd.Flags().GetString("local")
+		appFlag, _ := cmd.Flags().GetBool("app")
+		userFlag, _ := cmd.Flags().GetBool("user")
+
+		if localEnv == "" {
+			pterm.Error.Println("The --local flag is required.")
+			cmd.Help()
+			return
 		}
-
-		// Ensure ~/.cfctl directory exists
-		configDir := getConfigDir()
-		if err := os.MkdirAll(configDir, 0755); err != nil {
-			pterm.Error.WithShowLineNumber(false).Println("Failed to create config directory:", err)
+		if !appFlag && !userFlag {
+			pterm.Error.Println("You must specify either --app or --user flag.")
+			cmd.Help()
 			return
 		}
 
-		// Set configuration directly in config.yaml
-		configPath := filepath.Join(getConfigDir(), "config.yaml")
-		viper.SetConfigFile(configPath)
-		_ = viper.ReadInConfig()
-
-		var baseURL string
-		if strings.HasPrefix(envName, "dev") {
-			baseURL = "grpc+ssl://identity.api.dev.spaceone.dev:443"
-		} else if strings.HasPrefix(envName, "stg") {
-			baseURL = "grpc+ssl://identity.api.stg.spaceone.dev:443"
+		// Add suffix based on the flag
+		var envName string
+		if appFlag {
+			envName = fmt.Sprintf("%s-app", localEnv)
+			updateConfig(envName, "", "app")
+		} else {
+			envName = fmt.Sprintf("%s-user", localEnv)
+			updateConfig(envName, "", "user")
 		}
-
-		// Set endpoint, token, and proxy fields for the environment
-		if baseURL != "" {
-			viper.Set(fmt.Sprintf("environments.%s.endpoint", envName), baseURL)
-		}
-		viper.Set(fmt.Sprintf("environments.%s.token", envName), "")
-		viper.Set(fmt.Sprintf("environments.%s.proxy", envName), true)
-
-		// Set the current environment
-		viper.Set("environment", envName)
-
-		// Write the updated configuration to config.yaml
-		if err := viper.WriteConfig(); err != nil {
-			pterm.Error.WithShowLineNumber(false).Println("Failed to write updated config.yaml:", err)
-			return
-		}
-
-		pterm.Success.WithShowLineNumber(false).
-			Printfln("Environment '%s' successfully initialized in '%s/config.yaml'", envName, getConfigDir())
 	},
 }
 
@@ -119,7 +125,7 @@ var envCmd = &cobra.Command{
 		// Handle environment switching
 		if switchEnv != "" {
 			// Load config.yaml
-			configFilePath := filepath.Join(getConfigDir(), "config.yaml")
+			configFilePath := filepath.Join(GetConfigDir(), "config.yaml")
 			viper.SetConfigFile(configFilePath)
 
 			// Read existing config.yaml file
@@ -158,7 +164,7 @@ var envCmd = &cobra.Command{
 		// Handle environment removal with confirmation
 		if removeEnv != "" {
 			// Load config.yaml
-			configFilePath := filepath.Join(getConfigDir(), "config.yaml")
+			configFilePath := filepath.Join(GetConfigDir(), "config.yaml")
 			viper.SetConfigFile(configFilePath)
 			if err := viper.ReadInConfig(); err != nil {
 				log.Fatalf("Failed to read config.yaml: %v", err)
@@ -208,7 +214,7 @@ var envCmd = &cobra.Command{
 			currentEnv := getCurrentEnvironment()
 
 			// Load config.yaml
-			configPath := filepath.Join(getConfigDir(), "config.yaml")
+			configPath := filepath.Join(GetConfigDir(), "config.yaml")
 			viper.SetConfigFile(configPath)
 			if err := viper.ReadInConfig(); err != nil {
 				log.Fatalf("Failed to read config.yaml: %v", err)
@@ -246,7 +252,7 @@ var showCmd = &cobra.Command{
 			log.Fatal("No environment set in ~/.cfctl/config.yaml")
 		}
 
-		configPath := filepath.Join(getConfigDir(), "config.yaml")
+		configPath := filepath.Join(GetConfigDir(), "config.yaml")
 		viper.SetConfigFile(configPath)
 		err := viper.ReadInConfig()
 		if err != nil {
@@ -339,7 +345,7 @@ Available Services:
 		newEndpoint := fmt.Sprintf("grpc+ssl://%s.api.%s.spaceone.dev:443", service, prefix)
 
 		// Load config
-		configPath := filepath.Join(getConfigDir(), "config.yaml")
+		configPath := filepath.Join(GetConfigDir(), "config.yaml")
 		viper.SetConfigFile(configPath)
 		if err := viper.ReadInConfig(); err != nil {
 			pterm.Error.Printf("Failed to read config.yaml: %v\n", err)
@@ -366,8 +372,8 @@ Available Services:
 	},
 }
 
-// getConfigDir returns the directory where config files are stored
-func getConfigDir() string {
+// GetConfigDir returns the directory where config files are stored
+func GetConfigDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		log.Fatalf("Unable to find home directory: %v", err)
@@ -378,7 +384,7 @@ func getConfigDir() string {
 // getCurrentEnvironment reads the current environment from ~/.cfctl/config.yaml
 func getCurrentEnvironment() string {
 	// Set config file path to ~/.spaceone/config.yaml
-	configPath := filepath.Join(getConfigDir(), "config.yaml")
+	configPath := filepath.Join(GetConfigDir(), "config.yaml")
 	viper.SetConfigFile(configPath)
 
 	// Prevent errors if the config file is missing
@@ -389,7 +395,7 @@ func getCurrentEnvironment() string {
 }
 
 func updateGlobalConfig() {
-	pterm.Success.WithShowLineNumber(false).Printfln("Global config updated with existing environments. (default: %s/config.yaml)", getConfigDir())
+	pterm.Success.WithShowLineNumber(false).Printfln("Global config updated with existing environments. (default: %s/config.yaml)", GetConfigDir())
 }
 
 // parseEnvNameFromURL parses environment name from the given URL and validates based on URL structure
@@ -437,17 +443,109 @@ func parseEnvNameFromURL(urlStr string) (string, error) {
 	return "", fmt.Errorf("URL does not match any known environment patterns")
 }
 
+// updateConfig handles the actual configuration update
+func updateConfig(envName, baseURL, mode string) {
+	var configPath string
+	if mode == "app" {
+		configPath = filepath.Join(GetConfigDir(), "config.yaml")
+	} else {
+		cacheDir := filepath.Join(GetConfigDir(), "cache")
+		if err := os.MkdirAll(cacheDir, 0755); err != nil {
+			pterm.Error.Println("Failed to create cache directory:", err)
+			return
+		}
+		configPath = filepath.Join(cacheDir, "config.yaml")
+	}
+
+	viper.SetConfigFile(configPath)
+	_ = viper.ReadInConfig()
+
+	// Check if the environment already exists
+	if viper.IsSet(fmt.Sprintf("environments.%s", envName)) {
+		pterm.Warning.Printf("Environment '%s' already exists. Do you want to overwrite it? (y/n): ", envName)
+
+		// Get user input
+		var response string
+		fmt.Scanln(&response)
+		response = strings.ToLower(strings.TrimSpace(response))
+
+		// If user selects "n", exit the function
+		if response != "y" {
+			pterm.Info.Printf("Skipping initialization for '%s'. No changes were made.\n", envName)
+			return
+		}
+	}
+
+	// Construct a new endpoint based on baseURL
+	newEndpoint, err := constructEndpoint(baseURL)
+	if err != nil {
+		pterm.Error.Println("Failed to construct endpoint:", err)
+		return
+	}
+
+	// Set default values for the environment
+	viper.Set(fmt.Sprintf("environments.%s.endpoint", envName), newEndpoint)
+	viper.Set(fmt.Sprintf("environments.%s.token", envName), "")
+	viper.Set(fmt.Sprintf("environments.%s.proxy", envName), true)
+	viper.Set("environment", envName)
+
+	if err := viper.WriteConfig(); err != nil {
+		pterm.Error.Println("Failed to write configuration:", err)
+		return
+	}
+
+	pterm.Success.Printf("Environment '%s' successfully initialized in '%s'.\n", envName, configPath)
+}
+
+// constructEndpoint generates the gRPC endpoint string from baseURL
+func constructEndpoint(baseURL string) (string, error) {
+	if !strings.Contains(baseURL, "://") {
+		baseURL = "https://" + baseURL
+	}
+	parsedURL, err := url.Parse(baseURL)
+	if err != nil {
+		return "", err
+	}
+	hostname := parsedURL.Hostname()
+
+	prefix := ""
+	// Determine the prefix based on the hostname
+	switch {
+	case strings.Contains(hostname, ".dev.spaceone.dev"):
+		prefix = "dev"
+	case strings.Contains(hostname, ".stg.spaceone.dev"):
+		prefix = "stg"
+	case strings.Contains(hostname, ".spaceone.megazone.io"):
+		prefix = "prd"
+	default:
+		return "", fmt.Errorf("unknown environment prefix in URL: %s", hostname)
+	}
+
+	// Extract the service from the hostname
+	service := strings.Split(hostname, ".")[0]
+	if service == "" {
+		return "", fmt.Errorf("unable to determine service from URL: %s", hostname)
+	}
+
+	// Construct the endpoint
+	newEndpoint := fmt.Sprintf("grpc+ssl://%s.api.%s.spaceone.dev:443", service, prefix)
+	return newEndpoint, nil
+}
+
 func init() {
 	// Adding subcommands to ConfigCmd
 	ConfigCmd.AddCommand(configInitCmd)
 	ConfigCmd.AddCommand(envCmd)
 	ConfigCmd.AddCommand(showCmd)
 	ConfigCmd.AddCommand(configEndpointCmd)
+	configInitCmd.AddCommand(configInitURLCmd)
+	configInitCmd.AddCommand(configInitLocalCmd)
 
 	// Defining flags for configInitCmd
 	configInitCmd.Flags().StringP("environment", "e", "", "Override environment name")
-	configInitCmd.Flags().StringP("url", "u", "", "URL for the environment (e.g. cfctl config init -u [URL])")
-	configInitCmd.Flags().StringP("local", "l", "", "Local environment name (use instead of URL) (e.g. cfctl config init -l local-[DOMAIN])")
+	configInitURLCmd.Flags().StringP("url", "u", "", "URL for the environment")
+	configInitURLCmd.Flags().Bool("app", false, "Initialize as application configuration")
+	configInitURLCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
 
 	// Defining flags for envCmd
 	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
