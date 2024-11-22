@@ -426,6 +426,20 @@ func getCurrentEnvironment(v *viper.Viper) string {
 
 // updateGlobalConfig prints a success message for global config update
 func updateGlobalConfig() {
+	configPath := filepath.Join(GetConfigDir(), "config.yaml")
+	v := viper.New()
+
+	v.SetConfigFile(configPath)
+
+	if err := v.ReadInConfig(); err != nil {
+		if os.IsNotExist(err) {
+			pterm.Success.WithShowLineNumber(false).Printfln("Global config updated with existing environments. (default: %s/config.yaml)", GetConfigDir())
+			return
+		}
+		pterm.Warning.Printf("Warning: Could not read global config: %v\n", err)
+		return
+	}
+
 	pterm.Success.WithShowLineNumber(false).Printfln("Global config updated with existing environments. (default: %s/config.yaml)", GetConfigDir())
 }
 
