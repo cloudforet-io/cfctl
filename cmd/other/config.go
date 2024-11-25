@@ -3,9 +3,11 @@
 package other
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -272,24 +274,38 @@ var showCmd = &cobra.Command{
 	Use:   "show",
 	Short: "Display the current cfctl configuration",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Assume showCmd operates on the app config
-		configPath := filepath.Join(GetConfigDir(), "config.yaml")
-		v := appViper
+		configDir := GetConfigDir()
+		appConfigPath := filepath.Join(configDir, "config.yaml")
+		userConfigPath := filepath.Join(configDir, "cache", "config.yaml")
 
-		// Load or create the config file
-		if err := loadConfig(v, configPath); err != nil {
+		// Load app configuration
+		if err := loadConfig(appViper, appConfigPath); err != nil {
 			pterm.Error.Println(err)
 			return
 		}
 
-		currentEnv := getCurrentEnvironment(v)
-		if currentEnv == "" {
-			log.Fatal("No environment set in ~/.cfctl/config.yaml")
+		// Load user configuration
+		if err := loadConfig(userViper, userConfigPath); err != nil {
+			pterm.Error.Println(err)
+			return
 		}
 
-		envConfig := v.GetStringMap(fmt.Sprintf("environments.%s", currentEnv))
+		currentEnv := getCurrentEnvironment(appViper)
+		if currentEnv == "" {
+			pterm.Sprintf("No environment set in %s\n", appConfigPath)
+			return
+		}
+
+		// Try to get the environment from appViper
+		envConfig := appViper.GetStringMap(fmt.Sprintf("environments.%s", currentEnv))
+
+		// If not found in appViper, try userViper
 		if len(envConfig) == 0 {
-			log.Fatalf("Environment '%s' not found in config.yaml", currentEnv)
+			envConfig = userViper.GetStringMap(fmt.Sprintf("environments.%s", currentEnv))
+			if len(envConfig) == 0 {
+				pterm.Error.Printf("Environment '%s' not found in %s or %s\n", currentEnv, appConfigPath, userConfigPath)
+				return
+			}
 		}
 
 		output, _ := cmd.Flags().GetString("output")
@@ -320,17 +336,58 @@ var configEndpointCmd = &cobra.Command{
 	Long: `Update the endpoint for the current environment based on the specified service.
 If the service is not 'identity', the proxy setting will be updated to false.
 
-Available Services:
-  identity, inventory, plugin, repository, secret, monitoring, config, statistics,
-  notification, cost_analysis, board, file_manager, dashboard`,
+Available Services are fetched dynamically from the backend.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		service, _ := cmd.Flags().GetString("service")
 		if service == "" {
+			token, err := getToken(appViper)
+			if err != nil {
+				pterm.Error.Println("Error retrieving token:", err)
+				return
+			}
+
 			pterm.Error.Println("Please specify a service using -s or --service.")
-			pterm.Println()
+
+			// Fetch and display available services
+			baseURL, err := getBaseURL(appViper)
+			if err != nil {
+				pterm.Error.Println("Error retrieving base URL:", err)
+				return
+			}
+
+			services, err := fetchAvailableServices(baseURL, token)
+			if err != nil {
+				pterm.Error.Println("Error fetching available services:", err)
+				return
+			}
+
+			if len(services) == 0 {
+				pterm.Println("No available services found.")
+				return
+			}
+
 			pterm.DefaultBox.WithTitle("Available Services").
 				WithRightPadding(1).WithLeftPadding(1).WithTopPadding(0).WithBottomPadding(0).
-				Println(strings.Join(availableServices, "\n"))
+				Println(strings.Join(services, "\n"))
+			return
+		}
+
+		// Fetch available services to validate the input
+		baseURL, err := getBaseURL(appViper)
+		if err != nil {
+			pterm.Error.Println("Error retrieving base URL:", err)
+			return
+		}
+
+		token, err := getToken(appViper)
+		if err != nil {
+			pterm.Error.Println("Error retrieving token:", err)
+			return
+		}
+
+		services, err := fetchAvailableServices(baseURL, token)
+		if err != nil {
+			pterm.Error.Println("Error fetching available services:", err)
 			return
 		}
 
@@ -346,9 +403,13 @@ Available Services:
 		if !isValidService {
 			pterm.Error.Printf("Invalid service '%s'.\n", service)
 			pterm.Println()
-			pterm.DefaultBox.WithTitle("Available Services").
-				WithRightPadding(1).WithLeftPadding(1).WithTopPadding(0).WithBottomPadding(0).
-				Println(strings.Join(availableServices, "\n"))
+			if len(services) > 0 {
+				pterm.DefaultBox.WithTitle("Available Services").
+					WithRightPadding(1).WithLeftPadding(1).WithTopPadding(0).WithBottomPadding(0).
+					Println(strings.Join(services, "\n"))
+			} else {
+				pterm.Println("No available services found.")
+			}
 			return
 		}
 
@@ -400,6 +461,90 @@ Available Services:
 
 		pterm.Success.Printf("Updated endpoint for '%s' to '%s'.\n", currentEnv, newEndpoint)
 	},
+}
+
+// fetchAvailableServices retrieves the list of services from the backend API using the provided token.
+func fetchAvailableServices(baseURL, token string) ([]string, error) {
+	// Use constructEndpoint to get the gRPC endpoint
+	grpcEndpoint, err := constructEndpoint(baseURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to construct gRPC endpoint: %w", err)
+	}
+
+	// Derive the API URL from the gRPC endpoint
+	// Assuming the API is accessible via HTTPS and follows a similar pattern
+	// For example, if grpcEndpoint is "grpc+ssl://identity.api.dev.spaceone.dev:443"
+	// then apiURL would be "https://identity.api.dev.spaceone.dev"
+	parsedURL, err := url.Parse(grpcEndpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse gRPC endpoint: %w", err)
+	}
+
+	apiURL := fmt.Sprintf("https://%s", parsedURL.Hostname())
+
+	// Create a new HTTP request
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/v1/services", apiURL), nil) // Adjust the path as needed
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set the Authorization header with the token
+	req.Header.Set("Authorization", "Bearer "+token)
+
+	// Initialize the HTTP client
+	client := &http.Client{}
+
+	// Send the request
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch services: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check for non-200 status codes
+	if resp.StatusCode != http.StatusOK {
+		var buf bytes.Buffer
+		buf.ReadFrom(resp.Body)
+		return nil, fmt.Errorf("failed to fetch services: %s", buf.String())
+	}
+
+	// Parse the JSON response
+	var services []string
+	if err := json.NewDecoder(resp.Body).Decode(&services); err != nil {
+		return nil, fmt.Errorf("failed to decode services response: %w", err)
+	}
+
+	return services, nil
+}
+
+// getBaseURL retrieves the base URL for the current environment from the app configuration.
+func getBaseURL(v *viper.Viper) (string, error) {
+	currentEnv := getCurrentEnvironment(v)
+	if currentEnv == "" {
+		return "", fmt.Errorf("no environment is set")
+	}
+
+	baseURL := v.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv))
+	if baseURL == "" {
+		return "", fmt.Errorf("no endpoint found for environment '%s'", currentEnv)
+	}
+
+	return baseURL, nil
+}
+
+// getToken retrieves the token for the current environment.
+func getToken(v *viper.Viper) (string, error) {
+	currentEnv := getCurrentEnvironment(v)
+	if currentEnv == "" {
+		return "", fmt.Errorf("no environment is set")
+	}
+
+	token := v.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+	if token == "" {
+		return "", fmt.Errorf("no token found for environment '%s'", currentEnv)
+	}
+
+	return token, nil
 }
 
 // GetConfigDir returns the directory where config files are stored
@@ -647,8 +792,9 @@ func constructEndpoint(baseURL string) (string, error) {
 		prefix = "dev"
 	case strings.Contains(hostname, ".stg.spaceone.dev"):
 		prefix = "stg"
-	case strings.Contains(hostname, ".spaceone.megazone.io"):
-		prefix = "prd"
+	// TODO: After set up production
+	//case strings.Contains(hostname, ".spaceone.megazone.io"):
+	//	prefix = "prd"
 	default:
 		return "", fmt.Errorf("unknown environment prefix in URL: %s", hostname)
 	}
@@ -660,7 +806,7 @@ func constructEndpoint(baseURL string) (string, error) {
 	}
 
 	// Construct the endpoint dynamically based on the service
-	newEndpoint := fmt.Sprintf("grpc+ssl://%s.api.%s.spaceone.dev:443", service, prefix)
+	newEndpoint := fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", prefix)
 	return newEndpoint, nil
 }
 
