@@ -705,20 +705,26 @@ func loadConfig(v *viper.Viper, configPath string) error {
 		v.Set("environments", map[string]interface{}{})
 		v.Set("environment", "")
 
-		// Write the default config to the file
-		if err := v.WriteConfigAs(configPath); err != nil {
-			return fmt.Errorf("failed to create config file '%s': %w", configPath, err)
+		// Convert to YAML with 2-space indentation
+		config := map[string]interface{}{
+			"environments": map[string]interface{}{},
+			"environment":  "",
 		}
 
-		// Read the newly created config file
-		if err := v.ReadInConfig(); err != nil {
-			return fmt.Errorf("failed to read newly created config file '%s': %w", configPath, err)
+		data, err := yaml.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("failed to marshal config: %w", err)
 		}
-	} else {
-		// Read the existing config file
-		if err := v.ReadInConfig(); err != nil {
-			return fmt.Errorf("failed to read config file '%s': %w", configPath, err)
+
+		// Write the default config to the file
+		if err := os.WriteFile(configPath, data, 0644); err != nil {
+			return fmt.Errorf("failed to create config file '%s': %w", configPath, err)
 		}
+	}
+
+	// Read the config file
+	if err := v.ReadInConfig(); err != nil {
+		return fmt.Errorf("failed to read config file '%s': %w", configPath, err)
 	}
 
 	return nil
@@ -793,90 +799,146 @@ func parseEnvNameFromURL(urlStr string) (string, error) {
 	return "", fmt.Errorf("URL does not match any known environment patterns")
 }
 
-// updateConfig handles the actual configuration update
-func updateConfig(envName, baseURL, mode string) {
-	var configPath string
-	var v *viper.Viper
+// updateConfig updates the configuration files based on the environment type
+func updateConfig(envName, urlStr, configType string) {
+	configDir := GetConfigDir()
+	mainConfigPath := filepath.Join(configDir, "config.yaml")
 
-	if mode == "app" {
-		configPath = filepath.Join(GetConfigDir(), "config.yaml")
-		v = viper.New()
-	} else {
-		configPath = filepath.Join(GetConfigDir(), "cache", "config.yaml")
-		v = viper.New()
-	}
-
-	// Load or create the config file
-	if err := loadConfig(v, configPath); err != nil {
-		pterm.Error.Println(err)
+	// Create config directory if it doesn't exist
+	if err := os.MkdirAll(filepath.Dir(mainConfigPath), 0755); err != nil {
+		pterm.Error.Printf("Failed to create config directory: %v\n", err)
 		return
 	}
 
+	// Initialize main viper instance
+	mainV := viper.New()
+	mainV.SetConfigFile(mainConfigPath)
+
+	// Read existing config or create new one
+	if err := mainV.ReadInConfig(); err != nil {
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			pterm.Error.Printf("Error reading config file: %v\n", err)
+			return
+		}
+	}
+
 	// Check if the environment already exists
-	if v.IsSet(fmt.Sprintf("environments.%s", envName)) {
+	if mainV.IsSet(fmt.Sprintf("environments.%s", envName)) {
 		pterm.Warning.Printf("Environment '%s' already exists. Do you want to overwrite it? (y/n): ", envName)
 
-		// Get user input
 		var response string
 		fmt.Scanln(&response)
 		response = strings.ToLower(strings.TrimSpace(response))
 
-		// If user selects "n", exit the function
 		if response != "y" {
 			pterm.Info.Printf("Skipping initialization for '%s'. No changes were made.\n", envName)
 			return
 		}
 	}
 
-	var newEndpoint string
-	if baseURL != "" {
-		var err error
-		newEndpoint, err = constructEndpoint(baseURL)
+	// Update environment in main config
+	mainV.Set("environment", envName)
+
+	// Handle app type configuration
+	if configType == "app" && urlStr != "" {
+		endpoint, err := constructEndpoint(urlStr)
 		if err != nil {
-			pterm.Error.Println("Failed to construct endpoint:", err)
+			pterm.Error.Printf("Failed to construct endpoint: %v\n", err)
 			return
 		}
-	} else {
-		newEndpoint = "grpc://localhost:50051"
-	}
 
-	// Set default values for the environment
-	v.Set(fmt.Sprintf("environments.%s.endpoint", envName), newEndpoint)
-	v.Set(fmt.Sprintf("environments.%s.token", envName), "")
+		mainV.Set(fmt.Sprintf("environments.%s.endpoint", envName), endpoint)
+		mainV.Set(fmt.Sprintf("environments.%s.proxy", envName), true)
+		mainV.Set(fmt.Sprintf("environments.%s.token", envName), "")
 
-	if strings.Contains(newEndpoint, "identity") {
-		v.Set(fmt.Sprintf("environments.%s.proxy", envName), true)
-	} else {
-		v.Set(fmt.Sprintf("environments.%s.proxy", envName), false)
-	}
-
-	// Write the updated configuration back to config.yaml or cache/config.yaml
-	if err := v.WriteConfig(); err != nil {
-		pterm.Error.Printf("Failed to write configuration: %v\n", err)
-		return
-	}
-
-	// If mode is 'app', set the 'environment' field
-	if mode == "app" {
-		v.Set("environment", envName)
-
-		// Write the updated app configuration
-		if err := v.WriteConfig(); err != nil {
-			pterm.Error.Printf("Failed to write app config: %v\n", err)
+		if err := mainV.WriteConfig(); err != nil {
+			pterm.Error.Printf("Failed to write config: %v\n", err)
 			return
 		}
 	}
 
-	// If initializing a user environment, remove 'environment' field from user config
-	if mode == "user" {
-		err := removeEnvironmentField(v)
-		if err != nil {
-			pterm.Error.Printf("Failed to remove environment from user config: %v\n", err)
+	// Handle user type configuration
+	if configType == "user" {
+		cacheConfigPath := filepath.Join(configDir, "cache", "config.yaml")
+		if err := os.MkdirAll(filepath.Dir(cacheConfigPath), 0755); err != nil {
+			pterm.Error.Printf("Failed to create cache directory: %v\n", err)
+			return
+		}
+
+		cacheV := viper.New()
+		cacheV.SetConfigFile(cacheConfigPath)
+
+		if err := cacheV.ReadInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+				pterm.Error.Printf("Error reading cache config: %v\n", err)
+				return
+			}
+		}
+
+		if cacheV.IsSet(fmt.Sprintf("environments.%s", envName)) {
+			pterm.Warning.Printf("Environment '%s' already exists in cache config. Do you want to overwrite it? (y/n): ", envName)
+
+			var response string
+			fmt.Scanln(&response)
+			response = strings.ToLower(strings.TrimSpace(response))
+
+			if response != "y" {
+				pterm.Info.Printf("Skipping initialization for '%s' in cache config. No changes were made.\n", envName)
+				return
+			}
+		}
+
+		if urlStr != "" {
+			endpoint, err := constructEndpoint(urlStr)
+			if err != nil {
+				pterm.Error.Printf("Failed to construct endpoint: %v\n", err)
+				return
+			}
+
+			cacheV.Set(fmt.Sprintf("environments.%s.endpoint", envName), endpoint)
+			cacheV.Set(fmt.Sprintf("environments.%s.proxy", envName), true)
+			cacheV.Set(fmt.Sprintf("environments.%s.token", envName), "")
+		}
+
+		if err := cacheV.WriteConfig(); err != nil {
+			pterm.Error.Printf("Failed to write cache config: %v\n", err)
 			return
 		}
 	}
 
 	pterm.Success.Printf("Environment '%s' successfully initialized.\n", envName)
+}
+
+// convertToStringMap converts map[interface{}]interface{} to map[string]interface{}
+func convertToStringMap(m map[interface{}]interface{}) map[string]interface{} {
+	result := make(map[string]interface{})
+	for k, v := range m {
+		switch v := v.(type) {
+		case map[interface{}]interface{}:
+			result[k.(string)] = convertToStringMap(v)
+		case []interface{}:
+			result[k.(string)] = convertToSlice(v)
+		default:
+			result[k.(string)] = v
+		}
+	}
+	return result
+}
+
+// convertToSlice handles slice conversion if needed
+func convertToSlice(s []interface{}) []interface{} {
+	result := make([]interface{}, len(s))
+	for i, v := range s {
+		switch v := v.(type) {
+		case map[interface{}]interface{}:
+			result[i] = convertToStringMap(v)
+		case []interface{}:
+			result[i] = convertToSlice(v)
+		default:
+			result[i] = v
+		}
+	}
+	return result
 }
 
 // removeEnvironmentField removes the 'environment' field from the given Viper instance

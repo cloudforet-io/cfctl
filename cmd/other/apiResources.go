@@ -36,34 +36,85 @@ var ApiResourcesCmd = &cobra.Command{
 	Use:   "api-resources",
 	Short: "Displays supported API resources",
 	Run: func(cmd *cobra.Command, args []string) {
-		// Load the main configuration file
 		home, err := os.UserHomeDir()
 		if err != nil {
 			log.Fatalf("Unable to find home directory: %v", err)
 		}
 
 		configFile := filepath.Join(home, ".cfctl", "config.yaml")
-		viper.SetConfigFile(configFile)
-		if err := viper.ReadInConfig(); err != nil {
-			log.Fatalf("Error reading config file: %v", err)
+		cacheConfigFile := filepath.Join(home, ".cfctl", "cache", "config.yaml")
+
+		var currentEnv string
+		var envConfig *viper.Viper
+
+		// Try to read main config first
+		mainV := viper.New()
+		mainV.SetConfigFile(configFile)
+		mainConfigErr := mainV.ReadInConfig()
+
+		if mainConfigErr == nil {
+			// Main config exists, try to get environment
+			currentEnv = mainV.GetString("environment")
+			if currentEnv != "" {
+				envConfig = mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
+			}
 		}
 
-		// Get the current environment
-		currentEnv := viper.GetString("environment")
-		if currentEnv == "" {
-			log.Fatalf("No active environment specified in %s", configFile)
+		// If main config doesn't exist or has no environment set, try cache config
+		if mainConfigErr != nil || currentEnv == "" || envConfig == nil {
+			cacheV := viper.New()
+			cacheV.SetConfigFile(cacheConfigFile)
+			if err := cacheV.ReadInConfig(); err != nil {
+				log.Fatalf("Error reading both config files:\nMain config: %v\nCache config: %v", mainConfigErr, err)
+			}
+
+			// If no current environment set, try to get it from cache config
+			if currentEnv == "" {
+				currentEnv = cacheV.GetString("environment")
+			}
+
+			// If still no environment, try to find first user environment
+			if currentEnv == "" {
+				envs := cacheV.GetStringMap("environments")
+				for env := range envs {
+					if strings.HasSuffix(env, "-user") {
+						currentEnv = env
+						break
+					}
+				}
+			}
+
+			// Try to get environment config from cache if not found in main config
+			if envConfig == nil && currentEnv != "" {
+				envConfig = cacheV.Sub(fmt.Sprintf("environments.%s", currentEnv))
+			}
 		}
 
-		// Get environment-specific configurations
-		envConfig := viper.Sub(fmt.Sprintf("environments.%s", currentEnv))
 		if envConfig == nil {
-			log.Fatalf("No configuration found for environment: %s", currentEnv)
+			// Try one more time with both configs
+			mainV := viper.New()
+			mainV.SetConfigFile(configFile)
+			if err := mainV.ReadInConfig(); err == nil {
+				envConfig = mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
+			}
+
+			if envConfig == nil {
+				cacheV := viper.New()
+				cacheV.SetConfigFile(cacheConfigFile)
+				if err := cacheV.ReadInConfig(); err == nil {
+					envConfig = cacheV.Sub(fmt.Sprintf("environments.%s", currentEnv))
+				}
+			}
+
+			if envConfig == nil {
+				log.Fatalf("No configuration found for environment '%s' in either config file", currentEnv)
+			}
 		}
 
+		// Continue with the rest of the code...
 		endpoint := envConfig.GetString("endpoint")
 		proxy := envConfig.GetBool("proxy")
 
-		// Validate endpoint and proxy
 		if !proxy || !strings.Contains(endpoint, "identity") {
 			log.Fatalf("Endpoint for environment '%s' is not valid for fetching resources.", currentEnv)
 		}
