@@ -4,6 +4,7 @@ go 1.23.1
 
 require (
 	github.com/atotto/clipboard v0.1.4
+	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
 	github.com/jhump/protoreflect v1.17.0
 	github.com/pterm/pterm v0.12.79
 	github.com/spf13/cobra v1.8.1

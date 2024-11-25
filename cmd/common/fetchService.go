@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/eiannone/keyboard"
 	"github.com/spf13/viper"
 
 	"github.com/atotto/clipboard"
@@ -145,6 +146,11 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 	}
 	creds := credentials.NewTLS(tlsConfig)
 	opts = append(opts, grpc.WithTransportCredentials(creds))
+
+	opts = append(opts, grpc.WithDefaultCallOptions(
+		grpc.MaxCallRecvMsgSize(10*1024*1024), // 10MB
+		grpc.MaxCallSendMsgSize(10*1024*1024), // 10MB
+	))
 
 	// Establish the connection
 	conn, err := grpc.Dial(hostPort, opts...)
@@ -319,10 +325,17 @@ func printData(data map[string]interface{}, options *FetchOptions) {
 
 func printTable(data map[string]interface{}) string {
 	if results, ok := data["results"].([]interface{}); ok {
-		pageSize := 5
+		pageSize := 10
 		currentPage := 0
-		totalItems := len(results)
-		totalPages := (totalItems + pageSize - 1) / pageSize
+		searchTerm := ""
+		filteredResults := results
+
+		// Initialize keyboard
+		if err := keyboard.Open(); err != nil {
+			fmt.Println("Failed to initialize keyboard:", err)
+			return ""
+		}
+		defer keyboard.Close()
 
 		// Extract headers
 		headers := []string{}
@@ -336,6 +349,15 @@ func printTable(data map[string]interface{}) string {
 		}
 
 		for {
+			if searchTerm != "" {
+				filteredResults = filterResults(results, searchTerm)
+			} else {
+				filteredResults = results
+			}
+
+			totalItems := len(filteredResults)
+			totalPages := (totalItems + pageSize - 1) / pageSize
+
 			tableData := pterm.TableData{headers}
 
 			// Calculate current page items
@@ -343,6 +365,13 @@ func printTable(data map[string]interface{}) string {
 			endIdx := startIdx + pageSize
 			if endIdx > totalItems {
 				endIdx = totalItems
+			}
+
+			// Clear screen
+			fmt.Print("\033[H\033[2J")
+
+			if searchTerm != "" {
+				fmt.Printf("Search: %s (Found: %d items)\n", searchTerm, totalItems)
 			}
 
 			// Add rows for current page
@@ -362,29 +391,65 @@ func printTable(data map[string]interface{}) string {
 			// Print table
 			pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
 
-			// Print pagination info and controls
 			fmt.Printf("\nPage %d of %d (Total items: %d)\n", currentPage+1, totalPages, totalItems)
-			fmt.Println("Navigation: [p]revious page, [n]ext page, [q]uit")
+			fmt.Println("Navigation: [p]revious page, [n]ext page, [/]search, [c]lear search, [q]uit")
 
-			// Get user input
-			var input string
-			fmt.Scanln(&input)
+			// Get keyboard input
+			char, _, err := keyboard.GetKey()
+			if err != nil {
+				fmt.Println("Error reading keyboard input:", err)
+				return ""
+			}
 
-			switch strings.ToLower(input) {
-			case "n":
+			switch char {
+			case 'n', 'N':
 				if currentPage < totalPages-1 {
 					currentPage++
+				} else {
+					currentPage = 0
 				}
-			case "p":
+			case 'p', 'P':
 				if currentPage > 0 {
 					currentPage--
+				} else {
+					currentPage = totalPages - 1
 				}
-			case "q":
+			case 'q', 'Q':
 				return ""
+			case 'c', 'C':
+				searchTerm = ""
+				currentPage = 0
+			case '/':
+				fmt.Print("\nEnter search term: ")
+				keyboard.Close()
+				var input string
+				fmt.Scanln(&input)
+				searchTerm = input
+				currentPage = 0
+				keyboard.Open()
 			}
 		}
 	}
 	return ""
+}
+
+func filterResults(results []interface{}, searchTerm string) []interface{} {
+	var filtered []interface{}
+	searchTerm = strings.ToLower(searchTerm)
+
+	for _, result := range results {
+		if row, ok := result.(map[string]interface{}); ok {
+			// 모든 필드에서 검색
+			for _, value := range row {
+				strValue := strings.ToLower(fmt.Sprintf("%v", value))
+				if strings.Contains(strValue, searchTerm) {
+					filtered = append(filtered, result)
+					break
+				}
+			}
+		}
+	}
+	return filtered
 }
 
 func formatTableValue(val interface{}) string {
