@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strings"
 
 	"github.com/jhump/protoreflect/dynamic"
@@ -184,6 +183,11 @@ var envCmd = &cobra.Command{
 			appEnvMap := appV.GetStringMap("environments")
 			userEnvMap := userV.GetStringMap("environments")
 
+			if currentEnv == switchEnv {
+				pterm.Info.Printf("Already in '%s' environment.\n", currentEnv)
+				return
+			}
+
 			if _, existsApp := appEnvMap[switchEnv]; !existsApp {
 				if _, existsUser := userEnvMap[switchEnv]; !existsUser {
 					home, _ := os.UserHomeDir()
@@ -292,49 +296,18 @@ var envCmd = &cobra.Command{
 
 			pterm.Println("Available Environments:")
 
-			var tableData [][]string
-			var envNames []string
+			// Print environments with their source and current status
 			for envName := range allEnvs {
-				envNames = append(envNames, envName)
-			}
-			sort.Strings(envNames)
-
-			// Create table header
-			tableData = append(tableData, []string{"Environment", "Type", "Active"})
-
-			// Add environments to table
-			for _, envName := range envNames {
-				var envType string
-				var status string
-				var displayName string
-
-				// Determine environment type
-				if _, isApp := appEnvMap[envName]; isApp {
-					envType = "App"
-				} else {
-					envType = "User"
-				}
-
-				// Determine status and apply green color to current environment
 				if envName == currentEnv {
-					displayName = pterm.FgGreen.Sprint(envName)
-					envType = pterm.FgGreen.Sprint(envType)
-					status = pterm.FgGreen.Sprint("✓")
+					pterm.FgGreen.Printf("%s (current)\n", envName)
 				} else {
-					displayName = envName
-					status = ""
+					if _, isApp := appEnvMap[envName]; isApp {
+						pterm.Printf("%s\n", envName)
+					} else {
+						pterm.Printf("%s\n", envName)
+					}
 				}
-
-				tableData = append(tableData, []string{displayName, envType, status})
 			}
-
-			// Create and render the table
-			table := pterm.TableData(tableData)
-			pterm.DefaultTable.WithHasHeader().
-				WithBoxed(true).
-				WithHeaderStyle(pterm.NewStyle(pterm.FgLightCyan)).
-				WithData(table).
-				Render()
 			return
 		}
 
@@ -418,7 +391,45 @@ Available Services are fetched dynamically from the backend.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		service, _ := cmd.Flags().GetString("service")
 		if service == "" {
-			// ... existing service listing code ...
+			// Create a new Viper instance for app config
+			appV := viper.New()
+
+			// Load app configuration
+			configPath := filepath.Join(GetConfigDir(), "config.yaml")
+			if err := loadConfig(appV, configPath); err != nil {
+				pterm.Error.Println(err)
+				return
+			}
+
+			token, err := getToken(appV)
+			if err != nil {
+				pterm.Error.Println("Error retrieving token:", err)
+				return
+			}
+
+			pterm.Error.Println("Please specify a service using -s or --service.")
+
+			// Fetch and display available services
+			baseURL, err := getBaseURL(appV)
+			if err != nil {
+				pterm.Error.Println("Error retrieving base URL:", err)
+				return
+			}
+
+			services, err := fetchAvailableServices(baseURL, token)
+			if err != nil {
+				pterm.Error.Println("Error fetching available services:", err)
+				return
+			}
+
+			if len(services) == 0 {
+				pterm.Println("No available services found.")
+				return
+			}
+
+			pterm.DefaultBox.WithTitle("Available Services").
+				WithRightPadding(1).WithLeftPadding(1).WithTopPadding(0).WithBottomPadding(0).
+				Println(strings.Join(services, "\n"))
 			return
 		}
 
@@ -426,9 +437,16 @@ Available Services are fetched dynamically from the backend.`,
 		appV := viper.New()
 		cacheV := viper.New()
 
-		// Load app configuration
+		// Load app configuration (for getting current environment)
 		configPath := filepath.Join(GetConfigDir(), "config.yaml")
 		if err := loadConfig(appV, configPath); err != nil {
+			pterm.Error.Println(err)
+			return
+		}
+
+		// Load cache configuration
+		cachePath := filepath.Join(GetConfigDir(), "cache", "config.yaml")
+		if err := loadConfig(cacheV, cachePath); err != nil {
 			pterm.Error.Println(err)
 			return
 		}
@@ -977,27 +995,6 @@ func convertToSlice(s []interface{}) []interface{} {
 		}
 	}
 	return result
-}
-
-// removeEnvironmentField removes the 'environment' field from the given Viper instance
-func removeEnvironmentField(v *viper.Viper) error {
-	config := make(map[string]interface{})
-	if err := v.Unmarshal(&config); err != nil {
-		return fmt.Errorf("failed to unmarshal config: %w", err)
-	}
-
-	delete(config, "environment")
-
-	data, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to marshal updated config: %w", err)
-	}
-
-	if err := os.WriteFile(v.ConfigFileUsed(), data, 0644); err != nil {
-		return fmt.Errorf("failed to write updated config to file: %w", err)
-	}
-
-	return nil
 }
 
 // constructEndpoint generates the gRPC endpoint string from baseURL
