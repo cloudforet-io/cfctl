@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/jhump/protoreflect/dynamic"
@@ -73,6 +74,7 @@ var configInitURLCmd = &cobra.Command{
 			return
 		}
 
+		// Initialize the environment
 		if appFlag {
 			envName = fmt.Sprintf("%s-app", envName)
 			updateConfig(envName, urlStr, "app")
@@ -80,6 +82,29 @@ var configInitURLCmd = &cobra.Command{
 			envName = fmt.Sprintf("%s-user", envName)
 			updateConfig(envName, urlStr, "user")
 		}
+
+		// Update the current environment in the main config
+		configDir := GetConfigDir()
+		mainConfigPath := filepath.Join(configDir, "config.yaml")
+		mainV := viper.New()
+		mainV.SetConfigFile(mainConfigPath)
+
+		// Read existing config or create new one
+		if err := mainV.ReadInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+				pterm.Error.Printf("Error reading config file: %v\n", err)
+				return
+			}
+		}
+
+		// Set the new environment as current
+		mainV.Set("environment", envName)
+		if err := mainV.WriteConfig(); err != nil {
+			pterm.Error.Printf("Failed to update current environment: %v\n", err)
+			return
+		}
+
+		pterm.Success.Printf("Switched to '%s' environment.\n", envName)
 	},
 }
 
@@ -267,18 +292,49 @@ var envCmd = &cobra.Command{
 
 			pterm.Println("Available Environments:")
 
-			// Print environments with their source and current status
+			var tableData [][]string
+			var envNames []string
 			for envName := range allEnvs {
-				if envName == currentEnv {
-					pterm.FgGreen.Printf("%s (current)\n", envName)
-				} else {
-					if _, isApp := appEnvMap[envName]; isApp {
-						pterm.Printf("%s\n", envName)
-					} else {
-						pterm.Printf("%s\n", envName)
-					}
-				}
+				envNames = append(envNames, envName)
 			}
+			sort.Strings(envNames)
+
+			// Create table header
+			tableData = append(tableData, []string{"Environment", "Type", "Active"})
+
+			// Add environments to table
+			for _, envName := range envNames {
+				var envType string
+				var status string
+				var displayName string
+
+				// Determine environment type
+				if _, isApp := appEnvMap[envName]; isApp {
+					envType = "App"
+				} else {
+					envType = "User"
+				}
+
+				// Determine status and apply green color to current environment
+				if envName == currentEnv {
+					displayName = pterm.FgGreen.Sprint(envName)
+					envType = pterm.FgGreen.Sprint(envType)
+					status = pterm.FgGreen.Sprint("✓")
+				} else {
+					displayName = envName
+					status = ""
+				}
+
+				tableData = append(tableData, []string{displayName, envType, status})
+			}
+
+			// Create and render the table
+			table := pterm.TableData(tableData)
+			pterm.DefaultTable.WithHasHeader().
+				WithBoxed(true).
+				WithHeaderStyle(pterm.NewStyle(pterm.FgLightCyan)).
+				WithData(table).
+				Render()
 			return
 		}
 
