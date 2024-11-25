@@ -9,8 +9,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/eiannone/keyboard"
+	"github.com/spf13/viper"
 
 	"github.com/atotto/clipboard"
 	"github.com/pterm/pterm"
@@ -33,7 +37,9 @@ type Config struct {
 }
 
 type Environment struct {
-	Token string `yaml:"token"`
+	Endpoint string `yaml:"endpoint"`
+	Proxy    string `yaml:"proxy"`
+	Token    string `yaml:"token"`
 }
 
 // FetchService handles the execution of gRPC commands for all services
@@ -63,18 +69,65 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 }
 
 func loadConfig() (*Config, error) {
-	configPath := fmt.Sprintf("%s/.cfctl/config.yaml", os.Getenv("HOME"))
-	data, err := os.ReadFile(configPath)
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("could not read config file: %w", err)
+		return nil, fmt.Errorf("failed to get home directory: %v", err)
 	}
 
-	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("could not unmarshal config: %w", err)
+	// Load main config
+	mainV := viper.New()
+	mainConfigPath := filepath.Join(home, ".cfctl", "config.yaml")
+	mainV.SetConfigFile(mainConfigPath)
+	if err := mainV.ReadInConfig(); err != nil {
+		return nil, fmt.Errorf("failed to read config file: %v", err)
 	}
 
-	return &config, nil
+	currentEnv := mainV.GetString("environment")
+	if currentEnv == "" {
+		return nil, fmt.Errorf("no environment set in config")
+	}
+
+	// Try to get environment config from main config first
+	var envConfig *Environment
+	if mainEnvConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv)); mainEnvConfig != nil {
+		envConfig = &Environment{
+			Endpoint: mainEnvConfig.GetString("endpoint"),
+			Token:    mainEnvConfig.GetString("token"),
+			Proxy:    mainEnvConfig.GetString("proxy"),
+		}
+	}
+
+	// If not found in main config or token is empty, try cache config
+	if envConfig == nil || envConfig.Token == "" {
+		cacheV := viper.New()
+		cacheConfigPath := filepath.Join(home, ".cfctl", "cache", "config.yaml")
+		cacheV.SetConfigFile(cacheConfigPath)
+		if err := cacheV.ReadInConfig(); err == nil {
+			if cacheEnvConfig := cacheV.Sub(fmt.Sprintf("environments.%s", currentEnv)); cacheEnvConfig != nil {
+				if envConfig == nil {
+					envConfig = &Environment{
+						Endpoint: cacheEnvConfig.GetString("endpoint"),
+						Token:    cacheEnvConfig.GetString("token"),
+						Proxy:    cacheEnvConfig.GetString("proxy"),
+					}
+				} else if envConfig.Token == "" {
+					envConfig.Token = cacheEnvConfig.GetString("token")
+				}
+			}
+		}
+	}
+
+	if envConfig == nil {
+		return nil, fmt.Errorf("environment '%s' not found in config files", currentEnv)
+	}
+
+	// Convert Environment to Config
+	return &Config{
+		Environment: currentEnv,
+		Environments: map[string]Environment{
+			currentEnv: *envConfig,
+		},
+	}, nil
 }
 
 func fetchJSONResponse(config *Config, serviceName string, verb string, resourceName string, options *FetchOptions) ([]byte, error) {
@@ -93,6 +146,11 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 	}
 	creds := credentials.NewTLS(tlsConfig)
 	opts = append(opts, grpc.WithTransportCredentials(creds))
+
+	opts = append(opts, grpc.WithDefaultCallOptions(
+		grpc.MaxCallRecvMsgSize(10*1024*1024), // 10MB
+		grpc.MaxCallSendMsgSize(10*1024*1024), // 10MB
+	))
 
 	// Establish the connection
 	conn, err := grpc.Dial(hostPort, opts...)
@@ -267,10 +325,17 @@ func printData(data map[string]interface{}, options *FetchOptions) {
 
 func printTable(data map[string]interface{}) string {
 	if results, ok := data["results"].([]interface{}); ok {
-		pageSize := 5
+		pageSize := 10
 		currentPage := 0
-		totalItems := len(results)
-		totalPages := (totalItems + pageSize - 1) / pageSize
+		searchTerm := ""
+		filteredResults := results
+
+		// Initialize keyboard
+		if err := keyboard.Open(); err != nil {
+			fmt.Println("Failed to initialize keyboard:", err)
+			return ""
+		}
+		defer keyboard.Close()
 
 		// Extract headers
 		headers := []string{}
@@ -284,6 +349,15 @@ func printTable(data map[string]interface{}) string {
 		}
 
 		for {
+			if searchTerm != "" {
+				filteredResults = filterResults(results, searchTerm)
+			} else {
+				filteredResults = results
+			}
+
+			totalItems := len(filteredResults)
+			totalPages := (totalItems + pageSize - 1) / pageSize
+
 			tableData := pterm.TableData{headers}
 
 			// Calculate current page items
@@ -291,6 +365,13 @@ func printTable(data map[string]interface{}) string {
 			endIdx := startIdx + pageSize
 			if endIdx > totalItems {
 				endIdx = totalItems
+			}
+
+			// Clear screen
+			fmt.Print("\033[H\033[2J")
+
+			if searchTerm != "" {
+				fmt.Printf("Search: %s (Found: %d items)\n", searchTerm, totalItems)
 			}
 
 			// Add rows for current page
@@ -310,29 +391,83 @@ func printTable(data map[string]interface{}) string {
 			// Print table
 			pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
 
-			// Print pagination info and controls
 			fmt.Printf("\nPage %d of %d (Total items: %d)\n", currentPage+1, totalPages, totalItems)
-			fmt.Println("Navigation: [p]revious page, [n]ext page, [q]uit")
+			fmt.Println("Navigation: [p]revious page, [n]ext page, [/]search, [c]lear search, [q]uit")
 
-			// Get user input
-			var input string
-			fmt.Scanln(&input)
+			// Get keyboard input
+			char, _, err := keyboard.GetKey()
+			if err != nil {
+				fmt.Println("Error reading keyboard input:", err)
+				return ""
+			}
 
-			switch strings.ToLower(input) {
-			case "n":
+			switch char {
+			case 'n', 'N':
 				if currentPage < totalPages-1 {
 					currentPage++
+				} else {
+					currentPage = 0
 				}
-			case "p":
+			case 'p', 'P':
 				if currentPage > 0 {
 					currentPage--
+				} else {
+					currentPage = totalPages - 1
 				}
-			case "q":
+			case 'q', 'Q':
 				return ""
+			case 'c', 'C':
+				searchTerm = ""
+				currentPage = 0
+			case '/':
+				fmt.Print("\nEnter search term: ")
+				keyboard.Close()
+				var input string
+				fmt.Scanln(&input)
+				searchTerm = input
+				currentPage = 0
+				keyboard.Open()
+			}
+		}
+	} else {
+		// 단일 객체인 경우 (get 명령어)
+		headers := make([]string, 0)
+		for key := range data {
+			headers = append(headers, key)
+		}
+		sort.Strings(headers)
+
+		tableData := pterm.TableData{
+			{"Field", "Value"},
+		}
+
+		for _, header := range headers {
+			value := formatTableValue(data[header])
+			tableData = append(tableData, []string{header, value})
+		}
+
+		pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
+	}
+	return ""
+}
+
+func filterResults(results []interface{}, searchTerm string) []interface{} {
+	var filtered []interface{}
+	searchTerm = strings.ToLower(searchTerm)
+
+	for _, result := range results {
+		if row, ok := result.(map[string]interface{}); ok {
+			// 모든 필드에서 검색
+			for _, value := range row {
+				strValue := strings.ToLower(fmt.Sprintf("%v", value))
+				if strings.Contains(strValue, searchTerm) {
+					filtered = append(filtered, result)
+					break
+				}
 			}
 		}
 	}
-	return ""
+	return filtered
 }
 
 func formatTableValue(val interface{}) string {
@@ -369,39 +504,49 @@ func formatTableValue(val interface{}) string {
 }
 
 func printCSV(data map[string]interface{}) string {
-	var buf bytes.Buffer
+	// CSV writer 생성
+	writer := csv.NewWriter(os.Stdout)
+	defer writer.Flush()
+
 	if results, ok := data["results"].([]interface{}); ok {
-		writer := csv.NewWriter(&buf)
-		var headers []string
-
-		// Extract headers
-		for _, result := range results {
-			if row, ok := result.(map[string]interface{}); ok {
-				if headers == nil {
-					for key := range row {
-						headers = append(headers, key)
-					}
-					writer.Write(headers)
-				}
-
-				// Extract row values
-				var rowValues []string
-				for _, key := range headers {
-					if val, ok := row[key]; ok {
-						rowValues = append(rowValues, formatCSVValue(val))
-					} else {
-						rowValues = append(rowValues, "")
-					}
-				}
-				writer.Write(rowValues)
-			}
+		if len(results) == 0 {
+			return ""
 		}
 
-		writer.Flush()
-		output := buf.String()
-		fmt.Print(output) // Print to console
-		return output
+		headers := make([]string, 0)
+		if firstRow, ok := results[0].(map[string]interface{}); ok {
+			for key := range firstRow {
+				headers = append(headers, key)
+			}
+			sort.Strings(headers)
+			writer.Write(headers)
+		}
+
+		for _, result := range results {
+			if row, ok := result.(map[string]interface{}); ok {
+				rowData := make([]string, len(headers))
+				for i, header := range headers {
+					rowData[i] = formatTableValue(row[header])
+				}
+				writer.Write(rowData)
+			}
+		}
+	} else {
+		headers := []string{"Field", "Value"}
+		writer.Write(headers)
+
+		fields := make([]string, 0)
+		for field := range data {
+			fields = append(fields, field)
+		}
+		sort.Strings(fields)
+
+		for _, field := range fields {
+			row := []string{field, formatTableValue(data[field])}
+			writer.Write(row)
+		}
 	}
+
 	return ""
 }
 

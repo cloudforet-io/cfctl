@@ -73,6 +73,7 @@ var configInitURLCmd = &cobra.Command{
 			return
 		}
 
+		// Initialize the environment
 		if appFlag {
 			envName = fmt.Sprintf("%s-app", envName)
 			updateConfig(envName, urlStr, "app")
@@ -80,6 +81,29 @@ var configInitURLCmd = &cobra.Command{
 			envName = fmt.Sprintf("%s-user", envName)
 			updateConfig(envName, urlStr, "user")
 		}
+
+		// Update the current environment in the main config
+		configDir := GetConfigDir()
+		mainConfigPath := filepath.Join(configDir, "config.yaml")
+		mainV := viper.New()
+		mainV.SetConfigFile(mainConfigPath)
+
+		// Read existing config or create new one
+		if err := mainV.ReadInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+				pterm.Error.Printf("Error reading config file: %v\n", err)
+				return
+			}
+		}
+
+		// Set the new environment as current
+		mainV.Set("environment", envName)
+		if err := mainV.WriteConfig(); err != nil {
+			pterm.Error.Printf("Failed to update current environment: %v\n", err)
+			return
+		}
+
+		pterm.Success.Printf("Switched to '%s' environment.\n", envName)
 	},
 }
 
@@ -158,6 +182,11 @@ var envCmd = &cobra.Command{
 			// Check environment in both app and user configs
 			appEnvMap := appV.GetStringMap("environments")
 			userEnvMap := userV.GetStringMap("environments")
+
+			if currentEnv == switchEnv {
+				pterm.Info.Printf("Already in '%s' environment.\n", currentEnv)
+				return
+			}
 
 			if _, existsApp := appEnvMap[switchEnv]; !existsApp {
 				if _, existsUser := userEnvMap[switchEnv]; !existsUser {
@@ -442,20 +471,39 @@ Available Services are fetched dynamically from the backend.`,
 		// Construct new endpoint
 		newEndpoint := fmt.Sprintf("grpc+ssl://%s.api.%s.spaceone.dev:443", service, prefix)
 
-		// Update endpoint in cache config only
-		cacheV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), newEndpoint)
+		// Update the appropriate config file based on environment type
+		if strings.HasSuffix(currentEnv, "-app") {
+			// Update endpoint in main config for app environments
+			appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), newEndpoint)
+			if service != "identity" {
+				appV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
+			} else {
+				appV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
+			}
 
-		// Update proxy based on service in cache config only
-		if service != "identity" {
-			cacheV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
+			if err := appV.WriteConfig(); err != nil {
+				pterm.Error.Printf("Failed to update config.yaml: %v\n", err)
+				return
+			}
 		} else {
-			cacheV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
-		}
+			// Update endpoint in cache config for user environments
+			cachePath := filepath.Join(GetConfigDir(), "cache", "config.yaml")
+			if err := loadConfig(cacheV, cachePath); err != nil {
+				pterm.Error.Println(err)
+				return
+			}
 
-		// Save updated cache config
-		if err := cacheV.WriteConfig(); err != nil {
-			pterm.Error.Printf("Failed to update cache/config.yaml: %v\n", err)
-			return
+			cacheV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), newEndpoint)
+			if service != "identity" {
+				cacheV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
+			} else {
+				cacheV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
+			}
+
+			if err := cacheV.WriteConfig(); err != nil {
+				pterm.Error.Printf("Failed to update cache/config.yaml: %v\n", err)
+				return
+			}
 		}
 
 		pterm.Success.Printf("Updated endpoint for '%s' to '%s'.\n", currentEnv, newEndpoint)
@@ -650,14 +698,22 @@ func getBaseURL(v *viper.Viper) (string, error) {
 
 // getToken retrieves the token for the current environment.
 func getToken(v *viper.Viper) (string, error) {
+	home, _ := os.UserHomeDir()
 	currentEnv := getCurrentEnvironment(v)
 	if currentEnv == "" {
 		return "", fmt.Errorf("no environment is set")
 	}
 
-	token := v.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
-
-	if token == "" {
+	// Check if the environment is app or user type
+	if strings.HasSuffix(currentEnv, "-app") {
+		// For app environments, check only in main config
+		token := v.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+		if token == "" {
+			return "", fmt.Errorf("no token found for app environment '%s' in %s/.cfctl/config.yaml", currentEnv, home)
+		}
+		return token, nil
+	} else if strings.HasSuffix(currentEnv, "-user") {
+		// For user environments, check only in cache config
 		cacheV := viper.New()
 		cachePath := filepath.Join(GetConfigDir(), "cache", "config.yaml")
 
@@ -665,14 +721,14 @@ func getToken(v *viper.Viper) (string, error) {
 			return "", fmt.Errorf("failed to load cache config: %v", err)
 		}
 
-		token = cacheV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+		token := cacheV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+		if token == "" {
+			return "", fmt.Errorf("no token found for user environment '%s' in %s", currentEnv, cachePath)
+		}
+		return token, nil
 	}
 
-	if token == "" {
-		return "", fmt.Errorf("no token found for environment '%s' in either config.yaml or cache/config.yaml", currentEnv)
-	}
-
-	return token, nil
+	return "", fmt.Errorf("environment '%s' has invalid suffix (must end with -app or -user)", currentEnv)
 }
 
 // GetConfigDir returns the directory where config files are stored
@@ -939,27 +995,6 @@ func convertToSlice(s []interface{}) []interface{} {
 		}
 	}
 	return result
-}
-
-// removeEnvironmentField removes the 'environment' field from the given Viper instance
-func removeEnvironmentField(v *viper.Viper) error {
-	config := make(map[string]interface{})
-	if err := v.Unmarshal(&config); err != nil {
-		return fmt.Errorf("failed to unmarshal config: %w", err)
-	}
-
-	delete(config, "environment")
-
-	data, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to marshal updated config: %w", err)
-	}
-
-	if err := os.WriteFile(v.ConfigFileUsed(), data, 0644); err != nil {
-		return fmt.Errorf("failed to write updated config to file: %w", err)
-	}
-
-	return nil
 }
 
 // constructEndpoint generates the gRPC endpoint string from baseURL
