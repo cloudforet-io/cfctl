@@ -429,6 +429,24 @@ func printTable(data map[string]interface{}) string {
 				keyboard.Open()
 			}
 		}
+	} else {
+		// 단일 객체인 경우 (get 명령어)
+		headers := make([]string, 0)
+		for key := range data {
+			headers = append(headers, key)
+		}
+		sort.Strings(headers)
+
+		tableData := pterm.TableData{
+			{"Field", "Value"},
+		}
+
+		for _, header := range headers {
+			value := formatTableValue(data[header])
+			tableData = append(tableData, []string{header, value})
+		}
+
+		pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
 	}
 	return ""
 }
@@ -486,39 +504,49 @@ func formatTableValue(val interface{}) string {
 }
 
 func printCSV(data map[string]interface{}) string {
-	var buf bytes.Buffer
+	// CSV writer 생성
+	writer := csv.NewWriter(os.Stdout)
+	defer writer.Flush()
+
 	if results, ok := data["results"].([]interface{}); ok {
-		writer := csv.NewWriter(&buf)
-		var headers []string
-
-		// Extract headers
-		for _, result := range results {
-			if row, ok := result.(map[string]interface{}); ok {
-				if headers == nil {
-					for key := range row {
-						headers = append(headers, key)
-					}
-					writer.Write(headers)
-				}
-
-				// Extract row values
-				var rowValues []string
-				for _, key := range headers {
-					if val, ok := row[key]; ok {
-						rowValues = append(rowValues, formatCSVValue(val))
-					} else {
-						rowValues = append(rowValues, "")
-					}
-				}
-				writer.Write(rowValues)
-			}
+		if len(results) == 0 {
+			return ""
 		}
 
-		writer.Flush()
-		output := buf.String()
-		fmt.Print(output) // Print to console
-		return output
+		headers := make([]string, 0)
+		if firstRow, ok := results[0].(map[string]interface{}); ok {
+			for key := range firstRow {
+				headers = append(headers, key)
+			}
+			sort.Strings(headers)
+			writer.Write(headers)
+		}
+
+		for _, result := range results {
+			if row, ok := result.(map[string]interface{}); ok {
+				rowData := make([]string, len(headers))
+				for i, header := range headers {
+					rowData[i] = formatTableValue(row[header])
+				}
+				writer.Write(rowData)
+			}
+		}
+	} else {
+		headers := []string{"Field", "Value"}
+		writer.Write(headers)
+
+		fields := make([]string, 0)
+		for field := range data {
+			fields = append(fields, field)
+		}
+		sort.Strings(fields)
+
+		for _, field := range fields {
+			row := []string{field, formatTableValue(data[field])}
+			writer.Write(row)
+		}
 	}
+
 	return ""
 }
 
