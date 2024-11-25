@@ -111,12 +111,17 @@ var ApiResourcesCmd = &cobra.Command{
 			}
 		}
 
-		// Continue with the rest of the code...
 		endpoint := envConfig.GetString("endpoint")
-		proxy := envConfig.GetBool("proxy")
 
-		if !proxy || !strings.Contains(endpoint, "identity") {
-			log.Fatalf("Endpoint for environment '%s' is not valid for fetching resources.", currentEnv)
+		if !strings.Contains(endpoint, "identity") {
+			parts := strings.Split(endpoint, "://")
+			if len(parts) == 2 {
+				hostParts := strings.Split(parts[1], ".")
+				if len(hostParts) >= 4 {
+					env := hostParts[2] // dev or stg
+					endpoint = fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", env)
+				}
+			}
 		}
 
 		// Fetch endpointsMap dynamically
