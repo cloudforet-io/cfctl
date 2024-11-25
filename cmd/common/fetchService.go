@@ -9,8 +9,11 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/spf13/viper"
 
 	"github.com/atotto/clipboard"
 	"github.com/pterm/pterm"
@@ -33,7 +36,9 @@ type Config struct {
 }
 
 type Environment struct {
-	Token string `yaml:"token"`
+	Endpoint string `yaml:"endpoint"`
+	Proxy    string `yaml:"proxy"`
+	Token    string `yaml:"token"`
 }
 
 // FetchService handles the execution of gRPC commands for all services
@@ -63,18 +68,65 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 }
 
 func loadConfig() (*Config, error) {
-	configPath := fmt.Sprintf("%s/.cfctl/config.yaml", os.Getenv("HOME"))
-	data, err := os.ReadFile(configPath)
+	home, err := os.UserHomeDir()
 	if err != nil {
-		return nil, fmt.Errorf("could not read config file: %w", err)
+		return nil, fmt.Errorf("failed to get home directory: %v", err)
 	}
 
-	var config Config
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return nil, fmt.Errorf("could not unmarshal config: %w", err)
+	// Load main config
+	mainV := viper.New()
+	mainConfigPath := filepath.Join(home, ".cfctl", "config.yaml")
+	mainV.SetConfigFile(mainConfigPath)
+	if err := mainV.ReadInConfig(); err != nil {
+		return nil, fmt.Errorf("failed to read config file: %v", err)
 	}
 
-	return &config, nil
+	currentEnv := mainV.GetString("environment")
+	if currentEnv == "" {
+		return nil, fmt.Errorf("no environment set in config")
+	}
+
+	// Try to get environment config from main config first
+	var envConfig *Environment
+	if mainEnvConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv)); mainEnvConfig != nil {
+		envConfig = &Environment{
+			Endpoint: mainEnvConfig.GetString("endpoint"),
+			Token:    mainEnvConfig.GetString("token"),
+			Proxy:    mainEnvConfig.GetString("proxy"),
+		}
+	}
+
+	// If not found in main config or token is empty, try cache config
+	if envConfig == nil || envConfig.Token == "" {
+		cacheV := viper.New()
+		cacheConfigPath := filepath.Join(home, ".cfctl", "cache", "config.yaml")
+		cacheV.SetConfigFile(cacheConfigPath)
+		if err := cacheV.ReadInConfig(); err == nil {
+			if cacheEnvConfig := cacheV.Sub(fmt.Sprintf("environments.%s", currentEnv)); cacheEnvConfig != nil {
+				if envConfig == nil {
+					envConfig = &Environment{
+						Endpoint: cacheEnvConfig.GetString("endpoint"),
+						Token:    cacheEnvConfig.GetString("token"),
+						Proxy:    cacheEnvConfig.GetString("proxy"),
+					}
+				} else if envConfig.Token == "" {
+					envConfig.Token = cacheEnvConfig.GetString("token")
+				}
+			}
+		}
+	}
+
+	if envConfig == nil {
+		return nil, fmt.Errorf("environment '%s' not found in config files", currentEnv)
+	}
+
+	// Convert Environment to Config
+	return &Config{
+		Environment: currentEnv,
+		Environments: map[string]Environment{
+			currentEnv: *envConfig,
+		},
+	}, nil
 }
 
 func fetchJSONResponse(config *Config, serviceName string, verb string, resourceName string, options *FetchOptions) ([]byte, error) {
