@@ -146,58 +146,78 @@ func watchResource(serviceName, verb, resource string, options *FetchOptions) er
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt)
 
-	// Map to store seen results
-	seenResults := make(map[string]bool)
+	seenItems := make(map[string]bool)
 
-	// Create a copy of options for initial fetch
-	initialOptions := *options
-
-	// Fetch and display initial data
-	initialData, err := FetchService(serviceName, verb, resource, &initialOptions)
+	initialData, err := FetchService(serviceName, verb, resource, &FetchOptions{
+		Parameters:      options.Parameters,
+		JSONParameter:   options.JSONParameter,
+		FileParameter:   options.FileParameter,
+		APIVersion:      options.APIVersion,
+		OutputFormat:    "",
+		CopyToClipboard: false,
+	})
 	if err != nil {
 		return err
 	}
 
-	// Process initial results
 	if results, ok := initialData["results"].([]interface{}); ok {
+		var recentItems []map[string]interface{}
+
 		for _, item := range results {
 			if m, ok := item.(map[string]interface{}); ok {
 				identifier := generateIdentifier(m)
-				seenResults[identifier] = true
+				seenItems[identifier] = true
+
+				recentItems = append(recentItems, m)
+				if len(recentItems) > 20 {
+					recentItems = recentItems[1:]
+				}
 			}
+		}
+
+		if len(recentItems) > 0 {
+			fmt.Printf("Recent items:\n")
+			printNewItems(recentItems)
 		}
 	}
 
-	fmt.Printf("\nWatching for changes... (Ctrl+C to quit)\n")
-
-	// Create options for subsequent fetches without output
-	watchOptions := *options
-	watchOptions.OutputFormat = ""
+	fmt.Printf("\nWatching for changes... (Ctrl+C to quit)\n\n")
 
 	for {
 		select {
 		case <-ticker.C:
-			newData, err := FetchService(serviceName, verb, resource, &watchOptions)
+			newData, err := FetchService(serviceName, verb, resource, &FetchOptions{
+				Parameters:      options.Parameters,
+				JSONParameter:   options.JSONParameter,
+				FileParameter:   options.FileParameter,
+				APIVersion:      options.APIVersion,
+				OutputFormat:    "",
+				CopyToClipboard: false,
+			})
 			if err != nil {
 				continue
 			}
 
+			var newItems []map[string]interface{}
 			if results, ok := newData["results"].([]interface{}); ok {
-				newItems := []map[string]interface{}{}
-
 				for _, item := range results {
 					if m, ok := item.(map[string]interface{}); ok {
 						identifier := generateIdentifier(m)
-						if !seenResults[identifier] {
-							seenResults[identifier] = true
+						if !seenItems[identifier] {
 							newItems = append(newItems, m)
+							seenItems[identifier] = true
 						}
 					}
 				}
+			}
 
-				if len(newItems) > 0 {
-					printNewItems(newItems)
-				}
+			if len(newItems) > 0 {
+				fmt.Printf("Found %d new items at %s:\n",
+					len(newItems),
+					time.Now().Format("2006-01-02 15:04:05"))
+
+				printNewItems(newItems)
+				fmt.Println()
 			}
 
 		case <-sigChan:
@@ -207,8 +227,11 @@ func watchResource(serviceName, verb, resource string, options *FetchOptions) er
 	}
 }
 
-// generateIdentifier creates a unique identifier for an item based on its contents
 func generateIdentifier(item map[string]interface{}) string {
+	if id, ok := item["job_task_id"]; ok {
+		return fmt.Sprintf("%v", id)
+	}
+
 	var keys []string
 	for k := range item {
 		keys = append(keys, k)
@@ -222,23 +245,20 @@ func generateIdentifier(item map[string]interface{}) string {
 	return strings.Join(parts, ",")
 }
 
-// printNewItems displays new items in table format
 func printNewItems(items []map[string]interface{}) {
 	if len(items) == 0 {
 		return
 	}
 
-	// Prepare table data
 	tableData := pterm.TableData{}
 
-	// Extract headers from first item
 	headers := make([]string, 0)
 	for key := range items[0] {
 		headers = append(headers, key)
 	}
 	sort.Strings(headers)
+	tableData = append(tableData, headers)
 
-	// Convert each item to a table row
 	for _, item := range items {
 		row := make([]string, len(headers))
 		for i, header := range headers {
@@ -249,6 +269,5 @@ func printNewItems(items []map[string]interface{}) {
 		tableData = append(tableData, row)
 	}
 
-	// Render the table
-	pterm.DefaultTable.WithData(tableData).Render()
+	pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
 }
