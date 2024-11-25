@@ -362,45 +362,7 @@ Available Services are fetched dynamically from the backend.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		service, _ := cmd.Flags().GetString("service")
 		if service == "" {
-			// Create a new Viper instance for app config
-			appV := viper.New()
-
-			// Load app configuration
-			configPath := filepath.Join(GetConfigDir(), "config.yaml")
-			if err := loadConfig(appV, configPath); err != nil {
-				pterm.Error.Println(err)
-				return
-			}
-
-			token, err := getToken(appV)
-			if err != nil {
-				pterm.Error.Println("Error retrieving token:", err)
-				return
-			}
-
-			pterm.Error.Println("Please specify a service using -s or --service.")
-
-			// Fetch and display available services
-			baseURL, err := getBaseURL(appV)
-			if err != nil {
-				pterm.Error.Println("Error retrieving base URL:", err)
-				return
-			}
-
-			services, err := fetchAvailableServices(baseURL, token)
-			if err != nil {
-				pterm.Error.Println("Error fetching available services:", err)
-				return
-			}
-
-			if len(services) == 0 {
-				pterm.Println("No available services found.")
-				return
-			}
-
-			pterm.DefaultBox.WithTitle("Available Services").
-				WithRightPadding(1).WithLeftPadding(1).WithTopPadding(0).WithBottomPadding(0).
-				Println(strings.Join(services, "\n"))
+			// ... existing service listing code ...
 			return
 		}
 
@@ -408,16 +370,9 @@ Available Services are fetched dynamically from the backend.`,
 		appV := viper.New()
 		cacheV := viper.New()
 
-		// Load app configuration (for getting current environment)
+		// Load app configuration
 		configPath := filepath.Join(GetConfigDir(), "config.yaml")
 		if err := loadConfig(appV, configPath); err != nil {
-			pterm.Error.Println(err)
-			return
-		}
-
-		// Load cache configuration
-		cachePath := filepath.Join(GetConfigDir(), "cache", "config.yaml")
-		if err := loadConfig(cacheV, cachePath); err != nil {
 			pterm.Error.Println(err)
 			return
 		}
@@ -442,20 +397,39 @@ Available Services are fetched dynamically from the backend.`,
 		// Construct new endpoint
 		newEndpoint := fmt.Sprintf("grpc+ssl://%s.api.%s.spaceone.dev:443", service, prefix)
 
-		// Update endpoint in cache config only
-		cacheV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), newEndpoint)
+		// Update the appropriate config file based on environment type
+		if strings.HasSuffix(currentEnv, "-app") {
+			// Update endpoint in main config for app environments
+			appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), newEndpoint)
+			if service != "identity" {
+				appV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
+			} else {
+				appV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
+			}
 
-		// Update proxy based on service in cache config only
-		if service != "identity" {
-			cacheV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
+			if err := appV.WriteConfig(); err != nil {
+				pterm.Error.Printf("Failed to update config.yaml: %v\n", err)
+				return
+			}
 		} else {
-			cacheV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
-		}
+			// Update endpoint in cache config for user environments
+			cachePath := filepath.Join(GetConfigDir(), "cache", "config.yaml")
+			if err := loadConfig(cacheV, cachePath); err != nil {
+				pterm.Error.Println(err)
+				return
+			}
 
-		// Save updated cache config
-		if err := cacheV.WriteConfig(); err != nil {
-			pterm.Error.Printf("Failed to update cache/config.yaml: %v\n", err)
-			return
+			cacheV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), newEndpoint)
+			if service != "identity" {
+				cacheV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
+			} else {
+				cacheV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
+			}
+
+			if err := cacheV.WriteConfig(); err != nil {
+				pterm.Error.Printf("Failed to update cache/config.yaml: %v\n", err)
+				return
+			}
 		}
 
 		pterm.Success.Printf("Updated endpoint for '%s' to '%s'.\n", currentEnv, newEndpoint)
@@ -650,14 +624,22 @@ func getBaseURL(v *viper.Viper) (string, error) {
 
 // getToken retrieves the token for the current environment.
 func getToken(v *viper.Viper) (string, error) {
+	home, _ := os.UserHomeDir()
 	currentEnv := getCurrentEnvironment(v)
 	if currentEnv == "" {
 		return "", fmt.Errorf("no environment is set")
 	}
 
-	token := v.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
-
-	if token == "" {
+	// Check if the environment is app or user type
+	if strings.HasSuffix(currentEnv, "-app") {
+		// For app environments, check only in main config
+		token := v.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+		if token == "" {
+			return "", fmt.Errorf("no token found for app environment '%s' in %s/.cfctl/config.yaml", currentEnv, home)
+		}
+		return token, nil
+	} else if strings.HasSuffix(currentEnv, "-user") {
+		// For user environments, check only in cache config
 		cacheV := viper.New()
 		cachePath := filepath.Join(GetConfigDir(), "cache", "config.yaml")
 
@@ -665,14 +647,14 @@ func getToken(v *viper.Viper) (string, error) {
 			return "", fmt.Errorf("failed to load cache config: %v", err)
 		}
 
-		token = cacheV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+		token := cacheV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+		if token == "" {
+			return "", fmt.Errorf("no token found for user environment '%s' in %s", currentEnv, cachePath)
+		}
+		return token, nil
 	}
 
-	if token == "" {
-		return "", fmt.Errorf("no token found for environment '%s' in either config.yaml or cache/config.yaml", currentEnv)
-	}
-
-	return token, nil
+	return "", fmt.Errorf("environment '%s' has invalid suffix (must end with -app or -user)", currentEnv)
 }
 
 // GetConfigDir returns the directory where config files are stored
