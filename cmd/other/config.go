@@ -3,34 +3,29 @@
 package other
 
 import (
-	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
+	"github.com/jhump/protoreflect/dynamic"
+
+	"github.com/jhump/protoreflect/grpcreflect"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
+
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v2"
 )
-
-var envFile string
-
-var availableServices = []string{
-	"identity", "inventory", "plugin", "repository", "secret",
-	"monitoring", "config", "statistics", "notification",
-	"cost_analysis", "board", "file_manager", "dashboard",
-}
-
-// Separate Viper instances for app and user configurations
-var appViper = viper.New()
-var userViper = viper.New()
 
 // ConfigCmd represents the config command
 var ConfigCmd = &cobra.Command{
@@ -95,7 +90,7 @@ var configInitLocalCmd = &cobra.Command{
 	Long:  `Specify a local environment name to initialize the configuration.`,
 	Args:  cobra.NoArgs,
 	Example: `  cfctl config init local -n local-cloudone --app
-                      or
+    or
   cfctl config init local -n local-cloudone --user`,
 	Run: func(cmd *cobra.Command, args []string) {
 		localEnv, _ := cmd.Flags().GetString("name")
@@ -131,23 +126,28 @@ var envCmd = &cobra.Command{
 	Long:  "List and manage environments",
 	Run: func(cmd *cobra.Command, args []string) {
 		// Set paths for app and user configurations
-		appConfigPath := filepath.Join(GetConfigDir(), "config.yaml")
-		userConfigPath := filepath.Join(GetConfigDir(), "cache", "config.yaml")
+		configDir := GetConfigDir()
+		appConfigPath := filepath.Join(configDir, "config.yaml")
+		userConfigPath := filepath.Join(configDir, "cache", "config.yaml")
+
+		// Create separate Viper instances
+		appV := viper.New()
+		userV := viper.New()
 
 		// Load app configuration
-		if err := loadConfig(appViper, appConfigPath); err != nil {
+		if err := loadConfig(appV, appConfigPath); err != nil {
 			pterm.Error.Println(err)
 			return
 		}
 
 		// Load user configuration
-		if err := loadConfig(userViper, userConfigPath); err != nil {
+		if err := loadConfig(userV, userConfigPath); err != nil {
 			pterm.Error.Println(err)
 			return
 		}
 
 		// Get current environment (from app config only)
-		currentEnv := getCurrentEnvironment(appViper)
+		currentEnv := getCurrentEnvironment(appV)
 
 		// Check if -s or -r flag is provided
 		switchEnv, _ := cmd.Flags().GetString("switch")
@@ -156,8 +156,8 @@ var envCmd = &cobra.Command{
 		// Handle environment switching (app config only)
 		if switchEnv != "" {
 			// Check environment in both app and user configs
-			appEnvMap := appViper.GetStringMap("environments")
-			userEnvMap := userViper.GetStringMap("environments")
+			appEnvMap := appV.GetStringMap("environments")
+			userEnvMap := userV.GetStringMap("environments")
 
 			if _, existsApp := appEnvMap[switchEnv]; !existsApp {
 				if _, existsUser := userEnvMap[switchEnv]; !existsUser {
@@ -169,9 +169,9 @@ var envCmd = &cobra.Command{
 			}
 
 			// Update only the environment field in app config
-			appViper.Set("environment", switchEnv)
+			appV.Set("environment", switchEnv)
 
-			if err := appViper.WriteConfig(); err != nil {
+			if err := appV.WriteConfig(); err != nil {
 				pterm.Error.Printf("Failed to update environment in config.yaml: %v", err)
 				return
 			}
@@ -183,11 +183,23 @@ var envCmd = &cobra.Command{
 
 		// Handle environment removal with confirmation
 		if removeEnv != "" {
-			// Use appViper or userViper based on where environments are managed
-			// Here, assuming environments are managed in appViper
-			envMap := appViper.GetStringMap("environments")
-			if _, exists := envMap[removeEnv]; !exists {
-				log.Fatalf("Environment '%s' not found in config.yaml.", removeEnv)
+			// Determine which Viper instance contains the environment
+			var targetViper *viper.Viper
+			var targetConfigPath string
+			envMapApp := appV.GetStringMap("environments")
+			envMapUser := userV.GetStringMap("environments")
+
+			if _, exists := envMapApp[removeEnv]; exists {
+				targetViper = appV
+				targetConfigPath = appConfigPath
+			} else if _, exists := envMapUser[removeEnv]; exists {
+				targetViper = userV
+				targetConfigPath = userConfigPath
+			} else {
+				home, _ := os.UserHomeDir()
+				pterm.Error.Printf("Environment '%s' not found in either %s/.cfctl/config.yaml or %s/.cfctl/cache/config.yaml\n",
+					removeEnv, home, home)
+				return
 			}
 
 			// Ask for confirmation before deletion
@@ -198,22 +210,28 @@ var envCmd = &cobra.Command{
 
 			if response == "y" {
 				// Remove the environment from the environments map
+				envMap := targetViper.GetStringMap("environments")
 				delete(envMap, removeEnv)
-				appViper.Set("environments", envMap)
+				targetViper.Set("environments", envMap)
+
+				// Write the updated configuration back to the respective config file
+				if err := targetViper.WriteConfig(); err != nil {
+					pterm.Error.Printf("Failed to update config file '%s': %v", targetConfigPath, err)
+					return
+				}
 
 				// If the deleted environment was the current one, unset it
-				if appViper.GetString("environment") == removeEnv {
-					appViper.Set("environment", "")
+				if currentEnv == removeEnv {
+					appV.Set("environment", "")
+					if err := appV.WriteConfig(); err != nil {
+						pterm.Error.Printf("Failed to update environment in config.yaml: %v", err)
+						return
+					}
 					pterm.Info.WithShowLineNumber(false).Println("Cleared current environment in config.yaml")
 				}
 
-				// Write the updated configuration back to config.yaml
-				if err := appViper.WriteConfig(); err != nil {
-					log.Fatalf("Failed to update config.yaml: %v", err)
-				}
-
 				// Display success message
-				pterm.Success.Printf("Removed '%s' environment.\n", removeEnv)
+				pterm.Success.Printf("Removed '%s' environment from %s.\n", removeEnv, targetConfigPath)
 			} else {
 				pterm.Info.Println("Environment deletion canceled.")
 			}
@@ -226,8 +244,8 @@ var envCmd = &cobra.Command{
 		// List environments if the -l flag is set
 		if listOnly {
 			// Get environment maps from both app and user configs
-			appEnvMap := appViper.GetStringMap("environments")
-			userEnvMap := userViper.GetStringMap("environments")
+			appEnvMap := appV.GetStringMap("environments")
+			userEnvMap := userV.GetStringMap("environments")
 
 			// Map to store all unique environments
 			allEnvs := make(map[string]bool)
@@ -252,12 +270,12 @@ var envCmd = &cobra.Command{
 			// Print environments with their source and current status
 			for envName := range allEnvs {
 				if envName == currentEnv {
-					pterm.FgGreen.Printf("  %s (current)\n", envName)
+					pterm.FgGreen.Printf("%s (current)\n", envName)
 				} else {
 					if _, isApp := appEnvMap[envName]; isApp {
-						pterm.Printf("  %s (app)\n", envName)
+						pterm.Printf("%s\n", envName)
 					} else {
-						pterm.Printf("  %s (user)\n", envName)
+						pterm.Printf("%s\n", envName)
 					}
 				}
 			}
@@ -278,30 +296,34 @@ var showCmd = &cobra.Command{
 		appConfigPath := filepath.Join(configDir, "config.yaml")
 		userConfigPath := filepath.Join(configDir, "cache", "config.yaml")
 
+		// Create separate Viper instances
+		appV := viper.New()
+		userV := viper.New()
+
 		// Load app configuration
-		if err := loadConfig(appViper, appConfigPath); err != nil {
+		if err := loadConfig(appV, appConfigPath); err != nil {
 			pterm.Error.Println(err)
 			return
 		}
 
 		// Load user configuration
-		if err := loadConfig(userViper, userConfigPath); err != nil {
+		if err := loadConfig(userV, userConfigPath); err != nil {
 			pterm.Error.Println(err)
 			return
 		}
 
-		currentEnv := getCurrentEnvironment(appViper)
+		currentEnv := getCurrentEnvironment(appV)
 		if currentEnv == "" {
 			pterm.Sprintf("No environment set in %s\n", appConfigPath)
 			return
 		}
 
 		// Try to get the environment from appViper
-		envConfig := appViper.GetStringMap(fmt.Sprintf("environments.%s", currentEnv))
+		envConfig := appV.GetStringMap(fmt.Sprintf("environments.%s", currentEnv))
 
 		// If not found in appViper, try userViper
 		if len(envConfig) == 0 {
-			envConfig = userViper.GetStringMap(fmt.Sprintf("environments.%s", currentEnv))
+			envConfig = userV.GetStringMap(fmt.Sprintf("environments.%s", currentEnv))
 			if len(envConfig) == 0 {
 				pterm.Error.Printf("Environment '%s' not found in %s or %s\n", currentEnv, appConfigPath, userConfigPath)
 				return
@@ -340,7 +362,17 @@ Available Services are fetched dynamically from the backend.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		service, _ := cmd.Flags().GetString("service")
 		if service == "" {
-			token, err := getToken(appViper)
+			// Create a new Viper instance for app config
+			appV := viper.New()
+
+			// Load app configuration
+			configPath := filepath.Join(GetConfigDir(), "config.yaml")
+			if err := loadConfig(appV, configPath); err != nil {
+				pterm.Error.Println(err)
+				return
+			}
+
+			token, err := getToken(appV)
 			if err != nil {
 				pterm.Error.Println("Error retrieving token:", err)
 				return
@@ -349,7 +381,7 @@ Available Services are fetched dynamically from the backend.`,
 			pterm.Error.Println("Please specify a service using -s or --service.")
 
 			// Fetch and display available services
-			baseURL, err := getBaseURL(appViper)
+			baseURL, err := getBaseURL(appV)
 			if err != nil {
 				pterm.Error.Println("Error retrieving base URL:", err)
 				return
@@ -372,58 +404,25 @@ Available Services are fetched dynamically from the backend.`,
 			return
 		}
 
-		// Fetch available services to validate the input
-		baseURL, err := getBaseURL(appViper)
-		if err != nil {
-			pterm.Error.Println("Error retrieving base URL:", err)
-			return
-		}
+		// Create Viper instances for both app and cache configs
+		appV := viper.New()
+		cacheV := viper.New()
 
-		token, err := getToken(appViper)
-		if err != nil {
-			pterm.Error.Println("Error retrieving token:", err)
-			return
-		}
-
-		services, err := fetchAvailableServices(baseURL, token)
-		if err != nil {
-			pterm.Error.Println("Error fetching available services:", err)
-			return
-		}
-
-		// Validate the service name
-		isValidService := false
-		for _, validService := range availableServices {
-			if service == validService {
-				isValidService = true
-				break
-			}
-		}
-
-		if !isValidService {
-			pterm.Error.Printf("Invalid service '%s'.\n", service)
-			pterm.Println()
-			if len(services) > 0 {
-				pterm.DefaultBox.WithTitle("Available Services").
-					WithRightPadding(1).WithLeftPadding(1).WithTopPadding(0).WithBottomPadding(0).
-					Println(strings.Join(services, "\n"))
-			} else {
-				pterm.Println("No available services found.")
-			}
-			return
-		}
-
-		// Assume configEndpointCmd operates on the app config
+		// Load app configuration (for getting current environment)
 		configPath := filepath.Join(GetConfigDir(), "config.yaml")
-		v := appViper
-
-		// Load or create the config file
-		if err := loadConfig(v, configPath); err != nil {
+		if err := loadConfig(appV, configPath); err != nil {
 			pterm.Error.Println(err)
 			return
 		}
 
-		currentEnv := getCurrentEnvironment(v)
+		// Load cache configuration
+		cachePath := filepath.Join(GetConfigDir(), "cache", "config.yaml")
+		if err := loadConfig(cacheV, cachePath); err != nil {
+			pterm.Error.Println(err)
+			return
+		}
+
+		currentEnv := getCurrentEnvironment(appV)
 		if currentEnv == "" {
 			pterm.Error.Println("No environment is set. Please initialize or switch to an environment.")
 			return
@@ -443,19 +442,19 @@ Available Services are fetched dynamically from the backend.`,
 		// Construct new endpoint
 		newEndpoint := fmt.Sprintf("grpc+ssl://%s.api.%s.spaceone.dev:443", service, prefix)
 
-		// Update endpoint
-		v.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), newEndpoint)
+		// Update endpoint in cache config only
+		cacheV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), newEndpoint)
 
-		// Update proxy based on service
+		// Update proxy based on service in cache config only
 		if service != "identity" {
-			v.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
+			cacheV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
 		} else {
-			v.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
+			cacheV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
 		}
 
-		// Save updated config
-		if err := v.WriteConfig(); err != nil {
-			pterm.Error.Printf("Failed to update config.yaml: %v\n", err)
+		// Save updated cache config
+		if err := cacheV.WriteConfig(); err != nil {
+			pterm.Error.Printf("Failed to update cache/config.yaml: %v\n", err)
 			return
 		}
 
@@ -463,61 +462,166 @@ Available Services are fetched dynamically from the backend.`,
 	},
 }
 
-// fetchAvailableServices retrieves the list of services from the backend API using the provided token.
-func fetchAvailableServices(baseURL, token string) ([]string, error) {
-	// Use constructEndpoint to get the gRPC endpoint
-	grpcEndpoint, err := constructEndpoint(baseURL)
+// fetchAvailableServices retrieves the list of services by calling the List method on the Endpoint service.
+func fetchAvailableServices(endpoint, token string) ([]string, error) {
+	if !strings.Contains(endpoint, "identity.api") {
+		parts := strings.Split(endpoint, "://")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
+		}
+
+		hostParts := strings.Split(parts[1], ".")
+		if len(hostParts) < 4 {
+			return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
+		}
+		env := hostParts[2]
+
+		endpoint = fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", env)
+	}
+
+	parsedURL, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("failed to construct gRPC endpoint: %w", err)
+		return nil, fmt.Errorf("failed to parse endpoint: %w", err)
 	}
 
-	// Derive the API URL from the gRPC endpoint
-	// Assuming the API is accessible via HTTPS and follows a similar pattern
-	// For example, if grpcEndpoint is "grpc+ssl://identity.api.dev.spaceone.dev:443"
-	// then apiURL would be "https://identity.api.dev.spaceone.dev"
-	parsedURL, err := url.Parse(grpcEndpoint)
+	host := parsedURL.Hostname()
+	port := parsedURL.Port()
+	if port == "" {
+		port = "443" // Default gRPC port
+	}
+
+	var opts []grpc.DialOption
+
+	// Set up TLS credentials if the scheme is grpc+ssl://
+	if strings.HasPrefix(endpoint, "grpc+ssl://") {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false, // Set to true only if you want to skip TLS verification (not recommended)
+		}
+		creds := credentials.NewTLS(tlsConfig)
+		opts = append(opts, grpc.WithTransportCredentials(creds))
+	} else {
+		return nil, fmt.Errorf("unsupported scheme in endpoint: %s", endpoint)
+	}
+
+	// Add token-based authentication if a token is provided
+	if token != "" {
+		opts = append(opts, grpc.WithPerRPCCredentials(&tokenCreds{token}))
+	}
+
+	// Establish a connection to the gRPC server
+	conn, err := grpc.Dial(fmt.Sprintf("%s:%s", host, port), opts...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse gRPC endpoint: %w", err)
+		return nil, fmt.Errorf("failed to dial gRPC endpoint: %w", err)
 	}
+	defer conn.Close()
 
-	apiURL := fmt.Sprintf("https://%s", parsedURL.Hostname())
+	ctx := context.Background()
 
-	// Create a new HTTP request
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/v1/services", apiURL), nil) // Adjust the path as needed
+	// Create a reflection client to discover services and methods
+	refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	defer refClient.Reset()
+
+	// Resolve the service descriptor for "spaceone.api.identity.v2.Endpoint"
+	serviceName := "spaceone.api.identity.v2.Endpoint"
+	svcDesc, err := refClient.ResolveService(serviceName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+		return nil, fmt.Errorf("failed to resolve service %s: %w", serviceName, err)
 	}
 
-	// Set the Authorization header with the token
-	req.Header.Set("Authorization", "Bearer "+token)
+	// Resolve the method descriptor for the "List" method
+	methodName := "list"
+	methodDesc := svcDesc.FindMethodByName(methodName)
+	if methodDesc == nil {
+		return nil, fmt.Errorf("method '%s' not found in service '%s'", methodName, serviceName)
+	}
 
-	// Initialize the HTTP client
-	client := &http.Client{}
+	inputType := methodDesc.GetInputType()
+	if inputType == nil {
+		return nil, fmt.Errorf("input type not found for method '%s'", methodName)
+	}
 
-	// Send the request
-	resp, err := client.Do(req)
+	// Get the request and response message descriptors
+	reqDesc := methodDesc.GetInputType()
+	respDesc := methodDesc.GetOutputType()
+
+	// Create a dynamic message for the request
+	reqMsg := dynamic.NewMessage(reqDesc)
+	// If ListRequest has required fields, set them here. For example:
+	// reqMsg.SetField("page_size", 100)
+
+	// Create a dynamic message for the response
+	respMsg := dynamic.NewMessage(respDesc)
+
+	// Invoke the RPC method
+	//err = grpc.Invoke(ctx, fmt.Sprintf("/%s/%s", serviceName, methodName), reqMsg, conn, respMsg)
+	err = conn.Invoke(ctx, fmt.Sprintf("/%s/%s", serviceName, methodName), reqMsg, respMsg)
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch services: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Check for non-200 status codes
-	if resp.StatusCode != http.StatusOK {
-		var buf bytes.Buffer
-		buf.ReadFrom(resp.Body)
-		return nil, fmt.Errorf("failed to fetch services: %s", buf.String())
+		return nil, fmt.Errorf("failed to invoke RPC: %w", err)
 	}
 
-	// Parse the JSON response
-	var services []string
-	if err := json.NewDecoder(resp.Body).Decode(&services); err != nil {
-		return nil, fmt.Errorf("failed to decode services response: %w", err)
+	// Extract the 'results' field from the response message
+	resultsFieldDesc := respDesc.FindFieldByName("results")
+	if resultsFieldDesc == nil {
+		return nil, fmt.Errorf("'results' field not found in response message")
 	}
 
-	return services, nil
+	resultsField, err := respMsg.TryGetField(resultsFieldDesc)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get 'results' field: %w", err)
+	}
+
+	// 'results' is expected to be a repeated field (list) of messages
+	resultsSlice, ok := resultsField.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("'results' field is not a list")
+	}
+
+	var availableServices []string
+	for _, res := range resultsSlice {
+		// Each item in 'results' should be a dynamic.Message
+		resMsg, ok := res.(*dynamic.Message)
+		if !ok {
+			continue
+		}
+
+		// Extract the 'service' field from each result message
+		serviceFieldDesc := resMsg.GetMessageDescriptor().FindFieldByName("service")
+		if serviceFieldDesc == nil {
+			continue // Skip if 'service' field is not found
+		}
+
+		serviceField, err := resMsg.TryGetField(serviceFieldDesc)
+		if err != nil {
+			continue // Skip if unable to get the 'service' field
+		}
+
+		serviceStr, ok := serviceField.(string)
+		if !ok {
+			continue // Skip if 'service' field is not a string
+		}
+
+		availableServices = append(availableServices, serviceStr)
+	}
+
+	return availableServices, nil
 }
 
-// getBaseURL retrieves the base URL for the current environment from the app configuration.
+// tokenCreds implements grpc.PerRPCCredentials for token-based authentication.
+type tokenCreds struct {
+	token string
+}
+
+func (t *tokenCreds) GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error) {
+	return map[string]string{
+		"authorization": fmt.Sprintf("Bearer %s", t.token),
+	}, nil
+}
+
+func (t *tokenCreds) RequireTransportSecurity() bool {
+	return true
+}
+
+// getBaseURL retrieves the base URL for the current environment from the given Viper instance.
 func getBaseURL(v *viper.Viper) (string, error) {
 	currentEnv := getCurrentEnvironment(v)
 	if currentEnv == "" {
@@ -525,8 +629,20 @@ func getBaseURL(v *viper.Viper) (string, error) {
 	}
 
 	baseURL := v.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv))
+
 	if baseURL == "" {
-		return "", fmt.Errorf("no endpoint found for environment '%s'", currentEnv)
+		cacheV := viper.New()
+		cachePath := filepath.Join(GetConfigDir(), "cache", "config.yaml")
+
+		if err := loadConfig(cacheV, cachePath); err != nil {
+			return "", fmt.Errorf("failed to load cache config: %v", err)
+		}
+
+		baseURL = cacheV.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv))
+	}
+
+	if baseURL == "" {
+		return "", fmt.Errorf("no endpoint found for environment '%s' in either config.yaml or cache/config.yaml", currentEnv)
 	}
 
 	return baseURL, nil
@@ -540,8 +656,20 @@ func getToken(v *viper.Viper) (string, error) {
 	}
 
 	token := v.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+
 	if token == "" {
-		return "", fmt.Errorf("no token found for environment '%s'", currentEnv)
+		cacheV := viper.New()
+		cachePath := filepath.Join(GetConfigDir(), "cache", "config.yaml")
+
+		if err := loadConfig(cacheV, cachePath); err != nil {
+			return "", fmt.Errorf("failed to load cache config: %v", err)
+		}
+
+		token = cacheV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+	}
+
+	if token == "" {
+		return "", fmt.Errorf("no token found for environment '%s' in either config.yaml or cache/config.yaml", currentEnv)
 	}
 
 	return token, nil
@@ -567,6 +695,9 @@ func loadConfig(v *viper.Viper, configPath string) error {
 
 	// Set the config file
 	v.SetConfigFile(configPath)
+
+	// Set the config type explicitly to YAML
+	v.SetConfigType("yaml")
 
 	// Check if the config file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -669,10 +800,10 @@ func updateConfig(envName, baseURL, mode string) {
 
 	if mode == "app" {
 		configPath = filepath.Join(GetConfigDir(), "config.yaml")
-		v = appViper
+		v = viper.New()
 	} else {
 		configPath = filepath.Join(GetConfigDir(), "cache", "config.yaml")
-		v = userViper
+		v = viper.New()
 	}
 
 	// Load or create the config file
@@ -725,20 +856,15 @@ func updateConfig(envName, baseURL, mode string) {
 		return
 	}
 
-	// Load the app configuration to update the 'environment' field
-	appConfigPath := filepath.Join(GetConfigDir(), "config.yaml")
-	if err := loadConfig(appViper, appConfigPath); err != nil {
-		pterm.Error.Println("Failed to load app config:", err)
-		return
-	}
+	// If mode is 'app', set the 'environment' field
+	if mode == "app" {
+		v.Set("environment", envName)
 
-	// Set the 'environment' field in the app config
-	appViper.Set("environment", envName)
-
-	// Write the updated app configuration
-	if err := appViper.WriteConfig(); err != nil {
-		pterm.Error.Printf("Failed to write app config: %v\n", err)
-		return
+		// Write the updated app configuration
+		if err := v.WriteConfig(); err != nil {
+			pterm.Error.Printf("Failed to write app config: %v\n", err)
+			return
+		}
 	}
 
 	// If initializing a user environment, remove 'environment' field from user config
@@ -793,8 +919,6 @@ func constructEndpoint(baseURL string) (string, error) {
 	case strings.Contains(hostname, ".stg.spaceone.dev"):
 		prefix = "stg"
 	// TODO: After set up production
-	//case strings.Contains(hostname, ".spaceone.megazone.io"):
-	//	prefix = "prd"
 	default:
 		return "", fmt.Errorf("unknown environment prefix in URL: %s", hostname)
 	}
