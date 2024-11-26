@@ -44,6 +44,89 @@ type Environment struct {
 
 // FetchService handles the execution of gRPC commands for all services
 func FetchService(serviceName string, verb string, resourceName string, options *FetchOptions) (map[string]interface{}, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get user home directory: %v", err)
+	}
+
+	// Read configuration file
+	mainViper := viper.New()
+	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
+	if err := mainViper.ReadInConfig(); err != nil {
+		return nil, fmt.Errorf("failed to read configuration file. Please run 'cfctl login' first")
+	}
+
+	// Check current environment
+	currentEnv := mainViper.GetString("environment")
+	if currentEnv == "" {
+		return nil, fmt.Errorf("no environment set. Please run 'cfctl login' first")
+	}
+
+	token := mainViper.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+	if token == "" {
+		pterm.Error.Println("No token found for authentication.")
+
+		// Get current endpoint
+		endpoint := mainViper.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv))
+
+		// Create a styled box for the authentication guidance
+		headerBox := pterm.DefaultBox.WithTitle("Authentication Guide").
+			WithTitleTopCenter().
+			WithRightPadding(4).
+			WithLeftPadding(4).
+			WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
+
+		authExplain := "Please login to SpaceONE Console first.\n" +
+			"This requires your SpaceONE credentials.\n\n" +
+			"Or use an App token if you're using automation."
+
+		headerBox.Println(authExplain)
+		fmt.Println()
+
+		// Create the steps content
+		steps := []string{
+			"1. Go to SpaceONE Console",
+			"2. Run 'cfctl login'",
+			"3. Enter your credentials when prompted",
+			"4. Select your workspace",
+		}
+
+		// Determine proxy value based on endpoint
+		isIdentityEndpoint := strings.Contains(strings.ToLower(endpoint), "identity")
+		proxyValue := "true"
+		if !isIdentityEndpoint {
+			proxyValue = "false"
+		}
+
+		// Create yaml config example with highlighting
+		yamlExample := pterm.DefaultBox.WithTitle("Config Example").
+			WithTitleTopCenter().
+			WithRightPadding(4).
+			WithLeftPadding(4).
+			Sprint(fmt.Sprintf("environment: %s\nenvironments:\n    %s:\n        endpoint: %s\n        proxy: %s\n        token: %s",
+				currentEnv,
+				currentEnv,
+				endpoint,
+				proxyValue,
+				pterm.FgLightCyan.Sprint("YOUR_TOKEN")))
+
+		// Create instruction box
+		instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
+			WithTitleTopCenter().
+			WithRightPadding(4).
+			WithLeftPadding(4)
+
+		// Combine all steps
+		allSteps := append(steps,
+			fmt.Sprintf("5. Verify your config file has the token:\n%s", yamlExample),
+			"6. Try your command again")
+
+		// Print all steps in the instruction box
+		instructionBox.Println(strings.Join(allSteps, "\n\n"))
+
+		return nil, fmt.Errorf("authentication required")
+	}
+
 	config, err := loadConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %v", err)
