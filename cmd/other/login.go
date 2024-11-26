@@ -54,6 +54,117 @@ func (t *tokenAuth) RequireTransportSecurity() bool {
 }
 
 func executeLogin(cmd *cobra.Command, args []string) {
+	// Load the environment-specific configuration without printing endpoint
+	loadEnvironmentConfig()
+
+	// Get current environment
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		pterm.Error.Println("Failed to get user home directory:", err)
+		exitWithError()
+	}
+
+	mainViper := viper.New()
+	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
+	if err := mainViper.ReadInConfig(); err != nil {
+		pterm.Error.Println("Failed to read main config file:", err)
+		exitWithError()
+	}
+
+	currentEnv := mainViper.GetString("environment")
+	if currentEnv == "" {
+		pterm.Error.Println("No environment specified in config.yaml")
+		exitWithError()
+	}
+
+	// Print endpoint once here
+	pterm.Info.Printf("Using endpoint: %s\n", providedUrl)
+
+	if strings.HasSuffix(currentEnv, "-app") {
+		executeAppLogin(currentEnv, mainViper)
+	} else {
+		executeUserLogin(currentEnv)
+	}
+}
+
+func executeAppLogin(currentEnv string, mainViper *viper.Viper) {
+	token := mainViper.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+	if token == "" {
+		pterm.Error.Println("No App token found for app environment.")
+
+		// Create a styled box for the app key type guidance
+		headerBox := pterm.DefaultBox.WithTitle("App Guide").
+			WithTitleTopCenter().
+			WithRightPadding(4).
+			WithLeftPadding(4).
+			WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
+
+		appTokenExplain := "Please create a Domain Admin App in SpaceONE Console.\n" +
+			"This requires Domain Admin privileges.\n\n" +
+			"Or Please create a Workspace App in SpaceONE Console.\n" +
+			"This requires Workspace Owner privileges."
+
+		headerBox.Println(appTokenExplain)
+		fmt.Println()
+
+		// Create the steps content
+		steps := []string{
+			"1. Go to SpaceONE Console",
+			"2. Navigate to either 'Admin > App Page' or specific 'Workspace > App page'",
+			"3. Click 'Create' to create your App",
+			"4. Copy value of either 'client_secret' from Client ID or 'token' from Spacectl (CLI)",
+		}
+
+		// Determine proxy value based on endpoint
+		isIdentityEndpoint := strings.Contains(strings.ToLower(providedUrl), "identity")
+		proxyValue := "true"
+		if !isIdentityEndpoint {
+			proxyValue = "false"
+		}
+
+		// Create yaml config example with highlighting
+		yamlExample := pterm.DefaultBox.WithTitle("Config Example").
+			WithTitleTopCenter().
+			WithRightPadding(4).
+			WithLeftPadding(4).
+			Sprint(fmt.Sprintf("environment: %s\nenvironments:\n    %s:\n        endpoint: %s\n        proxy: %s\n        token: %s",
+				currentEnv,
+				currentEnv,
+				providedUrl,
+				proxyValue,
+				pterm.FgLightCyan.Sprint("YOUR_COPIED_TOKEN")))
+
+		// Create instruction box
+		instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
+			WithTitleTopCenter().
+			WithRightPadding(4).
+			WithLeftPadding(4)
+
+		// Combine all steps
+		allSteps := append(steps,
+			fmt.Sprintf("5. Add the token under the proxy in your config file:\n%s", yamlExample),
+			"6. Run 'cfctl login' again")
+
+		// Print all steps in the instruction box
+		instructionBox.Println(strings.Join(allSteps, "\n\n"))
+
+		exitWithError()
+	}
+
+	if !verifyToken(token) {
+		pterm.DefaultBox.WithTitle("Invalid App Token").
+			WithTitleTopCenter().
+			WithRightPadding(4).
+			WithLeftPadding(4).
+			WithBoxStyle(pterm.NewStyle(pterm.FgRed)).
+			Println("Your App token is invalid or has expired.\nPlease generate a new App and update your config file.")
+		exitWithError()
+	}
+
+	pterm.Success.Println("Successfully authenticated with App token.")
+}
+
+func executeUserLogin(currentEnv string) {
 	// Load the environment-specific configuration
 	loadEnvironmentConfig()
 
@@ -222,8 +333,6 @@ func loadEnvironmentConfig() {
 
 		exitWithError()
 	}
-
-	pterm.Info.Printf("Using endpoint: %s\n", providedUrl)
 }
 
 func determineScope(roleType string, workspaceCount int) string {
