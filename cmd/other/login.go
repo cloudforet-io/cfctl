@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/eiannone/keyboard"
+
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/protobuf/types/known/structpb"
 
@@ -1249,63 +1251,122 @@ func selectWorkspace(workspaces []map[string]interface{}) string {
 }
 
 func selectScopeOrWorkspace(workspaces []map[string]interface{}) string {
-	const pageSize = 15
-	totalWorkspaces := len(workspaces)
-	totalPages := (totalWorkspaces + pageSize - 1) / pageSize
-
+	const pageSize = 9
 	currentPage := 0
+	searchTerm := ""
+	filteredWorkspaces := workspaces
+
+	// Initialize keyboard
+	if err := keyboard.Open(); err != nil {
+		pterm.Error.Println("Failed to initialize keyboard:", err)
+		exitWithError()
+	}
+	defer keyboard.Close()
+
 	for {
+		// Apply search filter
+		if searchTerm != "" {
+			filteredWorkspaces = filterWorkspaces(workspaces, searchTerm)
+		} else {
+			filteredWorkspaces = workspaces
+		}
+
+		totalWorkspaces := len(filteredWorkspaces)
+		totalPages := (totalWorkspaces + pageSize - 1) / pageSize
+
 		startIndex := currentPage * pageSize
 		endIndex := startIndex + pageSize
 		if endIndex > totalWorkspaces {
 			endIndex = totalWorkspaces
 		}
 
-		var options []string
+		// Clear screen
+		fmt.Print("\033[H\033[2J")
+
+		// Show search term if active
+		if searchTerm != "" {
+			pterm.Info.Printf("Search term: %s\n", searchTerm)
+		}
+
+		pterm.Info.Printf("Available Options (Page %d of %d):\n", currentPage+1, totalPages)
+
+		// Always show DOMAIN ADMIN option on first page
 		if currentPage == 0 {
-			options = append(options, "0: DOMAIN ADMIN")
+			pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgLightCyan)).
+				Printf("  0: DOMAIN ADMIN\n")
 		}
+
+		// Display current page items
 		for i := startIndex; i < endIndex; i++ {
-			name := workspaces[i]["name"].(string)
-			options = append(options, fmt.Sprintf("%d: %s", i+1, name))
+			name := filteredWorkspaces[i]["name"].(string)
+			fmt.Printf("  %d: %s\n", i+1, name)
 		}
 
-		if currentPage > 0 {
-			options = append([]string{"< Previous Page"}, options...)
+		// Show navigation help
+		fmt.Print("\nNavigation: [p]revious page, [n]ext page")
+		if searchTerm != "" {
+			fmt.Print(", [c]lear search")
 		}
-		if endIndex < totalWorkspaces {
-			options = append(options, "Next Page >")
-		}
+		fmt.Print(", [/]search, [q]uit\n")
+		fmt.Print("> ")
 
-		pterm.Info.Printfln("Available Options (Page %d of %d):", currentPage+1, totalPages)
-		selectedOption, err := pterm.DefaultInteractiveSelect.
-			WithOptions(options).
-			WithMaxHeight(20).
-			Show()
+		// Get keyboard input
+		char, _, err := keyboard.GetKey()
 		if err != nil {
-			pterm.Error.Println("Error selecting option:", err)
+			pterm.Error.Println("Error reading keyboard input:", err)
 			exitWithError()
 		}
 
-		if selectedOption == "< Previous Page" {
-			currentPage--
-			continue
-		} else if selectedOption == "Next Page >" {
-			currentPage++
-			continue
-		} else if selectedOption == "0: DOMAIN ADMIN" {
+		switch char {
+		case 'n', 'N':
+			if currentPage < totalPages-1 {
+				currentPage++
+			} else {
+				currentPage = 0
+			}
+		case 'p', 'P':
+			if currentPage > 0 {
+				currentPage--
+			} else {
+				currentPage = totalPages - 1
+			}
+		case 'q', 'Q':
+			pterm.Error.Println("Workspace selection cancelled.")
+			os.Exit(1)
+		case 'c', 'C':
+			searchTerm = ""
+			currentPage = 0
+		case '/':
+			keyboard.Close()
+			fmt.Print("\nEnter search term: ")
+			var input string
+			fmt.Scanln(&input)
+			searchTerm = input
+			currentPage = 0
+			keyboard.Open()
+		case '0':
 			return "0"
-		}
-
-		var index int
-		fmt.Sscanf(selectedOption, "%d", &index)
-
-		if index >= 1 && index <= totalWorkspaces {
-			return workspaces[index-1]["workspace_id"].(string)
-		} else {
-			pterm.Error.Println("Invalid selection. Please try again.")
+		case '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			index := int(char - '0')
+			adjustedIndex := startIndex + (index - 1)
+			if adjustedIndex >= 0 && adjustedIndex < len(filteredWorkspaces) {
+				return filteredWorkspaces[adjustedIndex]["workspace_id"].(string)
+			}
 		}
 	}
+}
+
+func filterWorkspaces(workspaces []map[string]interface{}, searchTerm string) []map[string]interface{} {
+	var filtered []map[string]interface{}
+	searchTerm = strings.ToLower(searchTerm)
+
+	for _, workspace := range workspaces {
+		name := strings.ToLower(workspace["name"].(string))
+		if strings.Contains(name, searchTerm) {
+			filtered = append(filtered, workspace)
+		}
+	}
+	return filtered
 }
 
 func init() {
