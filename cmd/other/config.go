@@ -73,31 +73,46 @@ var configInitURLCmd = &cobra.Command{
 			return
 		}
 
-		// Initialize the environment
-		if appFlag {
-			envName = fmt.Sprintf("%s-app", envName)
-			updateConfig(envName, urlStr, "app")
-		} else {
-			envName = fmt.Sprintf("%s-user", envName)
-			updateConfig(envName, urlStr, "user")
+		// Create config directory if it doesn't exist
+		configDir := GetConfigDir()
+		if err := os.MkdirAll(configDir, 0755); err != nil {
+			pterm.Error.Printf("Failed to create config directory: %v\n", err)
+			return
 		}
 
-		// Update the current environment in the main config
-		configDir := GetConfigDir()
+		// Initialize config.yaml if it doesn't exist
 		mainConfigPath := filepath.Join(configDir, "config.yaml")
-		mainV := viper.New()
-		mainV.SetConfigFile(mainConfigPath)
-
-		// Read existing config or create new one
-		if err := mainV.ReadInConfig(); err != nil {
-			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-				pterm.Error.Printf("Error reading config file: %v\n", err)
+		if _, err := os.Stat(mainConfigPath); os.IsNotExist(err) {
+			initialConfig := []byte("environments:\n")
+			if err := os.WriteFile(mainConfigPath, initialConfig, 0644); err != nil {
+				pterm.Error.Printf("Failed to create config file: %v\n", err)
 				return
 			}
 		}
 
+		// Initialize the environment
+		if appFlag {
+			envName = fmt.Sprintf("%s-app", envName)
+		} else {
+			envName = fmt.Sprintf("%s-user", envName)
+		}
+
+		// Update configuration
+		updateConfig(envName, urlStr, map[bool]string{true: "app", false: "user"}[appFlag])
+
+		// Update the current environment in the main config
+		mainV := viper.New()
+		mainV.SetConfigFile(mainConfigPath)
+
+		// Read the config file
+		if err := mainV.ReadInConfig(); err != nil {
+			pterm.Error.Printf("Failed to read config file: %v\n", err)
+			return
+		}
+
 		// Set the new environment as current
 		mainV.Set("environment", envName)
+
 		if err := mainV.WriteConfig(); err != nil {
 			pterm.Error.Printf("Failed to update current environment: %v\n", err)
 			return
@@ -873,40 +888,16 @@ func updateConfig(envName, urlStr, configType string) {
 	configDir := GetConfigDir()
 	mainConfigPath := filepath.Join(configDir, "config.yaml")
 
-	// Create config directory if it doesn't exist
-	if err := os.MkdirAll(filepath.Dir(mainConfigPath), 0755); err != nil {
-		pterm.Error.Printf("Failed to create config directory: %v\n", err)
-		return
-	}
-
 	// Initialize main viper instance
 	mainV := viper.New()
 	mainV.SetConfigFile(mainConfigPath)
 
-	// Read existing config or create new one
 	if err := mainV.ReadInConfig(); err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+		if !os.IsNotExist(err) {
 			pterm.Error.Printf("Error reading config file: %v\n", err)
 			return
 		}
 	}
-
-	// Check if the environment already exists
-	if mainV.IsSet(fmt.Sprintf("environments.%s", envName)) {
-		pterm.Warning.Printf("Environment '%s' already exists. Do you want to overwrite it? (y/n): ", envName)
-
-		var response string
-		fmt.Scanln(&response)
-		response = strings.ToLower(strings.TrimSpace(response))
-
-		if response != "y" {
-			pterm.Info.Printf("Skipping initialization for '%s'. No changes were made.\n", envName)
-			return
-		}
-	}
-
-	// Update environment in main config
-	mainV.Set("environment", envName)
 
 	// Handle app type configuration
 	if configType == "app" && urlStr != "" {
@@ -928,31 +919,29 @@ func updateConfig(envName, urlStr, configType string) {
 
 	// Handle user type configuration
 	if configType == "user" {
-		cacheConfigPath := filepath.Join(configDir, "cache", "config.yaml")
-		if err := os.MkdirAll(filepath.Dir(cacheConfigPath), 0755); err != nil {
+		cacheDir := filepath.Join(configDir, "cache")
+		if err := os.MkdirAll(cacheDir, 0755); err != nil {
 			pterm.Error.Printf("Failed to create cache directory: %v\n", err)
 			return
+		}
+
+		cacheConfigPath := filepath.Join(cacheDir, "config.yaml")
+
+		// Create cache config file if it doesn't exist
+		if _, err := os.Stat(cacheConfigPath); os.IsNotExist(err) {
+			initialConfig := []byte("environments:\n")
+			if err := os.WriteFile(cacheConfigPath, initialConfig, 0644); err != nil {
+				pterm.Error.Printf("Failed to create cache config file: %v\n", err)
+				return
+			}
 		}
 
 		cacheV := viper.New()
 		cacheV.SetConfigFile(cacheConfigPath)
 
 		if err := cacheV.ReadInConfig(); err != nil {
-			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			if !os.IsNotExist(err) {
 				pterm.Error.Printf("Error reading cache config: %v\n", err)
-				return
-			}
-		}
-
-		if cacheV.IsSet(fmt.Sprintf("environments.%s", envName)) {
-			pterm.Warning.Printf("Environment '%s' already exists in cache config. Do you want to overwrite it? (y/n): ", envName)
-
-			var response string
-			fmt.Scanln(&response)
-			response = strings.ToLower(strings.TrimSpace(response))
-
-			if response != "y" {
-				pterm.Info.Printf("Skipping initialization for '%s' in cache config. No changes were made.\n", envName)
 				return
 			}
 		}
