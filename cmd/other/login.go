@@ -53,8 +53,23 @@ func executeLogin(cmd *cobra.Command, args []string) {
 
 	userID, password := promptCredentials()
 
+	// Get the home directory
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		pterm.Error.Println("Failed to get user home directory:", err)
+		exitWithError()
+	}
+
+	// Load the main config file specifically for environment name
+	mainViper := viper.New()
+	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
+	if err := mainViper.ReadInConfig(); err != nil {
+		pterm.Error.Println("Failed to read main config file:", err)
+		exitWithError()
+	}
+
 	// Extract the middle part of the environment name for `name`
-	currentEnvironment := viper.GetString("environment")
+	currentEnvironment := mainViper.GetString("environment")
 	nameParts := strings.Split(currentEnvironment, "-")
 	if len(nameParts) < 3 {
 		pterm.Error.Println("Environment name format is invalid.")
@@ -141,11 +156,46 @@ func loadEnvironmentConfig() {
 		exitWithError()
 	}
 
-	// Retrieve the endpoint for the current environment
-	endpointKey := fmt.Sprintf("environments.%s.endpoint", currentEnvironment)
-	providedUrl = viper.GetString(endpointKey)
-	if providedUrl == "" {
+	// Define paths to look for configuration files
+	configPaths := []string{
+		filepath.Join(homeDir, ".cfctl", "config.yaml"),
+		filepath.Join(homeDir, ".cfctl", "cache", "config.yaml"),
+	}
+
+	// Try to find endpoint from each config file
+	configFound := false
+	for _, configPath := range configPaths {
+		viper.SetConfigFile(configPath)
+		if err := viper.ReadInConfig(); err == nil {
+			endpointKey := fmt.Sprintf("environments.%s.endpoint", currentEnvironment)
+			providedUrl = viper.GetString(endpointKey)
+			if providedUrl != "" {
+				configFound = true
+				break
+			}
+		}
+	}
+
+	if !configFound {
 		pterm.Error.Printf("No endpoint found for the current environment '%s' in config.yaml\n", currentEnvironment)
+		exitWithError()
+	}
+
+	isProxyEnabled := viper.GetBool(fmt.Sprintf("environments.%s.proxy", currentEnvironment))
+	containsIdentity := strings.Contains(strings.ToLower(providedUrl), "identity")
+
+	if !isProxyEnabled && !containsIdentity {
+		pterm.DefaultBox.WithTitle("Proxy Mode Required").
+			WithTitleTopCenter().
+			WithBoxStyle(pterm.NewStyle(pterm.FgYellow)).
+			Println("Current endpoint is not configured for identity service.\n" +
+				"Please enable proxy mode and set identity endpoint first.")
+
+		// Show the commands with syntax highlighting
+		pterm.DefaultBox.WithBoxStyle(pterm.NewStyle(pterm.FgCyan)).
+			Println("$ cfctl config endpoint -s identity\n" +
+				"$ cfctl login")
+
 		exitWithError()
 	}
 
@@ -423,7 +473,7 @@ func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (str
 	return accessToken, nil
 }
 
-// saveToken updates the token in the environment-specific configuration file without altering the structure or comments.
+// saveToken updates the token in the appropriate configuration file based on the environment suffix
 func saveToken(newToken string) {
 	// Get the home directory and current environment
 	homeDir, err := os.UserHomeDir()
@@ -444,13 +494,20 @@ func saveToken(newToken string) {
 		exitWithError()
 	}
 
-	// Path to the environment-specific file
-	envFilePath := filepath.Join(homeDir, ".cfctl", "environments", currentEnvironment+".yaml")
+	// Determine the appropriate config file based on environment suffix
+	var configPath string
+	if strings.HasSuffix(currentEnvironment, "-user") {
+		// For environments ending with '-user', save to cache config
+		configPath = filepath.Join(homeDir, ".cfctl", "cache", "config.yaml")
+	} else {
+		// For other environments, save to main config
+		configPath = filepath.Join(homeDir, ".cfctl", "config.yaml")
+	}
 
-	// Read the file line by line, replacing or adding the token line if needed
-	file, err := os.Open(envFilePath)
+	// Read the target config file
+	file, err := os.Open(configPath)
 	if err != nil {
-		pterm.Error.Println("Failed to open environment-specific configuration file:", err)
+		pterm.Error.Println("Failed to open configuration file:", err)
 		exitWithError()
 	}
 	defer file.Close()
@@ -458,34 +515,55 @@ func saveToken(newToken string) {
 	var newContent []string
 	tokenFound := false
 	scanner := bufio.NewScanner(file)
+
+	// Find the correct environment section and update its token
+	inTargetEnv := false
+	indentLevel := 0
 	for scanner.Scan() {
 		line := scanner.Text()
-		// Update the token line if it is not commented out
-		if strings.HasPrefix(line, "token:") && !strings.HasPrefix(line, "#") {
-			newContent = append(newContent, "token: "+newToken)
-			tokenFound = true
-		} else {
+
+		// Track environment section
+		if strings.HasPrefix(strings.TrimSpace(line), "environments:") {
 			newContent = append(newContent, line)
+			indentLevel = strings.Index(line, "environments:")
+			continue
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		pterm.Error.Println("Error reading environment-specific configuration file:", err)
-		exitWithError()
+
+		// Check if we're in the target environment section
+		if strings.HasPrefix(strings.TrimSpace(line), currentEnvironment+":") {
+			inTargetEnv = true
+			newContent = append(newContent, line)
+			continue
+		}
+
+		// Check if we're exiting the current environment section
+		if inTargetEnv && len(line) > 0 && !strings.HasPrefix(line, strings.Repeat(" ", indentLevel+4)) {
+			inTargetEnv = false
+		}
+
+		// Update token line if in target environment
+		if inTargetEnv && strings.HasPrefix(strings.TrimSpace(line), "token:") {
+			newContent = append(newContent, strings.Repeat(" ", indentLevel+4)+"token: "+newToken)
+			tokenFound = true
+			continue
+		}
+
+		newContent = append(newContent, line)
 	}
 
-	// If no uncommented token was found, add a new token line
-	if !tokenFound {
-		newContent = append(newContent, "token: "+newToken)
+	// Add token if not found in the environment section
+	if !tokenFound && inTargetEnv {
+		newContent = append(newContent, strings.Repeat(" ", indentLevel+4)+"token: "+newToken)
 	}
 
 	// Write the modified content back to the file
-	err = ioutil.WriteFile(envFilePath, []byte(strings.Join(newContent, "\n")), 0644)
+	err = ioutil.WriteFile(configPath, []byte(strings.Join(newContent, "\n")), 0644)
 	if err != nil {
-		pterm.Error.Println("Failed to save updated token to environment-specific configuration file:", err)
+		pterm.Error.Println("Failed to save updated token to configuration file:", err)
 		exitWithError()
 	}
 
-	pterm.Success.Println("Token successfully saved to", envFilePath)
+	pterm.Success.Println("Token successfully saved to", configPath)
 }
 
 func selectWorkspace(workspaces []map[string]interface{}) string {
