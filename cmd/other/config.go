@@ -408,6 +408,7 @@ Available Services are fetched dynamically from the backend.`,
 			}
 
 			pterm.Error.Println("Please specify a service using -s or --service.")
+			fmt.Println()
 
 			// Fetch and display available services
 			baseURL, err := getBaseURL(appV)
@@ -427,9 +428,25 @@ Available Services are fetched dynamically from the backend.`,
 				return
 			}
 
+			//pterm.DefaultBox.WithTitle("Available Services").
+			//	WithRightPadding(1).WithLeftPadding(1).WithTopPadding(0).WithBottomPadding(0).
+			//	Println(strings.Join(services, "\n"))
+
+			var formattedServices []string
+			for _, service := range services {
+				if service == "identity" {
+					formattedServices = append(formattedServices, pterm.FgCyan.Sprintf("%s (proxy)", service))
+				} else {
+					formattedServices = append(formattedServices, pterm.FgDefault.Sprint(service))
+				}
+			}
+
 			pterm.DefaultBox.WithTitle("Available Services").
-				WithRightPadding(1).WithLeftPadding(1).WithTopPadding(0).WithBottomPadding(0).
-				Println(strings.Join(services, "\n"))
+				WithRightPadding(1).
+				WithLeftPadding(1).
+				WithTopPadding(0).
+				WithBottomPadding(0).
+				Println(strings.Join(formattedServices, "\n"))
 			return
 		}
 
