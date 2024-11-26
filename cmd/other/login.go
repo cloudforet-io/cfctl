@@ -2,21 +2,30 @@ package other
 
 import (
 	"bufio"
-	"bytes"
+	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"io"
 	"io/ioutil"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"google.golang.org/grpc/metadata"
+
+	"github.com/jhump/protoreflect/dynamic"
+
+	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var providedUrl string
@@ -28,6 +37,21 @@ var LoginCmd = &cobra.Command{
 	Long: `A command that allows you to login to SpaceONE.
 It will prompt you for your User ID, Password, and fetch the Domain ID automatically, then fetch the token.`,
 	Run: executeLogin,
+}
+
+// tokenAuth implements grpc.PerRPCCredentials for token-based authentication.
+type tokenAuth struct {
+	token string
+}
+
+func (t *tokenAuth) GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error) {
+	return map[string]string{
+		"token": t.token, // "Authorization: Bearer" 대신 "token" 키 사용
+	}, nil
+}
+
+func (t *tokenAuth) RequireTransportSecurity() bool {
+	return true
 }
 
 func executeLogin(cmd *cobra.Command, args []string) {
@@ -262,117 +286,242 @@ func promptCredentials() (string, string) {
 }
 
 func fetchDomainID(baseUrl string, name string) (string, error) {
-	payload := map[string]string{"name": name}
-	jsonPayload, err := json.Marshal(payload)
+	// Parse the endpoint
+	parts := strings.Split(baseUrl, "://")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid endpoint format: %s", baseUrl)
+	}
+
+	hostPort := parts[1]
+
+	// Configure gRPC connection
+	var opts []grpc.DialOption
+	if strings.HasPrefix(baseUrl, "grpc+ssl://") {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false,
+		}
+		creds := credentials.NewTLS(tlsConfig)
+		opts = append(opts, grpc.WithTransportCredentials(creds))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	// Establish connection
+	conn, err := grpc.Dial(hostPort, opts...)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to connect: %v", err)
 	}
+	defer conn.Close()
 
-	resp, err := http.Post(baseUrl+"/domain/get-auth-info", "application/json", bytes.NewBuffer(jsonPayload))
+	// Create reflection client
+	refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	defer refClient.Reset()
+
+	// Resolve the service
+	serviceName := "spaceone.api.identity.v2.Domain"
+	serviceDesc, err := refClient.ResolveService(serviceName)
 	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to fetch domain ID, status code: %d", resp.StatusCode)
+		return "", fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
 	}
 
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+	// Find the method descriptor
+	methodDesc := serviceDesc.FindMethodByName("get_auth_info")
+	if methodDesc == nil {
+		return "", fmt.Errorf("method get_auth_info not found")
 	}
 
-	domainID, ok := result["domain_id"].(string)
-	if !ok {
-		return "", fmt.Errorf("domain_id not found in response")
+	// Create request message
+	reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
+	reqMsg.SetFieldByName("name", name)
+
+	// Make the gRPC call
+	fullMethod := fmt.Sprintf("/%s/%s", serviceName, "get_auth_info")
+	respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
+
+	err = conn.Invoke(context.Background(), fullMethod, reqMsg, respMsg)
+	if err != nil {
+		return "", fmt.Errorf("RPC failed: %v", err)
 	}
 
-	return domainID, nil
+	// Extract domain_id from response
+	domainID, err := respMsg.TryGetFieldByName("domain_id")
+	if err != nil {
+		return "", fmt.Errorf("failed to get domain_id from response: %v", err)
+	}
+
+	return domainID.(string), nil
 }
 
 func issueToken(baseUrl, userID, password, domainID string) (string, string, error) {
-	payload := map[string]interface{}{
-		"credentials": map[string]string{
-			"user_id":  userID,
-			"password": password,
+	// Parse the endpoint
+	parts := strings.Split(baseUrl, "://")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid endpoint format: %s", baseUrl)
+	}
+
+	hostPort := parts[1]
+
+	// Configure gRPC connection
+	var opts []grpc.DialOption
+	if strings.HasPrefix(baseUrl, "grpc+ssl://") {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false,
+		}
+		creds := credentials.NewTLS(tlsConfig)
+		opts = append(opts, grpc.WithTransportCredentials(creds))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	// Establish connection
+	conn, err := grpc.Dial(hostPort, opts...)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to connect: %v", err)
+	}
+	defer conn.Close()
+
+	// Create reflection client
+	refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	defer refClient.Reset()
+
+	// Resolve the service
+	serviceName := "spaceone.api.identity.v2.Token"
+	serviceDesc, err := refClient.ResolveService(serviceName)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
+	}
+
+	// Find the method descriptor
+	methodDesc := serviceDesc.FindMethodByName("issue")
+	if methodDesc == nil {
+		return "", "", fmt.Errorf("method issue not found")
+	}
+
+	// Create request message
+	reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
+
+	// Create credentials struct using protobuf types
+	structpb := &structpb.Struct{
+		Fields: map[string]*structpb.Value{
+			"user_id": {
+				Kind: &structpb.Value_StringValue{
+					StringValue: userID,
+				},
+			},
+			"password": {
+				Kind: &structpb.Value_StringValue{
+					StringValue: password,
+				},
+			},
 		},
-		"auth_type":   "LOCAL",
-		"timeout":     0,
-		"verify_code": "string",
-		"domain_id":   domainID,
 	}
-	jsonPayload, err := json.Marshal(payload)
+
+	// Set all fields in the request message
+	reqMsg.SetFieldByName("credentials", structpb)
+	reqMsg.SetFieldByName("auth_type", int32(1)) // LOCAL = 1
+	reqMsg.SetFieldByName("timeout", int32(0))
+	reqMsg.SetFieldByName("verify_code", "")
+	reqMsg.SetFieldByName("domain_id", domainID)
+
+	// Make the gRPC call
+	fullMethod := fmt.Sprintf("/%s/%s", serviceName, "issue")
+	respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
+
+	err = conn.Invoke(context.Background(), fullMethod, reqMsg, respMsg)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("RPC failed: %v", err)
 	}
 
-	resp, err := http.Post(baseUrl+"/token/issue", "application/json", bytes.NewBuffer(jsonPayload))
+	// Extract tokens from response
+	accessToken, err := respMsg.TryGetFieldByName("access_token")
 	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("status code: %d", resp.StatusCode)
+		return "", "", fmt.Errorf("failed to get access_token from response: %v", err)
 	}
 
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", "", err
+	refreshToken, err := respMsg.TryGetFieldByName("refresh_token")
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get refresh_token from response: %v", err)
 	}
 
-	accessToken, ok := result["access_token"].(string)
-	if !ok {
-		return "", "", fmt.Errorf("access token not found in response")
-	}
-
-	refreshToken, ok := result["refresh_token"].(string)
-	if !ok {
-		return "", "", fmt.Errorf("refresh token not found in response")
-	}
-
-	return accessToken, refreshToken, nil
+	return accessToken.(string), refreshToken.(string), nil
 }
 
 func fetchWorkspaces(baseUrl string, accessToken string) ([]map[string]interface{}, error) {
-	payload := map[string]string{}
-	jsonPayload, err := json.Marshal(payload)
+	// Parse the endpoint
+	parts := strings.Split(baseUrl, "://")
+	if len(parts) != 2 {
+		return nil, fmt.Errorf("invalid endpoint format: %s", baseUrl)
+	}
+
+	hostPort := parts[1]
+
+	// Configure gRPC connection
+	var opts []grpc.DialOption
+	if strings.HasPrefix(baseUrl, "grpc+ssl://") {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false,
+		}
+		creds := credentials.NewTLS(tlsConfig)
+		opts = append(opts, grpc.WithTransportCredentials(creds))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	// Add token credentials
+	creds := &tokenAuth{
+		token: accessToken,
+	}
+	opts = append(opts, grpc.WithPerRPCCredentials(creds))
+
+	// Establish connection
+	conn, err := grpc.Dial(hostPort, opts...)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to connect: %v", err)
 	}
+	defer conn.Close()
 
-	getWorkspacesUrl := baseUrl + "/user-profile/get-workspaces"
-	req, err := http.NewRequest("POST", getWorkspacesUrl, bytes.NewBuffer(jsonPayload))
+	// Create reflection client
+	refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	defer refClient.Reset()
+
+	// Resolve the service
+	serviceName := "spaceone.api.identity.v2.UserProfile"
+	serviceDesc, err := refClient.ResolveService(serviceName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
 	}
 
-	req.Header.Set("accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
+	// Find the method descriptor
+	methodDesc := serviceDesc.FindMethodByName("get_workspaces")
+	if methodDesc == nil {
+		return nil, fmt.Errorf("method get_workspaces not found")
+	}
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// Create request message
+	reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
+
+	// Create metadata with token
+	md := metadata.New(map[string]string{
+		"token": accessToken,
+	})
+	ctx := metadata.NewOutgoingContext(context.Background(), md)
+
+	// Make the gRPC call
+	fullMethod := "/spaceone.api.identity.v2.UserProfile/get_workspaces"
+	respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
+
+	err = conn.Invoke(ctx, fullMethod, reqMsg, respMsg)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("RPC failed: %v", err)
 	}
-	defer resp.Body.Close()
 
-	responseBody, err := io.ReadAll(resp.Body)
+	// Extract results from response
+	results, err := respMsg.TryGetFieldByName("results")
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %v", err)
+		return nil, fmt.Errorf("failed to get results from response: %v", err)
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("failed to fetch workspaces, status code: %d", resp.StatusCode)
-	}
-
-	var result map[string]interface{}
-	if err := json.Unmarshal(responseBody, &result); err != nil {
-		return nil, err
-	}
-
-	workspaces, ok := result["results"].([]interface{})
+	workspaces, ok := results.([]interface{})
 	if !ok || len(workspaces) == 0 {
 		pterm.Warning.Println("There are no accessible workspaces. Ask your administrators or workspace owners for access.")
 		exitWithError()
@@ -380,10 +529,20 @@ func fetchWorkspaces(baseUrl string, accessToken string) ([]map[string]interface
 
 	var workspaceList []map[string]interface{}
 	for _, workspace := range workspaces {
-		workspaceMap, ok := workspace.(map[string]interface{})
+		workspaceMsg, ok := workspace.(*dynamic.Message)
 		if !ok {
-			return nil, fmt.Errorf("failed to parse workspace data")
+			return nil, fmt.Errorf("failed to parse workspace message")
 		}
+
+		workspaceMap := make(map[string]interface{})
+		fields := workspaceMsg.GetKnownFields()
+
+		for _, field := range fields {
+			if value, err := workspaceMsg.TryGetFieldByName(field.GetName()); err == nil {
+				workspaceMap[field.GetName()] = value
+			}
+		}
+
 		workspaceList = append(workspaceList, workspaceMap)
 	}
 
@@ -391,86 +550,185 @@ func fetchWorkspaces(baseUrl string, accessToken string) ([]map[string]interface
 }
 
 func fetchDomainIDAndRole(baseUrl string, accessToken string) (string, string, error) {
-	payload := map[string]string{}
-	jsonPayload, err := json.Marshal(payload)
+	// Parse the endpoint
+	parts := strings.Split(baseUrl, "://")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid endpoint format: %s", baseUrl)
+	}
+
+	hostPort := parts[1]
+
+	// Configure gRPC connection
+	var opts []grpc.DialOption
+	if strings.HasPrefix(baseUrl, "grpc+ssl://") {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false,
+		}
+		creds := credentials.NewTLS(tlsConfig)
+		opts = append(opts, grpc.WithTransportCredentials(creds))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	// Add token to metadata
+	opts = append(opts, grpc.WithPerRPCCredentials(&tokenAuth{token: accessToken}))
+
+	// Establish connection
+	conn, err := grpc.Dial(hostPort, opts...)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to connect: %v", err)
 	}
+	defer conn.Close()
 
-	getUserProfileUrl := baseUrl + "/user-profile/get"
-	req, err := http.NewRequest("POST", getUserProfileUrl, bytes.NewBuffer(jsonPayload))
+	// Create reflection client
+	refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	defer refClient.Reset()
+
+	// Resolve the service
+	serviceName := "spaceone.api.identity.v2.UserProfile"
+	serviceDesc, err := refClient.ResolveService(serviceName)
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
 	}
 
-	req.Header.Set("accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+accessToken)
-	req.Header.Set("Content-Type", "application/json")
+	// Find the method descriptor
+	methodDesc := serviceDesc.FindMethodByName("get")
+	if methodDesc == nil {
+		return "", "", fmt.Errorf("method get not found")
+	}
 
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// Create request message
+	reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
+
+	// Make the gRPC call
+	fullMethod := fmt.Sprintf("/%s/%s", serviceName, "get")
+	respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
+
+	err = conn.Invoke(context.Background(), fullMethod, reqMsg, respMsg)
 	if err != nil {
-		return "", "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", "", fmt.Errorf("failed to fetch user profile, status code: %d", resp.StatusCode)
+		return "", "", fmt.Errorf("RPC failed: %v", err)
 	}
 
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", "", err
+	// Extract domain_id and role_type from response
+	domainID, err := respMsg.TryGetFieldByName("domain_id")
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get domain_id from response: %v", err)
 	}
 
-	domainID, ok := result["domain_id"].(string)
-	if !ok {
-		return "", "", fmt.Errorf("domain_id not found in response")
+	roleType, err := respMsg.TryGetFieldByName("role_type")
+	if err != nil {
+		return "", "", fmt.Errorf("failed to get role_type from response: %v", err)
 	}
 
-	roleType, ok := result["role_type"].(string)
-	if !ok {
-		return "", "", fmt.Errorf("role_type not found in response")
+	// Convert roleType to string based on enum value
+	var roleTypeStr string
+	switch v := roleType.(type) {
+	case int32:
+		switch v {
+		case 1:
+			roleTypeStr = "DOMAIN_ADMIN"
+		case 2:
+			roleTypeStr = "WORKSPACE_OWNER"
+		case 3:
+			roleTypeStr = "WORKSPACE_MEMBER"
+		default:
+			return "", "", fmt.Errorf("unknown role_type: %d", v)
+		}
+	case string:
+		roleTypeStr = v
+	default:
+		return "", "", fmt.Errorf("unexpected role_type type: %T", roleType)
 	}
 
-	return domainID, roleType, nil
+	return domainID.(string), roleTypeStr, nil
 }
 
 func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (string, error) {
-	payload := map[string]interface{}{
-		"grant_type":   "REFRESH_TOKEN",
-		"token":        refreshToken,
-		"scope":        scope,
-		"timeout":      86400,
-		"domain_id":    domainID,
-		"workspace_id": workspaceID,
+	// Parse the endpoint
+	parts := strings.Split(baseUrl, "://")
+	if len(parts) != 2 {
+		return "", fmt.Errorf("invalid endpoint format: %s", baseUrl)
 	}
-	jsonPayload, err := json.Marshal(payload)
+
+	hostPort := parts[1]
+
+	// Configure gRPC connection
+	var opts []grpc.DialOption
+	if strings.HasPrefix(baseUrl, "grpc+ssl://") {
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false,
+		}
+		creds := credentials.NewTLS(tlsConfig)
+		opts = append(opts, grpc.WithTransportCredentials(creds))
+	} else {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	}
+
+	// Establish connection
+	conn, err := grpc.Dial(hostPort, opts...)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to connect: %v", err)
 	}
+	defer conn.Close()
 
-	resp, err := http.Post(baseUrl+"/token/grant", "application/json", bytes.NewBuffer(jsonPayload))
+	// Create reflection client
+	refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	defer refClient.Reset()
+
+	// Resolve the service
+	serviceName := "spaceone.api.identity.v2.Token"
+	serviceDesc, err := refClient.ResolveService(serviceName)
 	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("status code: %d", resp.StatusCode)
+		return "", fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
 	}
 
-	var result map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", err
+	// Find the method descriptor
+	methodDesc := serviceDesc.FindMethodByName("grant")
+	if methodDesc == nil {
+		return "", fmt.Errorf("method grant not found")
 	}
 
-	accessToken, ok := result["access_token"].(string)
-	if !ok {
-		return "", fmt.Errorf("access token not found in response")
+	// Create request message
+	reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
+
+	reqMsg.SetFieldByName("grant_type", int32(1))
+
+	var scopeEnum int32
+	switch scope {
+	case "DOMAIN":
+		scopeEnum = 2
+	case "WORKSPACE":
+		scopeEnum = 3
+	case "USER":
+		scopeEnum = 5
+	default:
+		return "", fmt.Errorf("unknown scope: %s", scope)
 	}
 
-	return accessToken, nil
+	reqMsg.SetFieldByName("scope", scopeEnum)
+	reqMsg.SetFieldByName("token", refreshToken)
+	reqMsg.SetFieldByName("timeout", int32(86400))
+	reqMsg.SetFieldByName("domain_id", domainID)
+	if workspaceID != "" {
+		reqMsg.SetFieldByName("workspace_id", workspaceID)
+	}
+
+	// Make the gRPC call
+	fullMethod := "/spaceone.api.identity.v2.Token/grant"
+	respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
+
+	err = conn.Invoke(context.Background(), fullMethod, reqMsg, respMsg)
+	if err != nil {
+		return "", fmt.Errorf("RPC failed: %v", err)
+	}
+
+	// Extract access_token from response
+	accessToken, err := respMsg.TryGetFieldByName("access_token")
+	if err != nil {
+		return "", fmt.Errorf("failed to get access_token from response: %v", err)
+	}
+
+	return accessToken.(string), nil
 }
 
 // saveToken updates the token in the appropriate configuration file based on the environment suffix
