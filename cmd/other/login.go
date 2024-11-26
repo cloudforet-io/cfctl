@@ -1,7 +1,6 @@
 package other
 
 import (
-	"bufio"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
@@ -159,49 +158,51 @@ func executeLogin(cmd *cobra.Command, args []string) {
 
 // Load environment-specific configuration based on the selected environment
 func loadEnvironmentConfig() {
-	// Get the home directory of the current user
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		pterm.Error.Println("Failed to get user home directory:", err)
 		exitWithError()
 	}
 
-	// Load the main environment file to get the current environment
-	viper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
+	mainConfigPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
+	cacheConfigPath := filepath.Join(homeDir, ".cfctl", "cache", "config.yaml")
+
+	viper.SetConfigFile(mainConfigPath)
 	if err := viper.ReadInConfig(); err != nil {
 		pterm.Error.Println("Failed to read config.yaml:", err)
 		exitWithError()
 	}
 
-	// Get the currently selected environment
 	currentEnvironment := viper.GetString("environment")
 	if currentEnvironment == "" {
 		pterm.Error.Println("No environment specified in config.yaml")
 		exitWithError()
 	}
 
-	// Define paths to look for configuration files
-	configPaths := []string{
-		filepath.Join(homeDir, ".cfctl", "config.yaml"),
-		filepath.Join(homeDir, ".cfctl", "cache", "config.yaml"),
-	}
-
-	// Try to find endpoint from each config file
 	configFound := false
-	for _, configPath := range configPaths {
-		viper.SetConfigFile(configPath)
-		if err := viper.ReadInConfig(); err == nil {
+	for _, configPath := range []string{mainConfigPath, cacheConfigPath} {
+		v := viper.New()
+		v.SetConfigFile(configPath)
+		if err := v.ReadInConfig(); err == nil {
 			endpointKey := fmt.Sprintf("environments.%s.endpoint", currentEnvironment)
-			providedUrl = viper.GetString(endpointKey)
+			tokenKey := fmt.Sprintf("environments.%s.token", currentEnvironment)
+
+			if providedUrl == "" {
+				providedUrl = v.GetString(endpointKey)
+			}
+
+			if token := v.GetString(tokenKey); token != "" {
+				viper.Set("token", token)
+			}
+
 			if providedUrl != "" {
 				configFound = true
-				break
 			}
 		}
 	}
 
 	if !configFound {
-		pterm.Error.Printf("No endpoint found for the current environment '%s' in config.yaml\n", currentEnvironment)
+		pterm.Error.Printf("No endpoint found for the current environment '%s'\n", currentEnvironment)
 		exitWithError()
 	}
 
@@ -215,7 +216,6 @@ func loadEnvironmentConfig() {
 			Println("Current endpoint is not configured for identity service.\n" +
 				"Please enable proxy mode and set identity endpoint first.")
 
-		// Show the commands with syntax highlighting
 		pterm.DefaultBox.WithBoxStyle(pterm.NewStyle(pterm.FgCyan)).
 			Println("$ cfctl config endpoint -s identity\n" +
 				"$ cfctl login")
@@ -733,7 +733,6 @@ func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (str
 
 // saveToken updates the token in the appropriate configuration file based on the environment suffix
 func saveToken(newToken string) {
-	// Get the home directory and current environment
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		pterm.Error.Println("Failed to get user home directory:", err)
@@ -746,6 +745,7 @@ func saveToken(newToken string) {
 		pterm.Error.Println("Failed to read environment file:", err)
 		exitWithError()
 	}
+
 	currentEnvironment := viper.GetString("environment")
 	if currentEnvironment == "" {
 		pterm.Error.Println("No environment specified in environment.yaml")
@@ -755,73 +755,94 @@ func saveToken(newToken string) {
 	// Determine the appropriate config file based on environment suffix
 	var configPath string
 	if strings.HasSuffix(currentEnvironment, "-user") {
-		// For environments ending with '-user', save to cache config
 		configPath = filepath.Join(homeDir, ".cfctl", "cache", "config.yaml")
 	} else {
-		// For other environments, save to main config
 		configPath = filepath.Join(homeDir, ".cfctl", "config.yaml")
 	}
 
 	// Read the target config file
-	file, err := os.Open(configPath)
+	content, err := ioutil.ReadFile(configPath)
 	if err != nil {
-		pterm.Error.Println("Failed to open configuration file:", err)
+		pterm.Error.Println("Failed to read configuration file:", err)
 		exitWithError()
 	}
-	defer file.Close()
 
+	lines := strings.Split(string(content), "\n")
 	var newContent []string
-	tokenFound := false
-	scanner := bufio.NewScanner(file)
-
-	// Find the correct environment section and update its token
+	var envContent []string
 	inTargetEnv := false
 	indentLevel := 0
-	for scanner.Scan() {
-		line := scanner.Text()
 
-		// Track environment section
-		if strings.HasPrefix(strings.TrimSpace(line), "environments:") {
-			newContent = append(newContent, line)
-			indentLevel = strings.Index(line, "environments:")
+	for i, line := range lines {
+		trimmedLine := strings.TrimRight(line, " \t")
+
+		if strings.HasPrefix(strings.TrimSpace(trimmedLine), "environments:") {
+			indentLevel = strings.Index(trimmedLine, "environments:")
+			newContent = append(newContent, trimmedLine)
 			continue
 		}
 
-		// Check if we're in the target environment section
-		if strings.HasPrefix(strings.TrimSpace(line), currentEnvironment+":") {
+		if strings.HasPrefix(strings.TrimSpace(trimmedLine), currentEnvironment+":") {
 			inTargetEnv = true
-			newContent = append(newContent, line)
+			newContent = append(newContent, trimmedLine)
 			continue
 		}
 
-		// Check if we're exiting the current environment section
-		if inTargetEnv && len(line) > 0 && !strings.HasPrefix(line, strings.Repeat(" ", indentLevel+4)) {
-			inTargetEnv = false
+		if inTargetEnv {
+			if len(trimmedLine) > 0 && !strings.HasPrefix(trimmedLine, strings.Repeat(" ", indentLevel+2)) {
+				sortedEnvContent := sortEnvironmentContent(envContent, newToken, indentLevel+4)
+				newContent = append(newContent, sortedEnvContent...)
+				envContent = nil
+				inTargetEnv = false
+				newContent = append(newContent, trimmedLine)
+			} else if !strings.HasPrefix(strings.TrimSpace(trimmedLine), "token:") && trimmedLine != "" {
+				envContent = append(envContent, trimmedLine)
+				continue
+			}
+		} else {
+			newContent = append(newContent, trimmedLine)
 		}
 
-		// Update token line if in target environment
-		if inTargetEnv && strings.HasPrefix(strings.TrimSpace(line), "token:") {
-			newContent = append(newContent, strings.Repeat(" ", indentLevel+4)+"token: "+newToken)
-			tokenFound = true
-			continue
+		if inTargetEnv && i == len(lines)-1 {
+			sortedEnvContent := sortEnvironmentContent(envContent, newToken, indentLevel+4)
+			newContent = append(newContent, sortedEnvContent...)
 		}
-
-		newContent = append(newContent, line)
-	}
-
-	// Add token if not found in the environment section
-	if !tokenFound && inTargetEnv {
-		newContent = append(newContent, strings.Repeat(" ", indentLevel+4)+"token: "+newToken)
 	}
 
 	// Write the modified content back to the file
-	err = ioutil.WriteFile(configPath, []byte(strings.Join(newContent, "\n")), 0644)
+	err = ioutil.WriteFile(configPath, []byte(strings.Join(newContent, "\n")+"\n"), 0644)
 	if err != nil {
 		pterm.Error.Println("Failed to save updated token to configuration file:", err)
 		exitWithError()
 	}
 
 	pterm.Success.Println("Token successfully saved to", configPath)
+}
+
+// sortEnvironmentContent sorts the environment content to ensure token is at the end
+func sortEnvironmentContent(content []string, token string, indentLevel int) []string {
+	var sorted []string
+	var endpointLine, proxyLine string
+
+	for _, line := range content {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "endpoint:") {
+			endpointLine = line
+		} else if strings.HasPrefix(trimmed, "proxy:") {
+			proxyLine = line
+		}
+	}
+
+	if endpointLine != "" {
+		sorted = append(sorted, endpointLine)
+	}
+	if proxyLine != "" {
+		sorted = append(sorted, proxyLine)
+	}
+
+	sorted = append(sorted, strings.Repeat(" ", indentLevel)+"token: "+token)
+
+	return sorted
 }
 
 func selectWorkspace(workspaces []map[string]interface{}) string {
