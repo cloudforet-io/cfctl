@@ -428,10 +428,6 @@ Available Services are fetched dynamically from the backend.`,
 				return
 			}
 
-			//pterm.DefaultBox.WithTitle("Available Services").
-			//	WithRightPadding(1).WithLeftPadding(1).WithTopPadding(0).WithBottomPadding(0).
-			//	Println(strings.Join(services, "\n"))
-
 			var formattedServices []string
 			for _, service := range services {
 				if service == "identity" {
