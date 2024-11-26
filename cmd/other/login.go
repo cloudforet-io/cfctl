@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/jhump/protoreflect/dynamic"
 
@@ -24,7 +25,6 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
-	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var providedUrl string
@@ -151,15 +151,36 @@ func executeAppLogin(currentEnv string, mainViper *viper.Viper) {
 		exitWithError()
 	}
 
-	if !verifyToken(token) {
-		pterm.DefaultBox.WithTitle("Invalid App Token").
-			WithTitleTopCenter().
-			WithRightPadding(4).
-			WithLeftPadding(4).
-			WithBoxStyle(pterm.NewStyle(pterm.FgRed)).
-			Println("Your App token is invalid or has expired.\nPlease generate a new App and update your config file.")
+	claims, ok := verifyAppToken(token)
+	if !ok {
 		exitWithError()
 	}
+
+	// 토큰 정보 표시
+	headerBox := pterm.DefaultBox.WithTitle("App Token Information").
+		WithTitleTopCenter().
+		WithRightPadding(4).
+		WithLeftPadding(4).
+		WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
+
+	var tokenInfo string
+	roleType := claims["rol"].(string)
+
+	if roleType == "DOMAIN_ADMIN" {
+		tokenInfo = fmt.Sprintf("Role Type: %s\nDomain ID: %s\nAccess Scope: All Workspaces\nExpires: %s",
+			pterm.FgGreen.Sprint("DOMAIN ADMIN"),
+			claims["did"].(string),
+			time.Unix(int64(claims["exp"].(float64)), 0).Format("2006-01-02 15:04:05"))
+	} else if roleType == "WORKSPACE_OWNER" {
+		tokenInfo = fmt.Sprintf("Role Type: %s\nDomain ID: %s\nWorkspace ID: %s\nExpires: %s",
+			pterm.FgYellow.Sprint("WORKSPACE OWNER"),
+			claims["did"].(string),
+			claims["wid"].(string),
+			time.Unix(int64(claims["exp"].(float64)), 0).Format("2006-01-02 15:04:05"))
+	}
+
+	headerBox.Println(tokenInfo)
+	fmt.Println()
 
 	pterm.Success.Println("Successfully authenticated with App token.")
 }
@@ -265,6 +286,60 @@ func executeUserLogin(currentEnv string) {
 	// Save the new access token
 	saveToken(newAccessToken)
 	pterm.Success.Println("Successfully logged in and saved token.")
+}
+
+func verifyAppToken(token string) (map[string]interface{}, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		pterm.Error.Println("Invalid token format")
+		return nil, false
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		pterm.Error.Println("Failed to decode token payload:", err)
+		return nil, false
+	}
+
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		pterm.Error.Println("Failed to parse token payload:", err)
+		return nil, false
+	}
+
+	exp, ok := claims["exp"].(float64)
+	if !ok {
+		pterm.Error.Println("Expiration time not found in token")
+		return nil, false
+	}
+
+	if time.Now().After(time.Unix(int64(exp), 0)) {
+		pterm.DefaultBox.WithTitle("Expired App Token").
+			WithTitleTopCenter().
+			WithRightPadding(4).
+			WithLeftPadding(4).
+			WithBoxStyle(pterm.NewStyle(pterm.FgRed)).
+			Println("Your App token has expired.\nPlease generate a new App and update your config file.")
+		return nil, false
+	}
+
+	role, ok := claims["rol"].(string)
+	if !ok {
+		pterm.Error.Println("Role not found in token")
+		return nil, false
+	}
+
+	if role != "DOMAIN_ADMIN" && role != "WORKSPACE_OWNER" {
+		pterm.DefaultBox.WithTitle("Invalid App Token").
+			WithTitleTopCenter().
+			WithRightPadding(4).
+			WithLeftPadding(4).
+			WithBoxStyle(pterm.NewStyle(pterm.FgRed)).
+			Println("App token must have either DOMAIN_ADMIN or WORKSPACE_OWNER role.\nPlease generate a new App with appropriate permissions and update your config file.")
+		return nil, false
+	}
+
+	return claims, true
 }
 
 // Load environment-specific configuration based on the selected environment
