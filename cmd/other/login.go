@@ -2,11 +2,15 @@ package other
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -21,10 +25,18 @@ import (
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"github.com/zalando/go-keyring"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
+)
+
+//const encryptionKey = "spaceone-cfctl-encryption-key-32byte"
+
+const (
+	keyringService = "cfctl-credentials"
+	keyringUser    = "encryption-key"
 )
 
 var providedUrl string
@@ -156,7 +168,6 @@ func executeAppLogin(currentEnv string, mainViper *viper.Viper) {
 		exitWithError()
 	}
 
-	// 토큰 정보 표시
 	headerBox := pterm.DefaultBox.WithTitle("App Token Information").
 		WithTitleTopCenter().
 		WithRightPadding(4).
@@ -186,33 +197,45 @@ func executeAppLogin(currentEnv string, mainViper *viper.Viper) {
 }
 
 func executeUserLogin(currentEnv string) {
-	// Load the environment-specific configuration
 	loadEnvironmentConfig()
 
-	// Set baseUrl directly from providedUrl loaded in loadEnvironmentConfig
 	baseUrl := providedUrl
 	if baseUrl == "" {
 		pterm.Error.Println("No token endpoint specified in the configuration file.")
 		exitWithError()
 	}
 
-	token := viper.GetString("token")
-	if token != "" && !isTokenExpired(token) {
-		pterm.Info.Println("Existing token found and it is still valid. Attempting to authenticate with saved credentials.")
-		if verifyToken(token) {
-			pterm.Success.Println("Successfully authenticated with saved token.")
-			return
-		}
-		pterm.Warning.Println("Saved token is invalid, proceeding with login.")
-	}
-
-	userID, password := promptCredentials()
-
 	// Get the home directory
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		pterm.Error.Println("Failed to get user home directory:", err)
 		exitWithError()
+	}
+
+	cacheViper := viper.New()
+	cacheConfigPath := filepath.Join(homeDir, ".cfctl", "cache", "config.yaml")
+	cacheViper.SetConfigFile(cacheConfigPath)
+
+	var userID, password string
+	if err := cacheViper.ReadInConfig(); err == nil {
+		savedUserID := cacheViper.GetString(fmt.Sprintf("environments.%s.userID", currentEnv))
+		savedEncryptedPassword := cacheViper.GetString(fmt.Sprintf("environments.%s.password", currentEnv))
+
+		if savedUserID != "" && savedEncryptedPassword != "" {
+			userID = savedUserID
+			var err error
+			password, err = decrypt(savedEncryptedPassword)
+			if err != nil {
+				pterm.Warning.Println("Failed to decrypt saved password, requesting new credentials")
+				userID, password = promptCredentials()
+			} else {
+				pterm.Info.Printf("Using saved credentials for %s\n", userID)
+			}
+		} else {
+			userID, password = promptCredentials()
+		}
+	} else {
+		userID, password = promptCredentials()
 	}
 
 	// Load the main config file specifically for environment name
@@ -230,7 +253,7 @@ func executeUserLogin(currentEnv string) {
 		pterm.Error.Println("Environment name format is invalid.")
 		exitWithError()
 	}
-	name := nameParts[1] // Extract the middle part, e.g., "cloudone" from "dev-cloudone-user"
+	name := nameParts[1]
 
 	// Fetch Domain ID using the base URL and domain name
 	domainID, err := fetchDomainID(baseUrl, name)
@@ -239,28 +262,34 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	// Issue tokens (access token and refresh token) using user credentials
+	// Issue tokens using user credentials
 	accessToken, refreshToken, err := issueToken(baseUrl, userID, password, domainID)
 	if err != nil {
 		pterm.Error.Println("Failed to retrieve token:", err)
 		exitWithError()
 	}
 
-	// Fetch workspaces available to the user
+	if encryptedPassword, err := encrypt(password); err == nil {
+		saveCredentials(currentEnv, userID, encryptedPassword)
+	} else {
+		pterm.Warning.Printf("Failed to encrypt password: %v\n", err)
+	}
+
+	// Fetch workspaces
 	workspaces, err := fetchWorkspaces(baseUrl, accessToken)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch workspaces:", err)
 		exitWithError()
 	}
 
-	// Fetch Domain ID and Role Type using the access token
+	// Fetch Domain ID and Role Type
 	domainID, roleType, err := fetchDomainIDAndRole(baseUrl, accessToken)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch Domain ID and Role Type:", err)
 		exitWithError()
 	}
 
-	// Determine the appropriate scope and workspace ID based on the role type
+	// Determine scope and workspace
 	scope := determineScope(roleType, len(workspaces))
 	var workspaceID string
 	if roleType == "DOMAIN_ADMIN" {
@@ -276,7 +305,7 @@ func executeUserLogin(currentEnv string) {
 		scope = "WORKSPACE"
 	}
 
-	// Grant a new access token using the refresh token and selected scope
+	// Grant new token
 	newAccessToken, err := grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
 	if err != nil {
 		pterm.Error.Println("Failed to retrieve new access token:", err)
@@ -286,6 +315,147 @@ func executeUserLogin(currentEnv string) {
 	// Save the new access token
 	saveToken(newAccessToken)
 	pterm.Success.Println("Successfully logged in and saved token.")
+}
+
+func getEncryptionKey() ([]byte, error) {
+	key, err := keyring.Get(keyringService, keyringUser)
+	if err == keyring.ErrNotFound {
+		newKey := make([]byte, 32)
+		if _, err := rand.Read(newKey); err != nil {
+			return nil, fmt.Errorf("failed to generate new key: %v", err)
+		}
+
+		encodedKey := base64.StdEncoding.EncodeToString(newKey)
+		if err := keyring.Set(keyringService, keyringUser, encodedKey); err != nil {
+			return nil, fmt.Errorf("failed to store key in keychain: %v", err)
+		}
+
+		return newKey, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to access keychain: %v", err)
+	}
+
+	return base64.StdEncoding.DecodeString(key)
+}
+
+func encrypt(text string) (string, error) {
+	key, err := getEncryptionKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get encryption key: %v", err)
+	}
+
+	plaintext := []byte(text)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	ciphertext := make([]byte, aes.BlockSize+len(plaintext))
+	iv := ciphertext[:aes.BlockSize]
+	if _, err := io.ReadFull(rand.Reader, iv); err != nil {
+		return "", err
+	}
+
+	stream := cipher.NewCFBEncrypter(block, iv)
+	stream.XORKeyStream(ciphertext[aes.BlockSize:], plaintext)
+
+	return base64.URLEncoding.EncodeToString(ciphertext), nil
+}
+
+func decrypt(cryptoText string) (string, error) {
+	key, err := getEncryptionKey()
+	if err != nil {
+		return "", fmt.Errorf("failed to get encryption key: %v", err)
+	}
+
+	ciphertext, err := base64.URLEncoding.DecodeString(cryptoText)
+	if err != nil {
+		return "", err
+	}
+
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return "", err
+	}
+
+	if len(ciphertext) < aes.BlockSize {
+		return "", errors.New("ciphertext too short")
+	}
+
+	iv := ciphertext[:aes.BlockSize]
+	ciphertext = ciphertext[aes.BlockSize:]
+
+	stream := cipher.NewCFBDecrypter(block, iv)
+	stream.XORKeyStream(ciphertext, ciphertext)
+
+	return string(ciphertext), nil
+}
+
+func saveCredentials(currentEnv, userID, encryptedPassword string) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		pterm.Error.Printf("Failed to get user home directory: %v\n", err)
+		return
+	}
+
+	cacheDir := filepath.Join(homeDir, ".cfctl", "cache")
+	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+		pterm.Error.Printf("Failed to create cache directory: %v\n", err)
+		return
+	}
+
+	cacheConfigPath := filepath.Join(cacheDir, "config.yaml")
+
+	if _, err := os.Stat(cacheConfigPath); os.IsNotExist(err) {
+		if err := os.WriteFile(cacheConfigPath, []byte{}, 0600); err != nil {
+			pterm.Error.Printf("Failed to create cache config file: %v\n", err)
+			return
+		}
+	}
+
+	cacheViper := viper.New()
+	cacheViper.SetConfigFile(cacheConfigPath)
+
+	if err := cacheViper.ReadInConfig(); err != nil && !os.IsNotExist(err) {
+		pterm.Error.Printf("Failed to read cache config: %v\n", err)
+		return
+	}
+
+	if !cacheViper.IsSet("environments") {
+		cacheViper.Set("environments", map[string]interface{}{})
+	}
+
+	envPath := fmt.Sprintf("environments.%s", currentEnv)
+	envSettings := cacheViper.GetStringMap(envPath)
+	if envSettings == nil {
+		envSettings = make(map[string]interface{})
+	}
+
+	orderedSettings := make(map[string]interface{})
+
+	if endpoint, exists := envSettings["endpoint"]; exists {
+		orderedSettings["endpoint"] = endpoint
+	} else {
+		orderedSettings["endpoint"] = providedUrl
+	}
+
+	orderedSettings["proxy"] = true
+
+	if token, exists := envSettings["token"]; exists {
+		orderedSettings["token"] = token
+	}
+
+	orderedSettings["userid"] = userID
+
+	orderedSettings["password"] = encryptedPassword
+
+	cacheViper.Set(envPath, orderedSettings)
+
+	if err := cacheViper.WriteConfig(); err != nil {
+		pterm.Error.Printf("Failed to save credentials: %v\n", err)
+		return
+	}
 }
 
 func verifyAppToken(token string) (map[string]interface{}, bool) {
@@ -919,88 +1089,82 @@ func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (str
 func saveToken(newToken string) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		pterm.Error.Println("Failed to get user home directory:", err)
+		pterm.Error.Printf("Failed to get user home directory: %v\n", err)
 		exitWithError()
 	}
 
-	// Load the main environment file to get the current environment
-	viper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
-	if err := viper.ReadInConfig(); err != nil {
-		pterm.Error.Println("Failed to read environment file:", err)
+	// Get current environment from main config
+	mainViper := viper.New()
+	mainConfigPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
+	mainViper.SetConfigFile(mainConfigPath)
+
+	if err := mainViper.ReadInConfig(); err != nil {
+		pterm.Error.Printf("Failed to read main config: %v\n", err)
 		exitWithError()
 	}
 
-	currentEnvironment := viper.GetString("environment")
+	currentEnvironment := mainViper.GetString("environment")
 	if currentEnvironment == "" {
-		pterm.Error.Println("No environment specified in environment.yaml")
+		pterm.Error.Printf("No environment specified in config\n")
 		exitWithError()
 	}
 
-	// Determine the appropriate config file based on environment suffix
+	// Determine which config file to use based on environment suffix
 	var configPath string
+	v := viper.New()
+
 	if strings.HasSuffix(currentEnvironment, "-user") {
-		configPath = filepath.Join(homeDir, ".cfctl", "cache", "config.yaml")
+		// User configuration goes in cache directory
+		cacheDir := filepath.Join(homeDir, ".cfctl", "cache")
+		if err := os.MkdirAll(cacheDir, 0755); err != nil {
+			pterm.Error.Printf("Failed to create cache directory: %v\n", err)
+			exitWithError()
+		}
+		configPath = filepath.Join(cacheDir, "config.yaml")
+	} else if strings.HasSuffix(currentEnvironment, "-app") {
+		// App configuration goes in main config
+		configPath = mainConfigPath
 	} else {
-		configPath = filepath.Join(homeDir, ".cfctl", "config.yaml")
-	}
-
-	// Read the target config file
-	content, err := ioutil.ReadFile(configPath)
-	if err != nil {
-		pterm.Error.Println("Failed to read configuration file:", err)
+		pterm.Error.Printf("Invalid environment suffix (must end with -app or -user): %s\n", currentEnvironment)
 		exitWithError()
 	}
 
-	lines := strings.Split(string(content), "\n")
-	var newContent []string
-	var envContent []string
-	inTargetEnv := false
-	indentLevel := 0
+	// Initialize or read the config file
+	v.SetConfigFile(configPath)
 
-	for i, line := range lines {
-		trimmedLine := strings.TrimRight(line, " \t")
-
-		if strings.HasPrefix(strings.TrimSpace(trimmedLine), "environments:") {
-			indentLevel = strings.Index(trimmedLine, "environments:")
-			newContent = append(newContent, trimmedLine)
-			continue
-		}
-
-		if strings.HasPrefix(strings.TrimSpace(trimmedLine), currentEnvironment+":") {
-			inTargetEnv = true
-			newContent = append(newContent, trimmedLine)
-			continue
-		}
-
-		if inTargetEnv {
-			if len(trimmedLine) > 0 && !strings.HasPrefix(trimmedLine, strings.Repeat(" ", indentLevel+2)) {
-				sortedEnvContent := sortEnvironmentContent(envContent, newToken, indentLevel+4)
-				newContent = append(newContent, sortedEnvContent...)
-				envContent = nil
-				inTargetEnv = false
-				newContent = append(newContent, trimmedLine)
-			} else if !strings.HasPrefix(strings.TrimSpace(trimmedLine), "token:") && trimmedLine != "" {
-				envContent = append(envContent, trimmedLine)
-				continue
-			}
-		} else {
-			newContent = append(newContent, trimmedLine)
-		}
-
-		if inTargetEnv && i == len(lines)-1 {
-			sortedEnvContent := sortEnvironmentContent(envContent, newToken, indentLevel+4)
-			newContent = append(newContent, sortedEnvContent...)
+	// Create config file with basic structure if it doesn't exist
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		initialConfig := []byte("environments:\n")
+		if err := os.WriteFile(configPath, initialConfig, 0644); err != nil {
+			pterm.Error.Printf("Failed to create config file: %v\n", err)
+			exitWithError()
 		}
 	}
 
-	// Write the modified content back to the file
-	err = ioutil.WriteFile(configPath, []byte(strings.Join(newContent, "\n")+"\n"), 0644)
-	if err != nil {
-		pterm.Error.Println("Failed to save updated token to configuration file:", err)
+	if err := v.ReadInConfig(); err != nil {
+		pterm.Error.Printf("Failed to read config: %v\n", err)
 		exitWithError()
 	}
 
-	pterm.Success.Println("Token successfully saved to", configPath)
+	// Get current environment settings
+	envPath := fmt.Sprintf("environments.%s", currentEnvironment)
+	envSettings := v.GetStringMap(envPath)
+	if envSettings == nil {
+		envSettings = make(map[string]interface{})
+	}
+
+	// Update token while preserving other settings
+	envSettings["token"] = newToken
+
+	// Save updated settings
+	v.Set(envPath, envSettings)
+
+	if err := v.WriteConfig(); err != nil {
+		pterm.Error.Printf("Failed to save token: %v\n", err)
+		exitWithError()
+	}
+
+	pterm.Success.Printf("Token successfully saved to %s\n", configPath)
 }
 
 // sortEnvironmentContent sorts the environment content to ensure token is at the end
@@ -1146,5 +1310,4 @@ func selectScopeOrWorkspace(workspaces []map[string]interface{}) string {
 
 func init() {
 	LoginCmd.Flags().StringVarP(&providedUrl, "url", "u", "", "The URL to use for login (e.g. cfctl login -u https://example.com)")
-	//LoginCmd.MarkFlagRequired("url")
 }
