@@ -129,7 +129,7 @@ var configInitLocalCmd = &cobra.Command{
 	Long:  `Specify a local environment name to initialize the configuration.`,
 	Args:  cobra.NoArgs,
 	Example: `  cfctl config init local -n local-cloudone --app
-    or
+                          or
   cfctl config init local -n local-cloudone --user`,
 	Run: func(cmd *cobra.Command, args []string) {
 		localEnv, _ := cmd.Flags().GetString("name")
@@ -147,15 +147,79 @@ var configInitLocalCmd = &cobra.Command{
 			return
 		}
 
+		// Create config directory if it doesn't exist
+		configDir := GetConfigDir()
+		if err := os.MkdirAll(configDir, 0755); err != nil {
+			pterm.Error.Printf("Failed to create config directory: %v\n", err)
+			return
+		}
+
+		// Initialize config.yaml if it doesn't exist
+		mainConfigPath := filepath.Join(configDir, "config.yaml")
+		if _, err := os.Stat(mainConfigPath); os.IsNotExist(err) {
+			initialConfig := []byte("environments:\n")
+			if err := os.WriteFile(mainConfigPath, initialConfig, 0644); err != nil {
+				pterm.Error.Printf("Failed to create config file: %v\n", err)
+				return
+			}
+		}
+
 		var envName string
 		if appFlag {
 			envName = fmt.Sprintf("%s-app", localEnv)
-			updateConfig(envName, "", "app")
+			updateLocalConfig(envName, "app", mainConfigPath)
 		} else {
 			envName = fmt.Sprintf("%s-user", localEnv)
-			updateConfig(envName, "", "user")
+			updateLocalConfig(envName, "user", filepath.Join(configDir, "cache", "config.yaml"))
 		}
+
+		// Update the current environment in the main config
+		mainV := viper.New()
+		mainV.SetConfigFile(mainConfigPath)
+
+		// Read the config file
+		if err := mainV.ReadInConfig(); err != nil {
+			pterm.Error.Printf("Failed to read config file: %v\n", err)
+			return
+		}
+
+		// Set the new environment as current
+		mainV.Set("environment", envName)
+
+		if err := mainV.WriteConfig(); err != nil {
+			pterm.Error.Printf("Failed to update current environment: %v\n", err)
+			return
+		}
+
+		pterm.Success.Printf("Switched to '%s' environment.\n", envName)
 	},
+}
+
+func updateLocalConfig(envName, configType, configPath string) {
+	v := viper.New()
+	v.SetConfigFile(configPath)
+
+	// Ensure directory exists
+	if err := os.MkdirAll(filepath.Dir(configPath), 0755); err != nil {
+		pterm.Error.Printf("Failed to create directory: %v\n", err)
+		return
+	}
+
+	// Read existing config or create new
+	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
+		pterm.Error.Printf("Error reading config: %v\n", err)
+		return
+	}
+
+	// Set environment configuration
+	v.Set(fmt.Sprintf("environments.%s.endpoint", envName), "grpc://localhost:50051")
+	v.Set(fmt.Sprintf("environments.%s.token", envName), "")
+
+	// Write configuration
+	if err := v.WriteConfig(); err != nil {
+		pterm.Error.Printf("Failed to write config: %v\n", err)
+		return
+	}
 }
 
 // envCmd manages environment switching and listing
