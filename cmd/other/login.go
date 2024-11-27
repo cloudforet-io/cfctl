@@ -251,19 +251,143 @@ func maskToken(token string) string {
 
 // executeAppLogin handles login for app environments
 func executeAppLogin(currentEnv string) error {
-	// Get token from user
-	token, err := promptToken()
-	if err != nil {
+	homeDir, _ := os.UserHomeDir()
+	configPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
+
+	viper.SetConfigFile(configPath)
+	if err := viper.ReadInConfig(); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 
-	// Save token to tokens array
-	if err := saveAppToken(currentEnv, token); err != nil {
-		return err
+	envPath := fmt.Sprintf("environments.%s.tokens", currentEnv)
+	var tokens []TokenInfo
+	if tokensList := viper.Get(envPath); tokensList != nil {
+		if tokenList, ok := tokensList.([]interface{}); ok {
+			for _, t := range tokenList {
+				if tokenMap, ok := t.(map[string]interface{}); ok {
+					tokenInfo := TokenInfo{
+						Token: tokenMap["token"].(string),
+					}
+					tokens = append(tokens, tokenInfo)
+				}
+			}
+		}
 	}
 
-	pterm.Success.Printf("Token successfully saved\n")
-	return nil
+	if err := keyboard.Open(); err != nil {
+		return err
+	}
+	defer keyboard.Close()
+
+	selectedIndex := 0
+	options := []string{"Enter a new token"}
+	var validTokens []TokenInfo // 유효한 토큰만 저장할 새로운 슬라이스
+
+	for _, tokenInfo := range tokens {
+		claims, err := validateAndDecodeToken(tokenInfo.Token)
+		if err != nil {
+			pterm.Warning.Printf("Invalid token found in config: %v\n", err)
+			continue
+		}
+
+		displayName := getTokenDisplayName(claims)
+		options = append(options, displayName)
+		validTokens = append(validTokens, tokenInfo)
+	}
+
+	if len(validTokens) == 0 && len(tokens) > 0 {
+		pterm.Warning.Println("All existing tokens are invalid. Please enter a new token.")
+		// Clear invalid tokens from config
+		if err := clearInvalidTokens(currentEnv); err != nil {
+			pterm.Warning.Printf("Failed to clear invalid tokens: %v\n", err)
+		}
+	}
+
+	for {
+		fmt.Print("\033[H\033[2J") // Clear screen
+
+		pterm.DefaultHeader.WithFullWidth().
+			WithBackgroundStyle(pterm.NewStyle(pterm.BgDarkGray)).
+			WithTextStyle(pterm.NewStyle(pterm.FgLightWhite)).
+			Println("Choose an option:")
+
+		for i, option := range options {
+			if i == selectedIndex {
+				pterm.Printf("→ %d: %s\n", i, option)
+			} else {
+				pterm.Printf("  %d: %s\n", i, option)
+			}
+		}
+
+		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
+			Println("\nNavigation: [j]down [k]up [Enter]select [q]uit")
+
+		char, key, err := keyboard.GetKey()
+		if err != nil {
+			return err
+		}
+
+		switch key {
+		case keyboard.KeyEnter:
+			if selectedIndex == 0 {
+				// Enter a new token
+				token, err := promptToken()
+				if err != nil {
+					return err
+				}
+
+				// Validate new token before saving
+				if _, err := validateAndDecodeToken(token); err != nil {
+					return fmt.Errorf("invalid token: %v", err)
+				}
+
+				// First save to tokens array
+				if err := saveAppToken(currentEnv, token); err != nil {
+					return err
+				}
+				// Then set as current token
+				if err := saveSelectedToken(currentEnv, token); err != nil {
+					return err
+				}
+				pterm.Success.Printf("Token successfully saved and selected\n")
+				return nil
+			} else {
+				// Use selected token from existing valid tokens
+				selectedToken := validTokens[selectedIndex-1].Token
+				if err := saveSelectedToken(currentEnv, selectedToken); err != nil {
+					return fmt.Errorf("failed to save selected token: %v", err)
+				}
+				pterm.Success.Printf("Token successfully selected\n")
+				return nil
+			}
+		}
+
+		switch char {
+		case 'j':
+			if selectedIndex < len(options)-1 {
+				selectedIndex++
+			}
+		case 'k':
+			if selectedIndex > 0 {
+				selectedIndex--
+			}
+		case 'q', 'Q':
+			pterm.Error.Println("Selection cancelled.")
+			os.Exit(1)
+		}
+	}
+}
+
+func getTokenDisplayName(claims map[string]interface{}) string {
+	role := claims["rol"].(string)
+	domainID := claims["did"].(string)
+
+	if role == "WORKSPACE_OWNER" {
+		workspaceID := claims["wid"].(string)
+		return fmt.Sprintf("%s (%s, %s)", role, domainID, workspaceID)
+	}
+
+	return fmt.Sprintf("%s (%s)", role, domainID)
 }
 
 func executeUserLogin(currentEnv string) {
@@ -912,33 +1036,17 @@ func determineScope(roleType string, workspaceCount int) string {
 	}
 }
 
+// isTokenExpired checks if the token is expired
 func isTokenExpired(token string) bool {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		pterm.Error.Println("Invalid token format.")
-		return true
-	}
-
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	claims, err := decodeJWT(token)
 	if err != nil {
-		pterm.Error.Println("Failed to decode token payload:", err)
-		return true
+		return true // 디코딩 실패 시 만료된 것으로 간주
 	}
 
-	var claims map[string]interface{}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		pterm.Error.Println("Failed to unmarshal token payload:", err)
-		return true
+	if exp, ok := claims["exp"].(float64); ok {
+		return time.Now().Unix() > int64(exp)
 	}
-
-	exp, ok := claims["exp"].(float64)
-	if !ok {
-		pterm.Error.Println("Expiration time (exp) not found in token.")
-		return true
-	}
-
-	expirationTime := time.Unix(int64(exp), 0)
-	return time.Now().After(expirationTime)
+	return true // exp 필드가 없거나 잘못된 형식이면 만료된 것으로 간주
 }
 
 func verifyToken(token string) bool {
@@ -1413,8 +1521,10 @@ func saveSelectedToken(currentEnv, selectedToken string) error {
 		envSettings = make(map[string]interface{})
 	}
 
-	// Keep only endpoint and proxy settings
+	// Keep all existing settings
 	newEnvSettings := make(map[string]interface{})
+
+	// Keep endpoint and proxy settings
 	if endpoint, ok := envSettings["endpoint"]; ok {
 		newEnvSettings["endpoint"] = endpoint
 	}
@@ -1422,10 +1532,13 @@ func saveSelectedToken(currentEnv, selectedToken string) error {
 		newEnvSettings["proxy"] = proxy
 	}
 
-	// Keep the tokens array
+	// Keep tokens array
 	if tokens, ok := envSettings["tokens"]; ok {
 		newEnvSettings["tokens"] = tokens
 	}
+
+	// Set the selected token as current token
+	newEnvSettings["token"] = selectedToken
 
 	viper.Set(envPath, newEnvSettings)
 	return viper.WriteConfig()
@@ -1666,4 +1779,95 @@ func filterWorkspaces(workspaces []map[string]interface{}, searchTerm string) []
 
 func init() {
 	LoginCmd.Flags().StringVarP(&providedUrl, "url", "u", "", "The URL to use for login (e.g. cfctl login -u https://example.com)")
+}
+
+// decodeJWT decodes a JWT token and returns the claims
+func decodeJWT(token string) (map[string]interface{}, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid token format")
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, err
+	}
+
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, err
+	}
+
+	return claims, nil
+}
+
+// validateAndDecodeToken decodes a JWT token and validates its expiration
+func validateAndDecodeToken(token string) (map[string]interface{}, error) {
+	// Check if token has three parts (header.payload.signature)
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid token format: token must have three parts")
+	}
+
+	// Try to decode the payload
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid token format: failed to decode payload: %v", err)
+	}
+
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("invalid token format: failed to parse payload: %v", err)
+	}
+
+	// Check required fields
+	requiredFields := []string{"exp", "rol", "did"}
+	for _, field := range requiredFields {
+		if _, ok := claims[field]; !ok {
+			return nil, fmt.Errorf("invalid token format: missing required field '%s'", field)
+		}
+	}
+
+	// Check expiration
+	if isTokenExpired(token) {
+		return nil, fmt.Errorf("token has expired")
+	}
+
+	return claims, nil
+}
+
+// clearInvalidTokens removes invalid tokens from the config
+func clearInvalidTokens(currentEnv string) error {
+	homeDir, _ := os.UserHomeDir()
+	configPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
+
+	viper.SetConfigFile(configPath)
+	if err := viper.ReadInConfig(); err != nil {
+		return err
+	}
+
+	envPath := fmt.Sprintf("environments.%s", currentEnv)
+	envSettings := viper.GetStringMap(envPath)
+	if envSettings == nil {
+		return nil
+	}
+
+	var validTokens []TokenInfo
+	if tokensList := viper.Get(fmt.Sprintf("%s.tokens", envPath)); tokensList != nil {
+		if tokenList, ok := tokensList.([]interface{}); ok {
+			for _, t := range tokenList {
+				if tokenMap, ok := t.(map[string]interface{}); ok {
+					token := tokenMap["token"].(string)
+					if _, err := validateAndDecodeToken(token); err == nil {
+						validTokens = append(validTokens, TokenInfo{Token: token})
+					}
+				}
+			}
+		}
+	}
+
+	// Update config with only valid tokens
+	envSettings["tokens"] = validTokens
+	viper.Set(envPath, envSettings)
+	return viper.WriteConfig()
 }
