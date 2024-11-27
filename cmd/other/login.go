@@ -223,10 +223,8 @@ func executeUserLogin(currentEnv string) {
 	var password string
 
 	if err := cacheViper.ReadInConfig(); err == nil {
-		// Access the 'users' field in the configuration
 		usersField := cacheViper.Get("environments." + currentEnv + ".users")
 		if usersField != nil {
-			// Make sure we are getting a slice of interfaces
 			users, ok := usersField.([]interface{})
 			if !ok {
 				pterm.Error.Println("Failed to load users correctly.")
@@ -234,45 +232,60 @@ func executeUserLogin(currentEnv string) {
 			}
 
 			if len(users) > 0 {
-				pterm.Info.Println("Multiple users detected. Please select an account to login:")
+				pterm.Info.Println("Select an account to login or add a new user:")
 
-				// Display the existing users
-				for i, user := range users {
-					userMap, ok := user.(map[string]interface{})
-					if !ok {
-						pterm.Error.Println("Invalid user format.")
-						exitWithError()
+				// Display user selection including "Add new user" option
+				userSelection := promptUserSelection(len(users), users)
+
+				if userSelection <= len(users) {
+					// Selected existing user
+					selectedUser := users[userSelection-1].(map[string]interface{})
+					userID = selectedUser["userid"].(string)
+					encryptedPassword := selectedUser["password"].(string)
+					token := selectedUser["token"].(string)
+
+					// Check if token is still valid
+					if !isTokenExpired(token) {
+						// Use stored password
+						decryptedPassword, err := decrypt(encryptedPassword)
+						if err != nil {
+							pterm.Error.Printf("Failed to decrypt password: %v\n", err)
+							exitWithError()
+						}
+						password = decryptedPassword
+						pterm.Success.Printf("Using saved credentials for %s\n", userID)
+					} else {
+						// Token expired, ask for password again
+						password = promptPassword()
+						// Verify the password matches
+						decryptedPassword, err := decrypt(encryptedPassword)
+						if err != nil {
+							pterm.Error.Printf("Failed to decrypt password: %v\n", err)
+							exitWithError()
+						}
+						if password != decryptedPassword {
+							pterm.Error.Println("Password does not match.")
+							exitWithError()
+						}
 					}
-
-					pterm.Printf("%d. %s\n", i+1, userMap["userid"].(string)) // Print actual userID
-				}
-
-				// Prompt user for selection
-				userSelection := promptUserSelection(len(users), users) // Pass the 'users' slice
-				selectedUser := users[userSelection-1].(map[string]interface{})
-
-				userID = selectedUser["userid"].(string)
-				password = selectedUser["password"].(string)
-				token := selectedUser["token"].(string)
-
-				// Check if the token is still valid
-				if !isTokenExpired(token) {
-					pterm.Success.Printf("Using saved credentials for %s\n", userID)
 				} else {
-					pterm.Warning.Println("Token expired. Please enter your password again.")
-					password = promptPassword() // Prompt for password if token expired
+					// Selected to add new user
+					userID, password = promptCredentials()
 				}
 			} else {
-				userID, password = promptCredentials() // Prompt for new credentials if no user exists
+				// No existing users, prompt for new credentials
+				userID, password = promptCredentials()
 			}
 		} else {
-			pterm.Error.Println("No users found in the configuration.")
-			exitWithError()
+			// Users field doesn't exist, prompt for new credentials
+			userID, password = promptCredentials()
 		}
 	} else {
-		userID, password = promptCredentials() // Prompt if the configuration cannot be read
+		// Configuration cannot be read, prompt for new credentials
+		userID, password = promptCredentials()
 	}
-	// Load the main config file specifically for environment name
+
+	// Proceed with domain ID fetching and token issuance
 	mainViper := viper.New()
 	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
 	if err := mainViper.ReadInConfig(); err != nil {
@@ -296,21 +309,23 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	// Proceed with issuing the token and saving credentials
+	// Attempt to issue token
 	accessToken, refreshToken, err := issueToken(baseUrl, userID, password, domainID)
 	if err != nil {
 		pterm.Error.Println("Failed to retrieve token:", err)
 		exitWithError()
 	}
 
-	// Save the new credentials to the configuration file
-	saveCredentials(currentEnv, userID, password, accessToken)
+	// Encrypt password before saving
+	encryptedPassword, err := encrypt(password)
+	if err != nil {
+		pterm.Error.Printf("Failed to encrypt password: %v\n", err)
+		exitWithError()
+	}
 
-	// Fetch workspaces
 	workspaces, err := fetchWorkspaces(baseUrl, accessToken)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch workspaces:", err)
-		exitWithError()
 	}
 
 	// Fetch Domain ID and Role Type
@@ -343,8 +358,10 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	// Save the new access token
-	saveToken(newAccessToken)
+	// Save the new credentials to the configuration file
+	saveCredentials(currentEnv, userID, encryptedPassword, newAccessToken)
+
+	fmt.Println()
 	pterm.Success.Println("Successfully logged in and saved token.")
 }
 
@@ -365,56 +382,177 @@ func promptPassword() string {
 
 // Prompt for user selection, now receiving 'users' slice as an argument
 func promptUserSelection(max int, users []interface{}) int {
-	// Open the keyboard input once
 	if err := keyboard.Open(); err != nil {
 		pterm.Error.Println("Failed to initialize keyboard:", err)
 		exitWithError()
 	}
-	defer keyboard.Close() // Ensure keyboard is closed at the end
+	defer keyboard.Close()
 
 	selectedIndex := 0
+	currentPage := 0
+	pageSize := 10
+	searchMode := false
+	searchTerm := ""
+	filteredUsers := users
+
 	for {
 		fmt.Print("\033[H\033[2J") // Clear the screen
 
-		// Display the list of available users
+		// Apply search filter
+		if searchTerm != "" {
+			filteredUsers = filterUsers(users, searchTerm)
+			if len(filteredUsers) == 0 {
+				filteredUsers = users // Show all users if no search results
+			}
+		} else {
+			filteredUsers = users
+		}
+
+		// Calculate pagination
+		totalUsers := len(filteredUsers)
+		totalPages := (totalUsers + pageSize - 1) / pageSize
+		startIndex := currentPage * pageSize
+		endIndex := startIndex + pageSize
+		if endIndex > totalUsers {
+			endIndex = totalUsers
+		}
+
+		// Display header with page information
 		pterm.DefaultHeader.WithFullWidth().
 			WithBackgroundStyle(pterm.NewStyle(pterm.BgDarkGray)).
 			WithTextStyle(pterm.NewStyle(pterm.FgLightWhite)).
-			Println("Select a user account:")
+			Printf("Select a user account (Page %d of %d)", currentPage+1, totalPages)
 
-		for i := 0; i < max; i++ {
-			userMap := users[i].(map[string]interface{})
-			pterm.Printf("→ %d: %s\n", i+1, userMap["userid"].(string)) // Print actual userID
+		// Display existing users
+		for i := startIndex; i < endIndex; i++ {
+			userMap := filteredUsers[i].(map[string]interface{})
+			if i == selectedIndex {
+				pterm.Printf("→ %d: %s\n", i+1, userMap["userid"].(string))
+			} else {
+				pterm.Printf("  %d: %s\n", i+1, userMap["userid"].(string))
+			}
 		}
 
-		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
-			Println("\nNavigation: [j]down [k]up, [Enter]select, [q]quit")
+		// Display option to add new user
+		if selectedIndex == totalUsers {
+			pterm.Printf("→ %d: Add new user\n", totalUsers+1)
+		} else {
+			pterm.Printf("  %d: Add new user\n", totalUsers+1)
+		}
 
-		// Get the keyboard input for selection
-		_, key, err := keyboard.GetKey()
+		// Show navigation help
+		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
+			Println("\nNavigation: [h]prev-page [j]down [k]up [l]next-page [/]search [Enter]select [q]quit")
+
+		// Show search prompt if in search mode
+		if searchMode {
+			fmt.Println()
+			pterm.Info.Printf("Search (ESC to cancel, Enter to confirm): %s", searchTerm)
+		}
+
+		// Get keyboard input
+		char, key, err := keyboard.GetKey()
 		if err != nil {
 			pterm.Error.Println("Error reading keyboard input:", err)
 			exitWithError()
 		}
 
+		// Handle search mode input
+		if searchMode {
+			switch key {
+			case keyboard.KeyEsc:
+				searchMode = false
+				searchTerm = ""
+				filteredUsers = users // Return to full user list when search term is cleared
+			case keyboard.KeyBackspace, keyboard.KeyBackspace2:
+				if len(searchTerm) > 0 {
+					searchTerm = searchTerm[:len(searchTerm)-1]
+				}
+			case keyboard.KeyEnter:
+				searchMode = false
+			default:
+				if char != 0 {
+					searchTerm += string(char)
+				}
+			}
+			currentPage = 0
+			selectedIndex = 0
+			continue
+		}
+
+		// Handle normal mode input
 		switch key {
 		case keyboard.KeyEnter:
-			if selectedIndex >= 0 && selectedIndex < max {
-				return selectedIndex + 1
+			if selectedIndex <= len(filteredUsers) {
+				// If "Add new user" is selected
+				if selectedIndex == len(filteredUsers) {
+					return len(users) + 1
+				}
+				// Find the original index of the selected user
+				selectedUserMap := filteredUsers[selectedIndex].(map[string]interface{})
+				selectedUserID := selectedUserMap["userid"].(string)
+
+				for i, user := range users {
+					userMap := user.(map[string]interface{})
+					if userMap["userid"].(string) == selectedUserID {
+						return i + 1
+					}
+				}
 			}
+		}
+
+		switch char {
 		case 'j': // Down
-			if selectedIndex < max-1 {
+			if selectedIndex < min(endIndex, totalUsers) {
 				selectedIndex++
 			}
 		case 'k': // Up
-			if selectedIndex > 0 {
+			if selectedIndex > startIndex {
 				selectedIndex--
 			}
-		case 'q', 'Q': // Quit
-			pterm.Error.Println("Selection cancelled.")
+		case 'l': // Next page
+			if currentPage < totalPages-1 {
+				currentPage++
+				selectedIndex = currentPage * pageSize
+			}
+		case 'h': // Previous page
+			if currentPage > 0 {
+				currentPage--
+				selectedIndex = currentPage * pageSize
+			}
+		case '/': // Enter search mode
+			searchMode = true
+			searchTerm = ""
+			selectedIndex = 0
+		case 'q', 'Q':
+			fmt.Println()
+			pterm.Error.Println("User selection cancelled.")
 			os.Exit(1)
 		}
 	}
+}
+
+// filterUsers filters the users list based on the search term
+func filterUsers(users []interface{}, searchTerm string) []interface{} {
+	var filtered []interface{}
+	searchTerm = strings.ToLower(searchTerm)
+
+	for _, user := range users {
+		userMap := user.(map[string]interface{})
+		userid := strings.ToLower(userMap["userid"].(string))
+		if strings.Contains(userid, searchTerm) {
+			filtered = append(filtered, user)
+		}
+	}
+	return filtered
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func getEncryptionKey() ([]byte, error) {
@@ -492,6 +630,14 @@ func decrypt(cryptoText string) (string, error) {
 	return string(ciphertext), nil
 }
 
+// Define a struct for user credentials
+type UserCredentials struct {
+	UserID   string `yaml:"userid"`
+	Password string `yaml:"password"`
+	Token    string `yaml:"token"`
+}
+
+// saveCredentials saves the user's credentials to the configuration
 func saveCredentials(currentEnv, userID, password, token string) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
@@ -514,29 +660,53 @@ func saveCredentials(currentEnv, userID, password, token string) {
 		return
 	}
 
-	if !cacheViper.IsSet("environments") {
-		cacheViper.Set("environments", map[string]interface{}{})
-	}
-
 	envPath := fmt.Sprintf("environments.%s", currentEnv)
 	envSettings := cacheViper.GetStringMap(envPath)
 	if envSettings == nil {
 		envSettings = make(map[string]interface{})
 	}
 
-	users := envSettings["users"].([]interface{})
-	newUser := map[string]interface{}{
-		"userid":   userID,
-		"password": password,
-		"token":    token,
+	var users []UserCredentials
+	if existingUsers, ok := envSettings["users"]; ok {
+		if userList, ok := existingUsers.([]interface{}); ok {
+			for _, u := range userList {
+				if userMap, ok := u.(map[string]interface{}); ok {
+					user := UserCredentials{
+						UserID:   userMap["userid"].(string),
+						Password: userMap["password"].(string),
+						Token:    userMap["token"].(string),
+					}
+					users = append(users, user)
+				}
+			}
+		}
 	}
 
-	users = append(users, newUser)
-	envSettings["users"] = users
+	// Update existing user or add new user
+	userExists := false
+	for i, user := range users {
+		if user.UserID == userID {
+			users[i].Password = password
+			users[i].Token = token
+			userExists = true
+			break
+		}
+	}
 
+	if !userExists {
+		newUser := UserCredentials{
+			UserID:   userID,
+			Password: password,
+			Token:    token,
+		}
+		users = append(users, newUser)
+	}
+
+	envSettings["users"] = users
 	cacheViper.Set(envPath, envSettings)
+
 	if err := cacheViper.WriteConfig(); err != nil {
-		pterm.Error.Printf("Failed to save credentials: %v\n", err)
+		pterm.Error.Printf("Failed to save user credentials: %v\n", err)
 	}
 }
 
@@ -1311,12 +1481,13 @@ func selectScopeOrWorkspace(workspaces []map[string]interface{}, roleType string
 			exitWithError()
 		}
 
+		// Handle navigation and other commands
 		switch key {
 		case keyboard.KeyEnter:
 			if selectedIndex == 0 {
-				return "0" // DOMAIN ADMIN 선택
+				return "0"
 			} else {
-				return selectWorkspaceOnly(workspaces) // WORKSPACES 선택
+				return selectWorkspaceOnly(workspaces)
 			}
 		}
 
@@ -1391,13 +1562,14 @@ func selectWorkspaceOnly(workspaces []map[string]interface{}) string {
 			}
 		}
 
-		// Show navigation help
+		// Show navigation help and search prompt
 		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
 			Println("\nNavigation: [h]prev-page [j]down [k]up  [l]next-page [/]search [q]uit")
 
 		// Show search or input prompt at the bottom
 		if searchMode {
-			pterm.Info.Printf("\nSearch (ESC to cancel, Enter to confirm): %s", searchTerm)
+			fmt.Println()
+			pterm.Info.Printf("Search (ESC to cancel, Enter to confirm): %s", searchTerm)
 		} else {
 			fmt.Print("\nSelect a workspace above or input a number: ")
 			if inputBuffer != "" {
@@ -1485,13 +1657,6 @@ func selectWorkspaceOnly(workspaces []map[string]interface{}) string {
 			}
 		}
 	}
-}
-
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
 }
 
 func filterWorkspaces(workspaces []map[string]interface{}, searchTerm string) []map[string]interface{} {
