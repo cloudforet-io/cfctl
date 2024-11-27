@@ -296,7 +296,7 @@ func executeUserLogin(currentEnv string) {
 	scope := determineScope(roleType, len(workspaces))
 	var workspaceID string
 	if roleType == "DOMAIN_ADMIN" {
-		workspaceID = selectScopeOrWorkspace(workspaces)
+		workspaceID = selectScopeOrWorkspace(workspaces, roleType)
 		if workspaceID == "0" {
 			scope = "DOMAIN"
 			workspaceID = ""
@@ -304,7 +304,7 @@ func executeUserLogin(currentEnv string) {
 			scope = "WORKSPACE"
 		}
 	} else {
-		workspaceID = selectWorkspace(workspaces)
+		workspaceID = selectWorkspaceOnly(workspaces)
 		scope = "WORKSPACE"
 	}
 
@@ -1252,7 +1252,78 @@ func selectWorkspace(workspaces []map[string]interface{}) string {
 	}
 }
 
-func selectScopeOrWorkspace(workspaces []map[string]interface{}) string {
+func selectScopeOrWorkspace(workspaces []map[string]interface{}, roleType string) string {
+	if err := keyboard.Open(); err != nil {
+		pterm.Error.Println("Failed to initialize keyboard:", err)
+		exitWithError()
+	}
+	defer keyboard.Close()
+
+	// DOMAIN_ADMIN이 아닌 경우 바로 workspace 선택으로 이동
+	if roleType != "DOMAIN_ADMIN" {
+		return selectWorkspaceOnly(workspaces)
+	}
+
+	// DOMAIN_ADMIN인 경우 먼저 scope 선택
+	options := []string{"DOMAIN ADMIN", "WORKSPACES"}
+	selectedIndex := 0
+
+	for {
+		// Clear screen
+		fmt.Print("\033[H\033[2J")
+
+		// Display scope selection
+		pterm.DefaultHeader.WithFullWidth().
+			WithBackgroundStyle(pterm.NewStyle(pterm.BgDarkGray)).
+			WithTextStyle(pterm.NewStyle(pterm.FgLightWhite)).
+			Println("Select Scope")
+
+		for i, option := range options {
+			if i == selectedIndex {
+				pterm.Printf("→ %d: %s\n", i, option)
+			} else {
+				pterm.Printf("  %d: %s\n", i, option)
+			}
+		}
+
+		// Show navigation help
+		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
+			Println("\nNavigation: [j]down [k]up, [Enter]select, [q]uit")
+
+		// Get keyboard input
+		char, key, err := keyboard.GetKey()
+		if err != nil {
+			pterm.Error.Println("Error reading keyboard input:", err)
+			exitWithError()
+		}
+
+		switch key {
+		case keyboard.KeyEnter:
+			if selectedIndex == 0 {
+				return "0" // DOMAIN ADMIN 선택
+			} else {
+				return selectWorkspaceOnly(workspaces) // WORKSPACES 선택
+			}
+		}
+
+		switch char {
+		case 'j': // Down
+			if selectedIndex < len(options)-1 {
+				selectedIndex++
+			}
+		case 'k': // Up
+			if selectedIndex > 0 {
+				selectedIndex--
+			}
+		case 'q', 'Q':
+			pterm.Error.Println("Selection cancelled.")
+			os.Exit(1)
+		}
+	}
+}
+
+// selectWorkspaceOnly handles workspace selection
+func selectWorkspaceOnly(workspaces []map[string]interface{}) string {
 	const pageSize = 9
 	currentPage := 0
 	searchMode := false
@@ -1281,60 +1352,53 @@ func selectScopeOrWorkspace(workspaces []map[string]interface{}) string {
 			filteredWorkspaces = workspaces
 		}
 
+		// Calculate pagination
 		totalWorkspaces := len(filteredWorkspaces)
 		totalPages := (totalWorkspaces + pageSize - 1) / pageSize
-
 		startIndex := currentPage * pageSize
 		endIndex := startIndex + pageSize
 		if endIndex > totalWorkspaces {
 			endIndex = totalWorkspaces
 		}
 
-		pterm.Info.Printf("Available Options (Page %d of %d):\n", currentPage+1, totalPages)
+		// Display header with page information
+		pterm.DefaultHeader.WithFullWidth().
+			WithBackgroundStyle(pterm.NewStyle(pterm.BgDarkGray)).
+			WithTextStyle(pterm.NewStyle(pterm.FgLightWhite)).
+			Printf("Available Options (Page %d of %d)", currentPage+1, totalPages)
 
-		// Always show DOMAIN ADMIN option on first page
-		if currentPage == 0 {
-			if selectedIndex == 0 {
-				fmt.Printf("→ 0: DOMAIN ADMIN\n")
-			} else {
-				fmt.Printf("  0: DOMAIN ADMIN\n")
-			}
-		}
-
-		// Display workspace options with selection indicator
+		// Show workspace list
 		for i := startIndex; i < endIndex; i++ {
 			name := filteredWorkspaces[i]["name"].(string)
-			displayIndex := i - startIndex + 1
-			if displayIndex == selectedIndex {
-				fmt.Printf("→ %d: %s\n", i+1, name)
+			if i-startIndex == selectedIndex {
+				pterm.Printf("→ %d: %s\n", i+1, name)
 			} else {
-				fmt.Printf("  %d: %s\n", i+1, name)
+				pterm.Printf("  %d: %s\n", i+1, name)
 			}
 		}
 
-		fmt.Print("\nNavigation: [j]down [k]up [h]prev-page [l]next-page")
-		if searchTerm != "" && !searchMode {
-			fmt.Print(", [c]lear search")
-		}
-		fmt.Print(", [/]search, [q]uit")
+		// Show navigation help
+		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
+			Println("\nNavigation: [j]down [k]up [h]prev-page [l]next-page, [/]search, [q]uit")
 
 		// Show search or input prompt at the bottom
 		if searchMode {
-			fmt.Print("\n\nSearch (ESC to cancel, Enter to confirm): ")
-			fmt.Print(searchTerm)
-		} else if !searchMode {
-			fmt.Print("\n\nPlease select an option or input a number: ")
+			pterm.Info.Printf("\nSearch (ESC to cancel, Enter to confirm): %s", searchTerm)
+		} else {
+			fmt.Print("\nNumber: ")
 			if inputBuffer != "" {
 				fmt.Print(inputBuffer)
 			}
 		}
 
+		// Get keyboard input
 		char, key, err := keyboard.GetKey()
 		if err != nil {
 			pterm.Error.Println("Error reading keyboard input:", err)
 			exitWithError()
 		}
 
+		// Handle search mode input
 		if searchMode {
 			switch key {
 			case keyboard.KeyEsc:
@@ -1356,25 +1420,17 @@ func selectScopeOrWorkspace(workspaces []map[string]interface{}) string {
 			continue
 		}
 
+		// Handle normal mode input
 		switch key {
 		case keyboard.KeyEnter:
 			if inputBuffer != "" {
 				index, err := strconv.Atoi(inputBuffer)
-				if err == nil && index >= 0 {
-					if index == 0 {
-						return "0"
-					}
-					index-- // 1-based to 0-based
-					if index < len(filteredWorkspaces) {
-						return filteredWorkspaces[index]["workspace_id"].(string)
-					}
+				if err == nil && index >= 1 && index <= len(filteredWorkspaces) {
+					return filteredWorkspaces[index-1]["workspace_id"].(string)
 				}
 				inputBuffer = ""
 			} else {
-				if selectedIndex == 0 && currentPage == 0 {
-					return "0"
-				}
-				adjustedIndex := startIndex + (selectedIndex - 1)
+				adjustedIndex := startIndex + selectedIndex
 				if adjustedIndex >= 0 && adjustedIndex < len(filteredWorkspaces) {
 					return filteredWorkspaces[adjustedIndex]["workspace_id"].(string)
 				}
@@ -1385,56 +1441,33 @@ func selectScopeOrWorkspace(workspaces []map[string]interface{}) string {
 			}
 		}
 
+		// Handle navigation and other commands
 		switch char {
 		case 'j': // Down
-			if selectedIndex < min(pageSize-1, endIndex-startIndex) {
+			if selectedIndex < min(pageSize-1, endIndex-startIndex-1) {
 				selectedIndex++
-			} else if currentPage < totalPages-1 {
-				currentPage++
-				selectedIndex = 0
 			}
-			inputBuffer = ""
 		case 'k': // Up
 			if selectedIndex > 0 {
 				selectedIndex--
-			} else if currentPage > 0 {
-				currentPage--
-				selectedIndex = pageSize - 1
 			}
-			inputBuffer = ""
 		case 'l': // Next page
 			if currentPage < totalPages-1 {
 				currentPage++
-			} else {
-				currentPage = 0
+				selectedIndex = 0
 			}
-			selectedIndex = 0
-			inputBuffer = ""
 		case 'h': // Previous page
 			if currentPage > 0 {
 				currentPage--
-			} else {
-				currentPage = totalPages - 1
-			}
-			selectedIndex = 0
-			inputBuffer = ""
-		case 'q', 'Q':
-			fmt.Println()
-			pterm.Error.Println("Workspace selection cancelled.")
-			os.Exit(1)
-		case 'c', 'C':
-			if searchTerm != "" {
-				searchTerm = ""
-				currentPage = 0
 				selectedIndex = 0
 			}
-			inputBuffer = ""
+		case 'q', 'Q':
+			pterm.Error.Println("Workspace selection cancelled.")
+			os.Exit(1)
 		case '/':
 			searchMode = true
 			searchTerm = ""
-			currentPage = 0
 			selectedIndex = 0
-			inputBuffer = ""
 		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 			if !searchMode {
 				inputBuffer += string(char)
