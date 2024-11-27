@@ -1197,61 +1197,6 @@ func sortEnvironmentContent(content []string, token string, indentLevel int) []s
 	return sorted
 }
 
-func selectWorkspace(workspaces []map[string]interface{}) string {
-	const pageSize = 15
-	totalWorkspaces := len(workspaces)
-	totalPages := (totalWorkspaces + pageSize - 1) / pageSize
-
-	currentPage := 0
-	for {
-		startIndex := currentPage * pageSize
-		endIndex := startIndex + pageSize
-		if endIndex > totalWorkspaces {
-			endIndex = totalWorkspaces
-		}
-
-		var options []string
-		for i := startIndex; i < endIndex; i++ {
-			name := workspaces[i]["name"].(string)
-			options = append(options, fmt.Sprintf("%d: %s", i+1, name))
-		}
-
-		if currentPage > 0 {
-			options = append([]string{"< Previous Page"}, options...)
-		}
-		if endIndex < totalWorkspaces {
-			options = append(options, "Next Page >")
-		}
-
-		pterm.Info.Printfln("Available Workspaces (Page %d of %d):", currentPage+1, totalPages)
-		selectedOption, err := pterm.DefaultInteractiveSelect.
-			WithOptions(options).
-			WithMaxHeight(20).
-			Show()
-		if err != nil {
-			pterm.Error.Println("Error selecting workspace:", err)
-			exitWithError()
-		}
-
-		if selectedOption == "< Previous Page" {
-			currentPage--
-			continue
-		} else if selectedOption == "Next Page >" {
-			currentPage++
-			continue
-		}
-
-		var index int
-		fmt.Sscanf(selectedOption, "%d", &index)
-
-		if index >= 1 && index <= totalWorkspaces {
-			return workspaces[index-1]["workspace_id"].(string)
-		} else {
-			pterm.Error.Println("Invalid selection. Please try again.")
-		}
-	}
-}
-
 func selectScopeOrWorkspace(workspaces []map[string]interface{}, roleType string) string {
 	if err := keyboard.Open(); err != nil {
 		pterm.Error.Println("Failed to initialize keyboard:", err)
@@ -1259,17 +1204,14 @@ func selectScopeOrWorkspace(workspaces []map[string]interface{}, roleType string
 	}
 	defer keyboard.Close()
 
-	// DOMAIN_ADMIN이 아닌 경우 바로 workspace 선택으로 이동
 	if roleType != "DOMAIN_ADMIN" {
 		return selectWorkspaceOnly(workspaces)
 	}
 
-	// DOMAIN_ADMIN인 경우 먼저 scope 선택
-	options := []string{"DOMAIN ADMIN", "WORKSPACES"}
+	options := []string{"DOMAIN", "WORKSPACES"}
 	selectedIndex := 0
 
 	for {
-		// Clear screen
 		fmt.Print("\033[H\033[2J")
 
 		// Display scope selection
@@ -1324,7 +1266,7 @@ func selectScopeOrWorkspace(workspaces []map[string]interface{}, roleType string
 
 // selectWorkspaceOnly handles workspace selection
 func selectWorkspaceOnly(workspaces []map[string]interface{}) string {
-	const pageSize = 9
+	const pageSize = 15
 	currentPage := 0
 	searchMode := false
 	searchTerm := ""
@@ -1355,7 +1297,7 @@ func selectWorkspaceOnly(workspaces []map[string]interface{}) string {
 		// Calculate pagination
 		totalWorkspaces := len(filteredWorkspaces)
 		totalPages := (totalWorkspaces + pageSize - 1) / pageSize
-		startIndex := currentPage * pageSize
+		startIndex := (currentPage % totalPages) * pageSize
 		endIndex := startIndex + pageSize
 		if endIndex > totalWorkspaces {
 			endIndex = totalWorkspaces
@@ -1365,7 +1307,7 @@ func selectWorkspaceOnly(workspaces []map[string]interface{}) string {
 		pterm.DefaultHeader.WithFullWidth().
 			WithBackgroundStyle(pterm.NewStyle(pterm.BgDarkGray)).
 			WithTextStyle(pterm.NewStyle(pterm.FgLightWhite)).
-			Printf("Available Options (Page %d of %d)", currentPage+1, totalPages)
+			Printf("Accessible Workspaces (Page %d of %d)", currentPage+1, totalPages)
 
 		// Show workspace list
 		for i := startIndex; i < endIndex; i++ {
@@ -1379,13 +1321,13 @@ func selectWorkspaceOnly(workspaces []map[string]interface{}) string {
 
 		// Show navigation help
 		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
-			Println("\nNavigation: [j]down [k]up [h]prev-page [l]next-page, [/]search, [q]uit")
+			Println("\nNavigation: [h]prev-page [j]down [k]up  [l]next-page [/]search [q]uit")
 
 		// Show search or input prompt at the bottom
 		if searchMode {
 			pterm.Info.Printf("\nSearch (ESC to cancel, Enter to confirm): %s", searchTerm)
 		} else {
-			fmt.Print("\nNumber: ")
+			fmt.Print("\nSelect a workspace above or input a number: ")
 			if inputBuffer != "" {
 				fmt.Print(inputBuffer)
 			}
@@ -1452,16 +1394,13 @@ func selectWorkspaceOnly(workspaces []map[string]interface{}) string {
 				selectedIndex--
 			}
 		case 'l': // Next page
-			if currentPage < totalPages-1 {
-				currentPage++
-				selectedIndex = 0
-			}
+			currentPage = (currentPage + 1) % totalPages
+			selectedIndex = 0
 		case 'h': // Previous page
-			if currentPage > 0 {
-				currentPage--
-				selectedIndex = 0
-			}
+			currentPage = (currentPage - 1 + totalPages) % totalPages
+			selectedIndex = 0
 		case 'q', 'Q':
+			fmt.Println()
 			pterm.Error.Println("Workspace selection cancelled.")
 			os.Exit(1)
 		case '/':
