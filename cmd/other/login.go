@@ -587,7 +587,7 @@ func determineScope(roleType string, workspaceCount int) string {
 	switch roleType {
 	case "DOMAIN_ADMIN":
 		return "DOMAIN"
-	case "USER":
+	case "WORKSPACE_OWNER", "WORKSPACE_MEMBER", "USER":
 		return "WORKSPACE"
 	default:
 		pterm.Error.Println("Unknown role_type:", roleType)
