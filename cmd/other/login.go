@@ -61,7 +61,7 @@ type tokenAuth struct {
 
 func (t *tokenAuth) GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error) {
 	return map[string]string{
-		"token": t.token, // "Authorization: Bearer" 대신 "token" 키 사용
+		"token": t.token, // Use "token" key instead of "Authorization: Bearer"
 	}, nil
 }
 
@@ -281,7 +281,7 @@ func executeAppLogin(currentEnv string) error {
 
 	selectedIndex := 0
 	options := []string{"Enter a new token"}
-	var validTokens []TokenInfo // 유효한 토큰만 저장할 새로운 슬라이스
+	var validTokens []TokenInfo // New slice to store only valid tokens
 
 	for _, tokenInfo := range tokens {
 		claims, err := validateAndDecodeToken(tokenInfo.Token)
@@ -614,21 +614,21 @@ func promptUserSelection(max int, users []interface{}) int {
 			WithTextStyle(pterm.NewStyle(pterm.FgLightWhite)).
 			Printf("Select a user account (Page %d of %d)", currentPage+1, totalPages)
 
+		// Display option to add new user first
+		if selectedIndex == 0 {
+			pterm.Printf("→ %d: Add new user\n", 1)
+		} else {
+			pterm.Printf("  %d: Add new user\n", 1)
+		}
+
 		// Display existing users
 		for i := startIndex; i < endIndex; i++ {
 			userMap := filteredUsers[i].(map[string]interface{})
-			if i == selectedIndex {
-				pterm.Printf("→ %d: %s\n", i+1, userMap["userid"].(string))
+			if i+1 == selectedIndex {
+				pterm.Printf("→ %d: %s\n", i+2, userMap["userid"].(string))
 			} else {
-				pterm.Printf("  %d: %s\n", i+1, userMap["userid"].(string))
+				pterm.Printf("  %d: %s\n", i+2, userMap["userid"].(string))
 			}
-		}
-
-		// Display option to add new user
-		if selectedIndex == totalUsers {
-			pterm.Printf("→ %d: Add new user\n", totalUsers+1)
-		} else {
-			pterm.Printf("  %d: Add new user\n", totalUsers+1)
 		}
 
 		// Show navigation help
@@ -674,13 +674,11 @@ func promptUserSelection(max int, users []interface{}) int {
 		// Handle normal mode input
 		switch key {
 		case keyboard.KeyEnter:
-			if selectedIndex <= len(filteredUsers) {
-				// If "Add new user" is selected
-				if selectedIndex == len(filteredUsers) {
-					return len(users) + 1
-				}
+			if selectedIndex == 0 {
+				return len(users) + 1 // Add new user
+			} else if selectedIndex <= len(filteredUsers) {
 				// Find the original index of the selected user
-				selectedUserMap := filteredUsers[selectedIndex].(map[string]interface{})
+				selectedUserMap := filteredUsers[selectedIndex-1].(map[string]interface{})
 				selectedUserID := selectedUserMap["userid"].(string)
 
 				for i, user := range users {
@@ -694,22 +692,22 @@ func promptUserSelection(max int, users []interface{}) int {
 
 		switch char {
 		case 'j': // Down
-			if selectedIndex < min(endIndex, totalUsers) {
+			if selectedIndex < min(endIndex-startIndex, totalUsers) {
 				selectedIndex++
 			}
 		case 'k': // Up
-			if selectedIndex > startIndex {
+			if selectedIndex > 0 {
 				selectedIndex--
 			}
 		case 'l': // Next page
 			if currentPage < totalPages-1 {
 				currentPage++
-				selectedIndex = currentPage * pageSize
+				selectedIndex = 0
 			}
 		case 'h': // Previous page
 			if currentPage > 0 {
 				currentPage--
-				selectedIndex = currentPage * pageSize
+				selectedIndex = 0
 			}
 		case '/': // Enter search mode
 			searchMode = true
@@ -856,6 +854,9 @@ func saveCredentials(currentEnv, userID, password, token string) {
 	if envSettings == nil {
 		envSettings = make(map[string]interface{})
 	}
+
+	// Save token at the root level of the environment
+	envSettings["token"] = token
 
 	var users []UserCredentials
 	if existingUsers, ok := envSettings["users"]; ok {
