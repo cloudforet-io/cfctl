@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AlecAivazis/survey/v2"
 	"github.com/eiannone/keyboard"
 
 	"google.golang.org/grpc/metadata"
@@ -60,7 +61,7 @@ type tokenAuth struct {
 
 func (t *tokenAuth) GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error) {
 	return map[string]string{
-		"token": t.token, // "Authorization: Bearer" 대신 "token" 키 사용
+		"token": t.token, // Use "token" key instead of "Authorization: Bearer"
 	}, nil
 }
 
@@ -69,138 +70,328 @@ func (t *tokenAuth) RequireTransportSecurity() bool {
 }
 
 func executeLogin(cmd *cobra.Command, args []string) {
-	// Load the environment-specific configuration without printing endpoint
-	loadEnvironmentConfig()
-
-	// Get current environment
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		pterm.Error.Println("Failed to get user home directory:", err)
-		exitWithError()
+		return
 	}
 
-	mainViper := viper.New()
-	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
-	if err := mainViper.ReadInConfig(); err != nil {
-		pterm.Error.Println("Failed to read main config file:", err)
-		exitWithError()
+	configPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
+	viper.SetConfigFile(configPath)
+
+	if err := viper.ReadInConfig(); err != nil {
+		pterm.Error.Printf("Failed to read config file: %v\n", err)
+		return
 	}
 
-	currentEnv := mainViper.GetString("environment")
+	currentEnv := viper.GetString("environment")
 	if currentEnv == "" {
-		pterm.Error.Println("No environment specified in config.yaml")
-		exitWithError()
+		pterm.Error.Println("No environment selected")
+		return
 	}
 
-	// Print endpoint once here
-	pterm.Info.Printf("Using endpoint: %s\n", providedUrl)
-
+	// Check if it's an app environment
 	if strings.HasSuffix(currentEnv, "-app") {
-		executeAppLogin(currentEnv, mainViper)
+		if err := executeAppLogin(currentEnv); err != nil {
+			pterm.Error.Printf("Login failed: %v\n", err)
+			return
+		}
 	} else {
+		// Execute normal user login
 		executeUserLogin(currentEnv)
 	}
 }
 
-func executeAppLogin(currentEnv string, mainViper *viper.Viper) {
-	token := mainViper.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
-	if token == "" {
-		pterm.Error.Println("No App token found for app environment.")
+type TokenInfo struct {
+	Token string `yaml:"token"`
+}
 
-		// Create a styled box for the app key type guidance
-		headerBox := pterm.DefaultBox.WithTitle("App Guide").
-			WithTitleTopCenter().
-			WithRightPadding(4).
-			WithLeftPadding(4).
-			WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
+// promptToken prompts for token input
+func promptToken() (string, error) {
+	prompt := &survey.Password{
+		Message: "Enter your token:",
+	}
 
-		appTokenExplain := "Please create a Domain Admin App in SpaceONE Console.\n" +
-			"This requires Domain Admin privilege.\n\n" +
-			"Or Please create a Workspace App in SpaceONE Console.\n" +
-			"This requires Workspace Owner privilege."
+	var token string
+	err := survey.AskOne(prompt, &token, survey.WithValidator(survey.Required))
+	if err != nil {
+		return "", err
+	}
 
-		headerBox.Println(appTokenExplain)
-		fmt.Println()
+	return token, nil
+}
 
-		// Create the steps content
-		steps := []string{
-			"1. Go to SpaceONE Console",
-			"2. Navigate to either 'Admin > App Page' or specific 'Workspace > App page'",
-			"3. Click 'Create' to create your App",
-			"4. Copy value of either 'client_secret' from Client ID or 'token' from Spacectl (CLI)",
+// saveAppToken saves the token
+func saveAppToken(currentEnv, token string) error {
+	homeDir, _ := os.UserHomeDir()
+	configPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
+
+	viper.SetConfigFile(configPath)
+	if err := viper.ReadInConfig(); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	envPath := fmt.Sprintf("environments.%s", currentEnv)
+	envSettings := viper.GetStringMap(envPath)
+	if envSettings == nil {
+		envSettings = make(map[string]interface{})
+	}
+
+	// Initialize tokens array if it doesn't exist
+	var tokens []TokenInfo
+	if existingTokens, ok := envSettings["tokens"]; ok {
+		if tokenList, ok := existingTokens.([]interface{}); ok {
+			for _, t := range tokenList {
+				if tokenMap, ok := t.(map[string]interface{}); ok {
+					tokenInfo := TokenInfo{
+						Token: tokenMap["token"].(string),
+					}
+					tokens = append(tokens, tokenInfo)
+				}
+			}
+		}
+	}
+
+	// Add new token if it doesn't exist
+	tokenExists := false
+	for _, t := range tokens {
+		if t.Token == token {
+			tokenExists = true
+			break
+		}
+	}
+
+	if !tokenExists {
+		newToken := TokenInfo{
+			Token: token,
+		}
+		tokens = append(tokens, newToken)
+	}
+
+	// Update environment settings
+	envSettings["tokens"] = tokens
+
+	// Keep the existing endpoint and proxy settings
+	if endpoint, ok := envSettings["endpoint"]; ok {
+		envSettings["endpoint"] = endpoint
+	}
+	if proxy, ok := envSettings["proxy"]; ok {
+		envSettings["proxy"] = proxy
+	}
+
+	viper.Set(envPath, envSettings)
+	return viper.WriteConfig()
+}
+
+// promptTokenSelection shows available tokens and lets user select one
+func promptTokenSelection(tokens []TokenInfo) (string, error) {
+	if len(tokens) == 0 {
+		return "", fmt.Errorf("no tokens available")
+	}
+
+	if err := keyboard.Open(); err != nil {
+		return "", err
+	}
+	defer keyboard.Close()
+
+	selectedIndex := 0
+	for {
+		fmt.Print("\033[H\033[2J") // Clear screen
+
+		pterm.DefaultHeader.WithFullWidth().
+			WithBackgroundStyle(pterm.NewStyle(pterm.BgDarkGray)).
+			WithTextStyle(pterm.NewStyle(pterm.FgLightWhite)).
+			Println("Select a token:")
+
+		// Display available tokens
+		for i, token := range tokens {
+			maskedToken := maskToken(token.Token)
+			if i == selectedIndex {
+				pterm.Printf("→ %d: %s\n", i+1, maskedToken)
+			} else {
+				pterm.Printf("  %d: %s\n", i+1, maskedToken)
+			}
 		}
 
-		// Determine proxy value based on endpoint
-		isIdentityEndpoint := strings.Contains(strings.ToLower(providedUrl), "identity")
-		proxyValue := "true"
-		if !isIdentityEndpoint {
-			proxyValue = "false"
+		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
+			Println("\nNavigation: [j]down [k]up [Enter]select [q]quit")
+
+		char, key, err := keyboard.GetKey()
+		if err != nil {
+			return "", err
 		}
 
-		// Create yaml config example with highlighting
-		yamlExample := pterm.DefaultBox.WithTitle("Config Example").
-			WithTitleTopCenter().
-			WithRightPadding(4).
-			WithLeftPadding(4).
-			Sprint(fmt.Sprintf("environment: %s\nenvironments:\n    %s:\n        endpoint: %s\n        proxy: %s\n        token: %s",
-				currentEnv,
-				currentEnv,
-				providedUrl,
-				proxyValue,
-				pterm.FgLightCyan.Sprint("YOUR_COPIED_TOKEN")))
+		switch key {
+		case keyboard.KeyEnter:
+			return tokens[selectedIndex].Token, nil
+		}
 
-		// Create instruction box
-		instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
-			WithTitleTopCenter().
-			WithRightPadding(4).
-			WithLeftPadding(4)
+		switch char {
+		case 'j':
+			if selectedIndex < len(tokens)-1 {
+				selectedIndex++
+			}
+		case 'k':
+			if selectedIndex > 0 {
+				selectedIndex--
+			}
+		case 'q', 'Q':
+			return "", fmt.Errorf("selection cancelled")
+		}
+	}
+}
 
-		// Combine all steps
-		allSteps := append(steps,
-			fmt.Sprintf("5. Add the token under the proxy in your config file:\n%s", yamlExample),
-			"6. Run 'cfctl login' again")
+// maskToken returns a masked version of the token for display
+func maskToken(token string) string {
+	if len(token) <= 10 {
+		return strings.Repeat("*", len(token))
+	}
+	return token[:5] + "..." + token[len(token)-5:]
+}
 
-		// Print all steps in the instruction box
-		instructionBox.Println(strings.Join(allSteps, "\n\n"))
+// executeAppLogin handles login for app environments
+func executeAppLogin(currentEnv string) error {
+	homeDir, _ := os.UserHomeDir()
+	configPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
 
-		exitWithError()
+	viper.SetConfigFile(configPath)
+	if err := viper.ReadInConfig(); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 
-	claims, ok := verifyAppToken(token)
-	if !ok {
-		exitWithError()
+	envPath := fmt.Sprintf("environments.%s.tokens", currentEnv)
+	var tokens []TokenInfo
+	if tokensList := viper.Get(envPath); tokensList != nil {
+		if tokenList, ok := tokensList.([]interface{}); ok {
+			for _, t := range tokenList {
+				if tokenMap, ok := t.(map[string]interface{}); ok {
+					tokenInfo := TokenInfo{
+						Token: tokenMap["token"].(string),
+					}
+					tokens = append(tokens, tokenInfo)
+				}
+			}
+		}
 	}
 
-	headerBox := pterm.DefaultBox.WithTitle("App Token Information").
-		WithTitleTopCenter().
-		WithRightPadding(4).
-		WithLeftPadding(4).
-		WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
+	if err := keyboard.Open(); err != nil {
+		return err
+	}
+	defer keyboard.Close()
 
-	var tokenInfo string
-	roleType := claims["rol"].(string)
+	selectedIndex := 0
+	options := []string{"Enter a new token"}
+	var validTokens []TokenInfo // New slice to store only valid tokens
 
-	if roleType == "DOMAIN_ADMIN" {
-		tokenInfo = fmt.Sprintf("Role Type: %s\nDomain ID: %s\nAccess Scope: All Workspaces\nExpires: %s",
-			pterm.FgGreen.Sprint("DOMAIN ADMIN"),
-			claims["did"].(string),
-			time.Unix(int64(claims["exp"].(float64)), 0).Format("2006-01-02 15:04:05"))
-	} else if roleType == "WORKSPACE_OWNER" {
-		tokenInfo = fmt.Sprintf("Role Type: %s\nDomain ID: %s\nWorkspace ID: %s\nExpires: %s",
-			pterm.FgYellow.Sprint("WORKSPACE OWNER"),
-			claims["did"].(string),
-			claims["wid"].(string),
-			time.Unix(int64(claims["exp"].(float64)), 0).Format("2006-01-02 15:04:05"))
+	for _, tokenInfo := range tokens {
+		claims, err := validateAndDecodeToken(tokenInfo.Token)
+		if err != nil {
+			pterm.Warning.Printf("Invalid token found in config: %v\n", err)
+			continue
+		}
+
+		displayName := getTokenDisplayName(claims)
+		options = append(options, displayName)
+		validTokens = append(validTokens, tokenInfo)
 	}
 
-	headerBox.Println(tokenInfo)
-	fmt.Println()
+	if len(validTokens) == 0 && len(tokens) > 0 {
+		pterm.Warning.Println("All existing tokens are invalid. Please enter a new token.")
+		// Clear invalid tokens from config
+		if err := clearInvalidTokens(currentEnv); err != nil {
+			pterm.Warning.Printf("Failed to clear invalid tokens: %v\n", err)
+		}
+	}
 
-	pterm.Success.Println("Successfully authenticated with App token.")
+	for {
+		fmt.Print("\033[H\033[2J") // Clear screen
+
+		pterm.DefaultHeader.WithFullWidth().
+			WithBackgroundStyle(pterm.NewStyle(pterm.BgDarkGray)).
+			WithTextStyle(pterm.NewStyle(pterm.FgLightWhite)).
+			Println("Choose an option:")
+
+		for i, option := range options {
+			if i == selectedIndex {
+				pterm.Printf("→ %d: %s\n", i, option)
+			} else {
+				pterm.Printf("  %d: %s\n", i, option)
+			}
+		}
+
+		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
+			Println("\nNavigation: [j]down [k]up [Enter]select [q]uit")
+
+		char, key, err := keyboard.GetKey()
+		if err != nil {
+			return err
+		}
+
+		switch key {
+		case keyboard.KeyEnter:
+			if selectedIndex == 0 {
+				// Enter a new token
+				token, err := promptToken()
+				if err != nil {
+					return err
+				}
+
+				// Validate new token before saving
+				if _, err := validateAndDecodeToken(token); err != nil {
+					return fmt.Errorf("invalid token: %v", err)
+				}
+
+				// First save to tokens array
+				if err := saveAppToken(currentEnv, token); err != nil {
+					return err
+				}
+				// Then set as current token
+				if err := saveSelectedToken(currentEnv, token); err != nil {
+					return err
+				}
+				pterm.Success.Printf("Token successfully saved and selected\n")
+				return nil
+			} else {
+				// Use selected token from existing valid tokens
+				selectedToken := validTokens[selectedIndex-1].Token
+				if err := saveSelectedToken(currentEnv, selectedToken); err != nil {
+					return fmt.Errorf("failed to save selected token: %v", err)
+				}
+				pterm.Success.Printf("Token successfully selected\n")
+				return nil
+			}
+		}
+
+		switch char {
+		case 'j':
+			if selectedIndex < len(options)-1 {
+				selectedIndex++
+			}
+		case 'k':
+			if selectedIndex > 0 {
+				selectedIndex--
+			}
+		case 'q', 'Q':
+			pterm.Error.Println("Selection cancelled.")
+			os.Exit(1)
+		}
+	}
+}
+
+func getTokenDisplayName(claims map[string]interface{}) string {
+	role := claims["rol"].(string)
+	domainID := claims["did"].(string)
+
+	if role == "WORKSPACE_OWNER" {
+		workspaceID := claims["wid"].(string)
+		return fmt.Sprintf("%s (%s, %s)", role, domainID, workspaceID)
+	}
+
+	return fmt.Sprintf("%s (%s)", role, domainID)
 }
 
 func executeUserLogin(currentEnv string) {
-	loadEnvironmentConfig()
+	loadEnvironmentConfig() // Load the environment-specific configuration
 
 	baseUrl := providedUrl
 	if baseUrl == "" {
@@ -219,29 +410,73 @@ func executeUserLogin(currentEnv string) {
 	cacheConfigPath := filepath.Join(homeDir, ".cfctl", "cache", "config.yaml")
 	cacheViper.SetConfigFile(cacheConfigPath)
 
-	var userID, password string
-	if err := cacheViper.ReadInConfig(); err == nil {
-		savedUserID := cacheViper.GetString(fmt.Sprintf("environments.%s.userID", currentEnv))
-		savedEncryptedPassword := cacheViper.GetString(fmt.Sprintf("environments.%s.password", currentEnv))
+	var userID string
+	var password string
 
-		if savedUserID != "" && savedEncryptedPassword != "" {
-			userID = savedUserID
-			var err error
-			password, err = decrypt(savedEncryptedPassword)
-			if err != nil {
-				pterm.Warning.Println("Failed to decrypt saved password, requesting new credentials")
-				userID, password = promptCredentials()
+	if err := cacheViper.ReadInConfig(); err == nil {
+		usersField := cacheViper.Get("environments." + currentEnv + ".users")
+		if usersField != nil {
+			users, ok := usersField.([]interface{})
+			if !ok {
+				pterm.Error.Println("Failed to load users correctly.")
+				exitWithError()
+			}
+
+			if len(users) > 0 {
+				pterm.Info.Println("Select an account to login or add a new user:")
+
+				// Display user selection including "Add new user" option
+				userSelection := promptUserSelection(len(users), users)
+
+				if userSelection <= len(users) {
+					// Selected existing user
+					selectedUser := users[userSelection-1].(map[string]interface{})
+					userID = selectedUser["userid"].(string)
+					encryptedPassword := selectedUser["password"].(string)
+					token := selectedUser["token"].(string)
+
+					// Check if token is still valid
+					if !isTokenExpired(token) {
+						// Use stored password
+						decryptedPassword, err := decrypt(encryptedPassword)
+						if err != nil {
+							pterm.Error.Printf("Failed to decrypt password: %v\n", err)
+							exitWithError()
+						}
+						password = decryptedPassword
+						pterm.Success.Printf("Using saved credentials for %s\n", userID)
+					} else {
+						// Token expired, ask for password again
+						password = promptPassword()
+						// Verify the password matches
+						decryptedPassword, err := decrypt(encryptedPassword)
+						if err != nil {
+							pterm.Error.Printf("Failed to decrypt password: %v\n", err)
+							exitWithError()
+						}
+						if password != decryptedPassword {
+							pterm.Error.Println("Password does not match.")
+							exitWithError()
+						}
+					}
+				} else {
+					// Selected to add new user
+					userID, password = promptCredentials()
+				}
 			} else {
-				pterm.Info.Printf("Using saved credentials for %s\n", userID)
+				// No existing users, prompt for new credentials
+				userID, password = promptCredentials()
 			}
 		} else {
+			// Users field doesn't exist, prompt for new credentials
 			userID, password = promptCredentials()
 		}
 	} else {
+		// Configuration cannot be read, prompt for new credentials
 		userID, password = promptCredentials()
 	}
 
-	// Load the main config file specifically for environment name
+	// Proceed with domain ID fetching and token issuance
 	mainViper := viper.New()
 	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
 	if err := mainViper.ReadInConfig(); err != nil {
@@ -265,24 +500,23 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	// Issue tokens using user credentials
+	// Attempt to issue token
 	accessToken, refreshToken, err := issueToken(baseUrl, userID, password, domainID)
 	if err != nil {
 		pterm.Error.Println("Failed to retrieve token:", err)
 		exitWithError()
 	}
 
-	if encryptedPassword, err := encrypt(password); err == nil {
-		saveCredentials(currentEnv, userID, encryptedPassword)
-	} else {
-		pterm.Warning.Printf("Failed to encrypt password: %v\n", err)
+	// Encrypt password before saving
+	encryptedPassword, err := encrypt(password)
+	if err != nil {
+		pterm.Error.Printf("Failed to encrypt password: %v\n", err)
+		exitWithError()
 	}
 
-	// Fetch workspaces
 	workspaces, err := fetchWorkspaces(baseUrl, accessToken)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch workspaces:", err)
-		exitWithError()
 	}
 
 	// Fetch Domain ID and Role Type
@@ -315,9 +549,199 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	// Save the new access token
-	saveToken(newAccessToken)
+	// Save the new credentials to the configuration file
+	saveCredentials(currentEnv, userID, encryptedPassword, newAccessToken)
+
+	fmt.Println()
 	pterm.Success.Println("Successfully logged in and saved token.")
+}
+
+// Prompt for user credentials if they aren't saved
+func promptCredentials() (string, string) {
+	userId, _ := pterm.DefaultInteractiveTextInput.Show("Enter your user ID")
+	passwordInput := pterm.DefaultInteractiveTextInput.WithMask("*")
+	password, _ := passwordInput.Show("Enter your password")
+	return userId, password
+}
+
+// Prompt for password when token is expired
+func promptPassword() string {
+	passwordInput := pterm.DefaultInteractiveTextInput.WithMask("*")
+	password, _ := passwordInput.Show("Enter your password")
+	return password
+}
+
+// Prompt for user selection, now receiving 'users' slice as an argument
+func promptUserSelection(max int, users []interface{}) int {
+	if err := keyboard.Open(); err != nil {
+		pterm.Error.Println("Failed to initialize keyboard:", err)
+		exitWithError()
+	}
+	defer keyboard.Close()
+
+	selectedIndex := 0
+	currentPage := 0
+	pageSize := 10
+	searchMode := false
+	searchTerm := ""
+	filteredUsers := users
+
+	for {
+		fmt.Print("\033[H\033[2J") // Clear the screen
+
+		// Apply search filter
+		if searchTerm != "" {
+			filteredUsers = filterUsers(users, searchTerm)
+			if len(filteredUsers) == 0 {
+				filteredUsers = users // Show all users if no search results
+			}
+		} else {
+			filteredUsers = users
+		}
+
+		// Calculate pagination
+		totalUsers := len(filteredUsers)
+		totalPages := (totalUsers + pageSize - 1) / pageSize
+		startIndex := currentPage * pageSize
+		endIndex := startIndex + pageSize
+		if endIndex > totalUsers {
+			endIndex = totalUsers
+		}
+
+		// Display header with page information
+		pterm.DefaultHeader.WithFullWidth().
+			WithBackgroundStyle(pterm.NewStyle(pterm.BgDarkGray)).
+			WithTextStyle(pterm.NewStyle(pterm.FgLightWhite)).
+			Printf("Select a user account (Page %d of %d)", currentPage+1, totalPages)
+
+		// Display option to add new user first
+		if selectedIndex == 0 {
+			pterm.Printf("→ %d: Add new user\n", 1)
+		} else {
+			pterm.Printf("  %d: Add new user\n", 1)
+		}
+
+		// Display existing users
+		for i := startIndex; i < endIndex; i++ {
+			userMap := filteredUsers[i].(map[string]interface{})
+			if i+1 == selectedIndex {
+				pterm.Printf("→ %d: %s\n", i+2, userMap["userid"].(string))
+			} else {
+				pterm.Printf("  %d: %s\n", i+2, userMap["userid"].(string))
+			}
+		}
+
+		// Show navigation help
+		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
+			Println("\nNavigation: [h]prev-page [j]down [k]up [l]next-page [/]search [Enter]select [q]quit")
+
+		// Show search prompt if in search mode
+		if searchMode {
+			fmt.Println()
+			pterm.Info.Printf("Search (ESC to cancel, Enter to confirm): %s", searchTerm)
+		}
+
+		// Get keyboard input
+		char, key, err := keyboard.GetKey()
+		if err != nil {
+			pterm.Error.Println("Error reading keyboard input:", err)
+			exitWithError()
+		}
+
+		// Handle search mode input
+		if searchMode {
+			switch key {
+			case keyboard.KeyEsc:
+				searchMode = false
+				searchTerm = ""
+				filteredUsers = users // Return to full user list when search term is cleared
+			case keyboard.KeyBackspace, keyboard.KeyBackspace2:
+				if len(searchTerm) > 0 {
+					searchTerm = searchTerm[:len(searchTerm)-1]
+				}
+			case keyboard.KeyEnter:
+				searchMode = false
+			default:
+				if char != 0 {
+					searchTerm += string(char)
+				}
+			}
+			currentPage = 0
+			selectedIndex = 0
+			continue
+		}
+
+		// Handle normal mode input
+		switch key {
+		case keyboard.KeyEnter:
+			if selectedIndex == 0 {
+				return len(users) + 1 // Add new user
+			} else if selectedIndex <= len(filteredUsers) {
+				// Find the original index of the selected user
+				selectedUserMap := filteredUsers[selectedIndex-1].(map[string]interface{})
+				selectedUserID := selectedUserMap["userid"].(string)
+
+				for i, user := range users {
+					userMap := user.(map[string]interface{})
+					if userMap["userid"].(string) == selectedUserID {
+						return i + 1
+					}
+				}
+			}
+		}
+
+		switch char {
+		case 'j': // Down
+			if selectedIndex < min(endIndex-startIndex, totalUsers) {
+				selectedIndex++
+			}
+		case 'k': // Up
+			if selectedIndex > 0 {
+				selectedIndex--
+			}
+		case 'l': // Next page
+			if currentPage < totalPages-1 {
+				currentPage++
+				selectedIndex = 0
+			}
+		case 'h': // Previous page
+			if currentPage > 0 {
+				currentPage--
+				selectedIndex = 0
+			}
+		case '/': // Enter search mode
+			searchMode = true
+			searchTerm = ""
+			selectedIndex = 0
+		case 'q', 'Q':
+			fmt.Println()
+			pterm.Error.Println("User selection cancelled.")
+			os.Exit(1)
+		}
+	}
+}
+
+// filterUsers filters the users list based on the search term
+func filterUsers(users []interface{}, searchTerm string) []interface{} {
+	var filtered []interface{}
+	searchTerm = strings.ToLower(searchTerm)
+
+	for _, user := range users {
+		userMap := user.(map[string]interface{})
+		userid := strings.ToLower(userMap["userid"].(string))
+		if strings.Contains(userid, searchTerm) {
+			filtered = append(filtered, user)
+		}
+	}
+	return filtered
+}
+
+// min returns the minimum of two integers
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func getEncryptionKey() ([]byte, error) {
@@ -395,7 +819,15 @@ func decrypt(cryptoText string) (string, error) {
 	return string(ciphertext), nil
 }
 
-func saveCredentials(currentEnv, userID, encryptedPassword string) {
+// Define a struct for user credentials
+type UserCredentials struct {
+	UserID   string `yaml:"userid"`
+	Password string `yaml:"password"`
+	Token    string `yaml:"token"`
+}
+
+// saveCredentials saves the user's credentials to the configuration
+func saveCredentials(currentEnv, userID, password, token string) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		pterm.Error.Printf("Failed to get user home directory: %v\n", err)
@@ -409,14 +841,6 @@ func saveCredentials(currentEnv, userID, encryptedPassword string) {
 	}
 
 	cacheConfigPath := filepath.Join(cacheDir, "config.yaml")
-
-	if _, err := os.Stat(cacheConfigPath); os.IsNotExist(err) {
-		if err := os.WriteFile(cacheConfigPath, []byte{}, 0600); err != nil {
-			pterm.Error.Printf("Failed to create cache config file: %v\n", err)
-			return
-		}
-	}
-
 	cacheViper := viper.New()
 	cacheViper.SetConfigFile(cacheConfigPath)
 
@@ -425,39 +849,56 @@ func saveCredentials(currentEnv, userID, encryptedPassword string) {
 		return
 	}
 
-	if !cacheViper.IsSet("environments") {
-		cacheViper.Set("environments", map[string]interface{}{})
-	}
-
 	envPath := fmt.Sprintf("environments.%s", currentEnv)
 	envSettings := cacheViper.GetStringMap(envPath)
 	if envSettings == nil {
 		envSettings = make(map[string]interface{})
 	}
 
-	orderedSettings := make(map[string]interface{})
+	// Save token at the root level of the environment
+	envSettings["token"] = token
 
-	if endpoint, exists := envSettings["endpoint"]; exists {
-		orderedSettings["endpoint"] = endpoint
-	} else {
-		orderedSettings["endpoint"] = providedUrl
+	var users []UserCredentials
+	if existingUsers, ok := envSettings["users"]; ok {
+		if userList, ok := existingUsers.([]interface{}); ok {
+			for _, u := range userList {
+				if userMap, ok := u.(map[string]interface{}); ok {
+					user := UserCredentials{
+						UserID:   userMap["userid"].(string),
+						Password: userMap["password"].(string),
+						Token:    userMap["token"].(string),
+					}
+					users = append(users, user)
+				}
+			}
+		}
 	}
 
-	orderedSettings["proxy"] = true
-
-	if token, exists := envSettings["token"]; exists {
-		orderedSettings["token"] = token
+	// Update existing user or add new user
+	userExists := false
+	for i, user := range users {
+		if user.UserID == userID {
+			users[i].Password = password
+			users[i].Token = token
+			userExists = true
+			break
+		}
 	}
 
-	orderedSettings["userid"] = userID
+	if !userExists {
+		newUser := UserCredentials{
+			UserID:   userID,
+			Password: password,
+			Token:    token,
+		}
+		users = append(users, newUser)
+	}
 
-	orderedSettings["password"] = encryptedPassword
-
-	cacheViper.Set(envPath, orderedSettings)
+	envSettings["users"] = users
+	cacheViper.Set(envPath, envSettings)
 
 	if err := cacheViper.WriteConfig(); err != nil {
-		pterm.Error.Printf("Failed to save credentials: %v\n", err)
-		return
+		pterm.Error.Printf("Failed to save user credentials: %v\n", err)
 	}
 }
 
@@ -587,7 +1028,7 @@ func determineScope(roleType string, workspaceCount int) string {
 	switch roleType {
 	case "DOMAIN_ADMIN":
 		return "DOMAIN"
-	case "USER":
+	case "WORKSPACE_OWNER", "WORKSPACE_MEMBER", "USER":
 		return "WORKSPACE"
 	default:
 		pterm.Error.Println("Unknown role_type:", roleType)
@@ -596,33 +1037,17 @@ func determineScope(roleType string, workspaceCount int) string {
 	}
 }
 
+// isTokenExpired checks if the token is expired
 func isTokenExpired(token string) bool {
-	parts := strings.Split(token, ".")
-	if len(parts) != 3 {
-		pterm.Error.Println("Invalid token format.")
-		return true
-	}
-
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	claims, err := decodeJWT(token)
 	if err != nil {
-		pterm.Error.Println("Failed to decode token payload:", err)
-		return true
+		return true // 디코딩 실패 시 만료된 것으로 간주
 	}
 
-	var claims map[string]interface{}
-	if err := json.Unmarshal(payload, &claims); err != nil {
-		pterm.Error.Println("Failed to unmarshal token payload:", err)
-		return true
+	if exp, ok := claims["exp"].(float64); ok {
+		return time.Now().Unix() > int64(exp)
 	}
-
-	exp, ok := claims["exp"].(float64)
-	if !ok {
-		pterm.Error.Println("Expiration time (exp) not found in token.")
-		return true
-	}
-
-	expirationTime := time.Unix(int64(exp), 0)
-	return time.Now().After(expirationTime)
+	return true // exp 필드가 없거나 잘못된 형식이면 만료된 것으로 간주
 }
 
 func verifyToken(token string) bool {
@@ -633,13 +1058,6 @@ func verifyToken(token string) bool {
 
 func exitWithError() {
 	os.Exit(1)
-}
-
-func promptCredentials() (string, string) {
-	userId, _ := pterm.DefaultInteractiveTextInput.Show("Enter your user ID")
-	passwordInput := pterm.DefaultInteractiveTextInput.WithMask("*")
-	password, _ := passwordInput.Show("Enter your password")
-	return userId, password
 }
 
 func fetchDomainID(baseUrl string, name string) (string, error) {
@@ -1088,113 +1506,43 @@ func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (str
 	return accessToken.(string), nil
 }
 
-// saveToken updates the token in the appropriate configuration file based on the environment suffix
-func saveToken(newToken string) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		pterm.Error.Printf("Failed to get user home directory: %v\n", err)
-		exitWithError()
+// saveSelectedToken saves the selected token as the current token for the environment
+func saveSelectedToken(currentEnv, selectedToken string) error {
+	homeDir, _ := os.UserHomeDir()
+	configPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
+
+	viper.SetConfigFile(configPath)
+	if err := viper.ReadInConfig(); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 
-	// Get current environment from main config
-	mainViper := viper.New()
-	mainConfigPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
-	mainViper.SetConfigFile(mainConfigPath)
-
-	if err := mainViper.ReadInConfig(); err != nil {
-		pterm.Error.Printf("Failed to read main config: %v\n", err)
-		exitWithError()
-	}
-
-	currentEnvironment := mainViper.GetString("environment")
-	if currentEnvironment == "" {
-		pterm.Error.Printf("No environment specified in config\n")
-		exitWithError()
-	}
-
-	// Determine which config file to use based on environment suffix
-	var configPath string
-	v := viper.New()
-
-	if strings.HasSuffix(currentEnvironment, "-user") {
-		// User configuration goes in cache directory
-		cacheDir := filepath.Join(homeDir, ".cfctl", "cache")
-		if err := os.MkdirAll(cacheDir, 0755); err != nil {
-			pterm.Error.Printf("Failed to create cache directory: %v\n", err)
-			exitWithError()
-		}
-		configPath = filepath.Join(cacheDir, "config.yaml")
-	} else if strings.HasSuffix(currentEnvironment, "-app") {
-		// App configuration goes in main config
-		configPath = mainConfigPath
-	} else {
-		pterm.Error.Printf("Invalid environment suffix (must end with -app or -user): %s\n", currentEnvironment)
-		exitWithError()
-	}
-
-	// Initialize or read the config file
-	v.SetConfigFile(configPath)
-
-	// Create config file with basic structure if it doesn't exist
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		initialConfig := []byte("environments:\n")
-		if err := os.WriteFile(configPath, initialConfig, 0644); err != nil {
-			pterm.Error.Printf("Failed to create config file: %v\n", err)
-			exitWithError()
-		}
-	}
-
-	if err := v.ReadInConfig(); err != nil {
-		pterm.Error.Printf("Failed to read config: %v\n", err)
-		exitWithError()
-	}
-
-	// Get current environment settings
-	envPath := fmt.Sprintf("environments.%s", currentEnvironment)
-	envSettings := v.GetStringMap(envPath)
+	envPath := fmt.Sprintf("environments.%s", currentEnv)
+	envSettings := viper.GetStringMap(envPath)
 	if envSettings == nil {
 		envSettings = make(map[string]interface{})
 	}
 
-	// Update token while preserving other settings
-	envSettings["token"] = newToken
+	// Keep all existing settings
+	newEnvSettings := make(map[string]interface{})
 
-	// Save updated settings
-	v.Set(envPath, envSettings)
-
-	if err := v.WriteConfig(); err != nil {
-		pterm.Error.Printf("Failed to save token: %v\n", err)
-		exitWithError()
+	// Keep endpoint and proxy settings
+	if endpoint, ok := envSettings["endpoint"]; ok {
+		newEnvSettings["endpoint"] = endpoint
+	}
+	if proxy, ok := envSettings["proxy"]; ok {
+		newEnvSettings["proxy"] = proxy
 	}
 
-	fmt.Println()
-	pterm.Success.Printf("Token successfully saved to %s\n", configPath)
-}
-
-// sortEnvironmentContent sorts the environment content to ensure token is at the end
-func sortEnvironmentContent(content []string, token string, indentLevel int) []string {
-	var sorted []string
-	var endpointLine, proxyLine string
-
-	for _, line := range content {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "endpoint:") {
-			endpointLine = line
-		} else if strings.HasPrefix(trimmed, "proxy:") {
-			proxyLine = line
-		}
+	// Keep tokens array
+	if tokens, ok := envSettings["tokens"]; ok {
+		newEnvSettings["tokens"] = tokens
 	}
 
-	if endpointLine != "" {
-		sorted = append(sorted, endpointLine)
-	}
-	if proxyLine != "" {
-		sorted = append(sorted, proxyLine)
-	}
+	// Set the selected token as current token
+	newEnvSettings["token"] = selectedToken
 
-	sorted = append(sorted, strings.Repeat(" ", indentLevel)+"token: "+token)
-
-	return sorted
+	viper.Set(envPath, newEnvSettings)
+	return viper.WriteConfig()
 }
 
 func selectScopeOrWorkspace(workspaces []map[string]interface{}, roleType string) string {
@@ -1239,12 +1587,13 @@ func selectScopeOrWorkspace(workspaces []map[string]interface{}, roleType string
 			exitWithError()
 		}
 
+		// Handle navigation and other commands
 		switch key {
 		case keyboard.KeyEnter:
 			if selectedIndex == 0 {
-				return "0" // DOMAIN ADMIN 선택
+				return "0"
 			} else {
-				return selectWorkspaceOnly(workspaces) // WORKSPACES 선택
+				return selectWorkspaceOnly(workspaces)
 			}
 		}
 
@@ -1319,13 +1668,14 @@ func selectWorkspaceOnly(workspaces []map[string]interface{}) string {
 			}
 		}
 
-		// Show navigation help
+		// Show navigation help and search prompt
 		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
 			Println("\nNavigation: [h]prev-page [j]down [k]up  [l]next-page [/]search [q]uit")
 
 		// Show search or input prompt at the bottom
 		if searchMode {
-			pterm.Info.Printf("\nSearch (ESC to cancel, Enter to confirm): %s", searchTerm)
+			fmt.Println()
+			pterm.Info.Printf("Search (ESC to cancel, Enter to confirm): %s", searchTerm)
 		} else {
 			fmt.Print("\nSelect a workspace above or input a number: ")
 			if inputBuffer != "" {
@@ -1415,13 +1765,6 @@ func selectWorkspaceOnly(workspaces []map[string]interface{}) string {
 	}
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 func filterWorkspaces(workspaces []map[string]interface{}, searchTerm string) []map[string]interface{} {
 	var filtered []map[string]interface{}
 	searchTerm = strings.ToLower(searchTerm)
@@ -1437,4 +1780,95 @@ func filterWorkspaces(workspaces []map[string]interface{}, searchTerm string) []
 
 func init() {
 	LoginCmd.Flags().StringVarP(&providedUrl, "url", "u", "", "The URL to use for login (e.g. cfctl login -u https://example.com)")
+}
+
+// decodeJWT decodes a JWT token and returns the claims
+func decodeJWT(token string) (map[string]interface{}, error) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid token format")
+	}
+
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, err
+	}
+
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, err
+	}
+
+	return claims, nil
+}
+
+// validateAndDecodeToken decodes a JWT token and validates its expiration
+func validateAndDecodeToken(token string) (map[string]interface{}, error) {
+	// Check if token has three parts (header.payload.signature)
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid token format: token must have three parts")
+	}
+
+	// Try to decode the payload
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid token format: failed to decode payload: %v", err)
+	}
+
+	var claims map[string]interface{}
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil, fmt.Errorf("invalid token format: failed to parse payload: %v", err)
+	}
+
+	// Check required fields
+	requiredFields := []string{"exp", "rol", "did"}
+	for _, field := range requiredFields {
+		if _, ok := claims[field]; !ok {
+			return nil, fmt.Errorf("invalid token format: missing required field '%s'", field)
+		}
+	}
+
+	// Check expiration
+	if isTokenExpired(token) {
+		return nil, fmt.Errorf("token has expired")
+	}
+
+	return claims, nil
+}
+
+// clearInvalidTokens removes invalid tokens from the config
+func clearInvalidTokens(currentEnv string) error {
+	homeDir, _ := os.UserHomeDir()
+	configPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
+
+	viper.SetConfigFile(configPath)
+	if err := viper.ReadInConfig(); err != nil {
+		return err
+	}
+
+	envPath := fmt.Sprintf("environments.%s", currentEnv)
+	envSettings := viper.GetStringMap(envPath)
+	if envSettings == nil {
+		return nil
+	}
+
+	var validTokens []TokenInfo
+	if tokensList := viper.Get(fmt.Sprintf("%s.tokens", envPath)); tokensList != nil {
+		if tokenList, ok := tokensList.([]interface{}); ok {
+			for _, t := range tokenList {
+				if tokenMap, ok := t.(map[string]interface{}); ok {
+					token := tokenMap["token"].(string)
+					if _, err := validateAndDecodeToken(token); err == nil {
+						validTokens = append(validTokens, TokenInfo{Token: token})
+					}
+				}
+			}
+		}
+	}
+
+	// Update config with only valid tokens
+	envSettings["tokens"] = validTokens
+	viper.Set(envPath, envSettings)
+	return viper.WriteConfig()
 }
