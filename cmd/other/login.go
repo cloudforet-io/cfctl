@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/AlecAivazis/survey/v2"
 	"github.com/eiannone/keyboard"
 
 	"google.golang.org/grpc/metadata"
@@ -69,134 +70,200 @@ func (t *tokenAuth) RequireTransportSecurity() bool {
 }
 
 func executeLogin(cmd *cobra.Command, args []string) {
-	// Load the environment-specific configuration without printing endpoint
-	loadEnvironmentConfig()
-
-	// Get current environment
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		pterm.Error.Println("Failed to get user home directory:", err)
-		exitWithError()
+		return
 	}
 
-	mainViper := viper.New()
-	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
-	if err := mainViper.ReadInConfig(); err != nil {
-		pterm.Error.Println("Failed to read main config file:", err)
-		exitWithError()
+	configPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
+	viper.SetConfigFile(configPath)
+
+	if err := viper.ReadInConfig(); err != nil {
+		pterm.Error.Printf("Failed to read config file: %v\n", err)
+		return
 	}
 
-	currentEnv := mainViper.GetString("environment")
+	currentEnv := viper.GetString("environment")
 	if currentEnv == "" {
-		pterm.Error.Println("No environment specified in config.yaml")
-		exitWithError()
+		pterm.Error.Println("No environment selected")
+		return
 	}
 
-	// Print endpoint once here
-	pterm.Info.Printf("Using endpoint: %s\n", providedUrl)
-
+	// Check if it's an app environment
 	if strings.HasSuffix(currentEnv, "-app") {
-		executeAppLogin(currentEnv, mainViper)
+		if err := executeAppLogin(currentEnv); err != nil {
+			pterm.Error.Printf("Login failed: %v\n", err)
+			return
+		}
 	} else {
+		// Execute normal user login
 		executeUserLogin(currentEnv)
 	}
 }
 
-func executeAppLogin(currentEnv string, mainViper *viper.Viper) {
-	token := mainViper.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
-	if token == "" {
-		pterm.Error.Println("No App token found for app environment.")
+type TokenInfo struct {
+	Token string `yaml:"token"`
+}
 
-		// Create a styled box for the app key type guidance
-		headerBox := pterm.DefaultBox.WithTitle("App Guide").
-			WithTitleTopCenter().
-			WithRightPadding(4).
-			WithLeftPadding(4).
-			WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
+// promptToken prompts for token input
+func promptToken() (string, error) {
+	prompt := &survey.Password{
+		Message: "Enter your token:",
+	}
 
-		appTokenExplain := "Please create a Domain Admin App in SpaceONE Console.\n" +
-			"This requires Domain Admin privilege.\n\n" +
-			"Or Please create a Workspace App in SpaceONE Console.\n" +
-			"This requires Workspace Owner privilege."
+	var token string
+	err := survey.AskOne(prompt, &token, survey.WithValidator(survey.Required))
+	if err != nil {
+		return "", err
+	}
 
-		headerBox.Println(appTokenExplain)
-		fmt.Println()
+	return token, nil
+}
 
-		// Create the steps content
-		steps := []string{
-			"1. Go to SpaceONE Console",
-			"2. Navigate to either 'Admin > App Page' or specific 'Workspace > App page'",
-			"3. Click 'Create' to create your App",
-			"4. Copy value of either 'client_secret' from Client ID or 'token' from Spacectl (CLI)",
+// saveAppToken saves the token
+func saveAppToken(currentEnv, token string) error {
+	homeDir, _ := os.UserHomeDir()
+	configPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
+
+	viper.SetConfigFile(configPath)
+	if err := viper.ReadInConfig(); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+
+	envPath := fmt.Sprintf("environments.%s", currentEnv)
+	envSettings := viper.GetStringMap(envPath)
+	if envSettings == nil {
+		envSettings = make(map[string]interface{})
+	}
+
+	// Initialize tokens array if it doesn't exist
+	var tokens []TokenInfo
+	if existingTokens, ok := envSettings["tokens"]; ok {
+		if tokenList, ok := existingTokens.([]interface{}); ok {
+			for _, t := range tokenList {
+				if tokenMap, ok := t.(map[string]interface{}); ok {
+					tokenInfo := TokenInfo{
+						Token: tokenMap["token"].(string),
+					}
+					tokens = append(tokens, tokenInfo)
+				}
+			}
+		}
+	}
+
+	// Add new token if it doesn't exist
+	tokenExists := false
+	for _, t := range tokens {
+		if t.Token == token {
+			tokenExists = true
+			break
+		}
+	}
+
+	if !tokenExists {
+		newToken := TokenInfo{
+			Token: token,
+		}
+		tokens = append(tokens, newToken)
+	}
+
+	// Update environment settings
+	envSettings["tokens"] = tokens
+
+	// Keep the existing endpoint and proxy settings
+	if endpoint, ok := envSettings["endpoint"]; ok {
+		envSettings["endpoint"] = endpoint
+	}
+	if proxy, ok := envSettings["proxy"]; ok {
+		envSettings["proxy"] = proxy
+	}
+
+	viper.Set(envPath, envSettings)
+	return viper.WriteConfig()
+}
+
+// promptTokenSelection shows available tokens and lets user select one
+func promptTokenSelection(tokens []TokenInfo) (string, error) {
+	if len(tokens) == 0 {
+		return "", fmt.Errorf("no tokens available")
+	}
+
+	if err := keyboard.Open(); err != nil {
+		return "", err
+	}
+	defer keyboard.Close()
+
+	selectedIndex := 0
+	for {
+		fmt.Print("\033[H\033[2J") // Clear screen
+
+		pterm.DefaultHeader.WithFullWidth().
+			WithBackgroundStyle(pterm.NewStyle(pterm.BgDarkGray)).
+			WithTextStyle(pterm.NewStyle(pterm.FgLightWhite)).
+			Println("Select a token:")
+
+		// Display available tokens
+		for i, token := range tokens {
+			maskedToken := maskToken(token.Token)
+			if i == selectedIndex {
+				pterm.Printf("→ %d: %s\n", i+1, maskedToken)
+			} else {
+				pterm.Printf("  %d: %s\n", i+1, maskedToken)
+			}
 		}
 
-		// Determine proxy value based on endpoint
-		isIdentityEndpoint := strings.Contains(strings.ToLower(providedUrl), "identity")
-		proxyValue := "true"
-		if !isIdentityEndpoint {
-			proxyValue = "false"
+		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
+			Println("\nNavigation: [j]down [k]up [Enter]select [q]quit")
+
+		char, key, err := keyboard.GetKey()
+		if err != nil {
+			return "", err
 		}
 
-		// Create yaml config example with highlighting
-		yamlExample := pterm.DefaultBox.WithTitle("Config Example").
-			WithTitleTopCenter().
-			WithRightPadding(4).
-			WithLeftPadding(4).
-			Sprint(fmt.Sprintf("environment: %s\nenvironments:\n    %s:\n        endpoint: %s\n        proxy: %s\n        token: %s",
-				currentEnv,
-				currentEnv,
-				providedUrl,
-				proxyValue,
-				pterm.FgLightCyan.Sprint("YOUR_COPIED_TOKEN")))
+		switch key {
+		case keyboard.KeyEnter:
+			return tokens[selectedIndex].Token, nil
+		}
 
-		// Create instruction box
-		instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
-			WithTitleTopCenter().
-			WithRightPadding(4).
-			WithLeftPadding(4)
+		switch char {
+		case 'j':
+			if selectedIndex < len(tokens)-1 {
+				selectedIndex++
+			}
+		case 'k':
+			if selectedIndex > 0 {
+				selectedIndex--
+			}
+		case 'q', 'Q':
+			return "", fmt.Errorf("selection cancelled")
+		}
+	}
+}
 
-		// Combine all steps
-		allSteps := append(steps,
-			fmt.Sprintf("5. Add the token under the proxy in your config file:\n%s", yamlExample),
-			"6. Run 'cfctl login' again")
+// maskToken returns a masked version of the token for display
+func maskToken(token string) string {
+	if len(token) <= 10 {
+		return strings.Repeat("*", len(token))
+	}
+	return token[:5] + "..." + token[len(token)-5:]
+}
 
-		// Print all steps in the instruction box
-		instructionBox.Println(strings.Join(allSteps, "\n\n"))
-
-		exitWithError()
+// executeAppLogin handles login for app environments
+func executeAppLogin(currentEnv string) error {
+	// Get token from user
+	token, err := promptToken()
+	if err != nil {
+		return err
 	}
 
-	claims, ok := verifyAppToken(token)
-	if !ok {
-		exitWithError()
+	// Save token to tokens array
+	if err := saveAppToken(currentEnv, token); err != nil {
+		return err
 	}
 
-	headerBox := pterm.DefaultBox.WithTitle("App Token Information").
-		WithTitleTopCenter().
-		WithRightPadding(4).
-		WithLeftPadding(4).
-		WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
-
-	var tokenInfo string
-	roleType := claims["rol"].(string)
-
-	if roleType == "DOMAIN_ADMIN" {
-		tokenInfo = fmt.Sprintf("Role Type: %s\nDomain ID: %s\nAccess Scope: All Workspaces\nExpires: %s",
-			pterm.FgGreen.Sprint("DOMAIN ADMIN"),
-			claims["did"].(string),
-			time.Unix(int64(claims["exp"].(float64)), 0).Format("2006-01-02 15:04:05"))
-	} else if roleType == "WORKSPACE_OWNER" {
-		tokenInfo = fmt.Sprintf("Role Type: %s\nDomain ID: %s\nWorkspace ID: %s\nExpires: %s",
-			pterm.FgYellow.Sprint("WORKSPACE OWNER"),
-			claims["did"].(string),
-			claims["wid"].(string),
-			time.Unix(int64(claims["exp"].(float64)), 0).Format("2006-01-02 15:04:05"))
-	}
-
-	headerBox.Println(tokenInfo)
-	fmt.Println()
-
-	pterm.Success.Println("Successfully authenticated with App token.")
+	pterm.Success.Printf("Token successfully saved\n")
+	return nil
 }
 
 func executeUserLogin(currentEnv string) {
@@ -1330,113 +1397,38 @@ func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (str
 	return accessToken.(string), nil
 }
 
-// saveToken updates the token in the appropriate configuration file based on the environment suffix
-func saveToken(newToken string) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		pterm.Error.Printf("Failed to get user home directory: %v\n", err)
-		exitWithError()
+// saveSelectedToken saves the selected token as the current token for the environment
+func saveSelectedToken(currentEnv, selectedToken string) error {
+	homeDir, _ := os.UserHomeDir()
+	configPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
+
+	viper.SetConfigFile(configPath)
+	if err := viper.ReadInConfig(); err != nil && !os.IsNotExist(err) {
+		return err
 	}
 
-	// Get current environment from main config
-	mainViper := viper.New()
-	mainConfigPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
-	mainViper.SetConfigFile(mainConfigPath)
-
-	if err := mainViper.ReadInConfig(); err != nil {
-		pterm.Error.Printf("Failed to read main config: %v\n", err)
-		exitWithError()
-	}
-
-	currentEnvironment := mainViper.GetString("environment")
-	if currentEnvironment == "" {
-		pterm.Error.Printf("No environment specified in config\n")
-		exitWithError()
-	}
-
-	// Determine which config file to use based on environment suffix
-	var configPath string
-	v := viper.New()
-
-	if strings.HasSuffix(currentEnvironment, "-user") {
-		// User configuration goes in cache directory
-		cacheDir := filepath.Join(homeDir, ".cfctl", "cache")
-		if err := os.MkdirAll(cacheDir, 0755); err != nil {
-			pterm.Error.Printf("Failed to create cache directory: %v\n", err)
-			exitWithError()
-		}
-		configPath = filepath.Join(cacheDir, "config.yaml")
-	} else if strings.HasSuffix(currentEnvironment, "-app") {
-		// App configuration goes in main config
-		configPath = mainConfigPath
-	} else {
-		pterm.Error.Printf("Invalid environment suffix (must end with -app or -user): %s\n", currentEnvironment)
-		exitWithError()
-	}
-
-	// Initialize or read the config file
-	v.SetConfigFile(configPath)
-
-	// Create config file with basic structure if it doesn't exist
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		initialConfig := []byte("environments:\n")
-		if err := os.WriteFile(configPath, initialConfig, 0644); err != nil {
-			pterm.Error.Printf("Failed to create config file: %v\n", err)
-			exitWithError()
-		}
-	}
-
-	if err := v.ReadInConfig(); err != nil {
-		pterm.Error.Printf("Failed to read config: %v\n", err)
-		exitWithError()
-	}
-
-	// Get current environment settings
-	envPath := fmt.Sprintf("environments.%s", currentEnvironment)
-	envSettings := v.GetStringMap(envPath)
+	envPath := fmt.Sprintf("environments.%s", currentEnv)
+	envSettings := viper.GetStringMap(envPath)
 	if envSettings == nil {
 		envSettings = make(map[string]interface{})
 	}
 
-	// Update token while preserving other settings
-	envSettings["token"] = newToken
-
-	// Save updated settings
-	v.Set(envPath, envSettings)
-
-	if err := v.WriteConfig(); err != nil {
-		pterm.Error.Printf("Failed to save token: %v\n", err)
-		exitWithError()
+	// Keep only endpoint and proxy settings
+	newEnvSettings := make(map[string]interface{})
+	if endpoint, ok := envSettings["endpoint"]; ok {
+		newEnvSettings["endpoint"] = endpoint
+	}
+	if proxy, ok := envSettings["proxy"]; ok {
+		newEnvSettings["proxy"] = proxy
 	}
 
-	fmt.Println()
-	pterm.Success.Printf("Token successfully saved to %s\n", configPath)
-}
-
-// sortEnvironmentContent sorts the environment content to ensure token is at the end
-func sortEnvironmentContent(content []string, token string, indentLevel int) []string {
-	var sorted []string
-	var endpointLine, proxyLine string
-
-	for _, line := range content {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "endpoint:") {
-			endpointLine = line
-		} else if strings.HasPrefix(trimmed, "proxy:") {
-			proxyLine = line
-		}
+	// Keep the tokens array
+	if tokens, ok := envSettings["tokens"]; ok {
+		newEnvSettings["tokens"] = tokens
 	}
 
-	if endpointLine != "" {
-		sorted = append(sorted, endpointLine)
-	}
-	if proxyLine != "" {
-		sorted = append(sorted, proxyLine)
-	}
-
-	sorted = append(sorted, strings.Repeat(" ", indentLevel)+"token: "+token)
-
-	return sorted
+	viper.Set(envPath, newEnvSettings)
+	return viper.WriteConfig()
 }
 
 func selectScopeOrWorkspace(workspaces []map[string]interface{}, roleType string) string {
