@@ -69,62 +69,80 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		// Get current endpoint
 		endpoint := mainViper.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv))
 
-		// Create a styled box for the authentication guidance
-		headerBox := pterm.DefaultBox.WithTitle("Authentication Guide").
-			WithTitleTopCenter().
-			WithRightPadding(4).
-			WithLeftPadding(4).
-			WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
+		if strings.HasSuffix(currentEnv, "-app") {
+			// App environment message
+			headerBox := pterm.DefaultBox.WithTitle("App Guide").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4).
+				WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
 
-		authExplain := "Please login to SpaceONE Console first.\n" +
-			"This requires your SpaceONE credentials.\n\n" +
-			"Or use an App token if you're using automation."
+			appTokenExplain := "Please create a Domain Admin App in SpaceONE Console.\n" +
+				"This requires Domain Admin privilege.\n\n" +
+				"Or Please create a Workspace App in SpaceONE Console.\n" +
+				"This requires Workspace Owner privilege."
 
-		headerBox.Println(authExplain)
-		fmt.Println()
+			pterm.Info.Printf("Using endpoint: %s\n", endpoint)
+			headerBox.Println(appTokenExplain)
+			fmt.Println()
 
-		// Create the steps content
-		steps := []string{
-			"1. Go to SpaceONE Console",
-			"2. Run 'cfctl login'",
-			"3. Enter your credentials when prompted",
-			"4. Select your workspace",
+			steps := []string{
+				"1. Go to SpaceONE Console",
+				"2. Navigate to either 'Admin > App Page' or specific 'Workspace > App page'",
+				"3. Click 'Create' to create your App",
+				"4. Copy value of either 'client_secret' from Client ID or 'token' from Spacectl (CLI)",
+			}
+
+			yamlExample := pterm.DefaultBox.WithTitle("Config Example").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4).
+				Sprint(fmt.Sprintf("environment: %s\nenvironments:\n    %s:\n        endpoint: %s\n        proxy: true\n        token: %s",
+					currentEnv,
+					currentEnv,
+					endpoint,
+					pterm.FgLightCyan.Sprint("YOUR_COPIED_TOKEN")))
+
+			instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4)
+
+			allSteps := append(steps,
+				fmt.Sprintf("5. Add the token under the proxy in your config file:\n%s", yamlExample),
+				"6. Run 'cfctl login' again")
+
+			instructionBox.Println(strings.Join(allSteps, "\n\n"))
+		} else {
+			// User environment message
+			headerBox := pterm.DefaultBox.WithTitle("Authentication Required").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4).
+				WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
+
+			authExplain := "Please login to SpaceONE Console first.\n" +
+				"This requires your SpaceONE credentials."
+
+			headerBox.Println(authExplain)
+			fmt.Println()
+
+			steps := []string{
+				"1. Run 'cfctl login'",
+				"2. Enter your credentials when prompted",
+				"3. Select your workspace",
+				"4. Try your command again",
+			}
+
+			instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4)
+
+			instructionBox.Println(strings.Join(steps, "\n\n"))
 		}
 
-		// Determine proxy value based on endpoint
-		isIdentityEndpoint := strings.Contains(strings.ToLower(endpoint), "identity")
-		proxyValue := "true"
-		if !isIdentityEndpoint {
-			proxyValue = "false"
-		}
-
-		// Create yaml config example with highlighting
-		yamlExample := pterm.DefaultBox.WithTitle("Config Example").
-			WithTitleTopCenter().
-			WithRightPadding(4).
-			WithLeftPadding(4).
-			Sprint(fmt.Sprintf("environment: %s\nenvironments:\n    %s:\n        endpoint: %s\n        proxy: %s\n        token: %s",
-				currentEnv,
-				currentEnv,
-				endpoint,
-				proxyValue,
-				pterm.FgLightCyan.Sprint("YOUR_TOKEN")))
-
-		// Create instruction box
-		instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
-			WithTitleTopCenter().
-			WithRightPadding(4).
-			WithLeftPadding(4)
-
-		// Combine all steps
-		allSteps := append(steps,
-			fmt.Sprintf("5. Verify your config file has the token:\n%s", yamlExample),
-			"6. Try your command again")
-
-		// Print all steps in the instruction box
-		instructionBox.Println(strings.Join(allSteps, "\n\n"))
-
-		return nil, fmt.Errorf("authentication required")
+		return nil, nil
 	}
 
 	config, err := loadConfig()
