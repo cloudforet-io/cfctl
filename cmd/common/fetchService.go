@@ -62,14 +62,21 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		return nil, fmt.Errorf("no environment set. Please run 'cfctl login' first")
 	}
 
-	token := mainViper.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+	// Load configuration first (including cache)
+	config, err := loadConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load config: %v", err)
+	}
+
+	// Check token from both main config and cache
+	token := config.Environments[config.Environment].Token
 	if token == "" {
 		pterm.Error.Println("No token found for authentication.")
 
 		// Get current endpoint
-		endpoint := mainViper.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv))
+		endpoint := config.Environments[config.Environment].Endpoint
 
-		if strings.HasSuffix(currentEnv, "-app") {
+		if strings.HasSuffix(config.Environment, "-app") {
 			// App environment message
 			headerBox := pterm.DefaultBox.WithTitle("App Guide").
 				WithTitleTopCenter().
@@ -145,11 +152,6 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		return nil, nil
 	}
 
-	config, err := loadConfig()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load config: %v", err)
-	}
-
 	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options)
 	if err != nil {
 		return nil, err
@@ -175,7 +177,7 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("failed to get home directory: %v", err)
 	}
 
-	// Load main config
+	// Load main configuration file
 	mainV := viper.New()
 	mainConfigPath := filepath.Join(home, ".cfctl", "config.yaml")
 	mainV.SetConfigFile(mainConfigPath)
@@ -188,33 +190,20 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("no environment set in config")
 	}
 
-	// Try to get environment config from main config first
-	var envConfig *Environment
-	if mainEnvConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv)); mainEnvConfig != nil {
-		envConfig = &Environment{
-			Endpoint: mainEnvConfig.GetString("endpoint"),
-			Token:    mainEnvConfig.GetString("token"),
-			Proxy:    mainEnvConfig.GetString("proxy"),
-		}
+	// First try to get environment config from main config file
+	envConfig := &Environment{
+		Endpoint: mainV.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv)),
+		Token:    mainV.GetString(fmt.Sprintf("environments.%s.token", currentEnv)),
+		Proxy:    mainV.GetString(fmt.Sprintf("environments.%s.proxy", currentEnv)),
 	}
 
-	// If not found in main config or token is empty, try cache config
-	if envConfig == nil || envConfig.Token == "" {
+	// If it's a -user environment and token is empty, try to get token from cache config
+	if strings.HasSuffix(currentEnv, "-user") && envConfig.Token == "" {
 		cacheV := viper.New()
 		cacheConfigPath := filepath.Join(home, ".cfctl", "cache", "config.yaml")
 		cacheV.SetConfigFile(cacheConfigPath)
 		if err := cacheV.ReadInConfig(); err == nil {
-			if cacheEnvConfig := cacheV.Sub(fmt.Sprintf("environments.%s", currentEnv)); cacheEnvConfig != nil {
-				if envConfig == nil {
-					envConfig = &Environment{
-						Endpoint: cacheEnvConfig.GetString("endpoint"),
-						Token:    cacheEnvConfig.GetString("token"),
-						Proxy:    cacheEnvConfig.GetString("proxy"),
-					}
-				} else if envConfig.Token == "" {
-					envConfig.Token = cacheEnvConfig.GetString("token")
-				}
-			}
+			envConfig.Token = cacheV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
 		}
 	}
 
@@ -222,7 +211,6 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("environment '%s' not found in config files", currentEnv)
 	}
 
-	// Convert Environment to Config
 	return &Config{
 		Environment: currentEnv,
 		Environments: map[string]Environment{
@@ -398,7 +386,16 @@ func printData(data map[string]interface{}, options *FetchOptions) {
 		fmt.Printf("---\n%s\n", output)
 
 	case "table":
-		output = printTable(data)
+		// Check if data has 'results' key
+		if _, ok := data["results"].([]interface{}); ok {
+			output = printTable(data)
+		} else {
+			// If no 'results' key, treat the entire data as results
+			wrappedData := map[string]interface{}{
+				"results": []interface{}{data},
+			}
+			output = printTable(wrappedData)
+		}
 
 	case "csv":
 		output = printCSV(data)
@@ -493,7 +490,7 @@ func printTable(data map[string]interface{}) string {
 			pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
 
 			fmt.Printf("\nPage %d of %d (Total items: %d)\n", currentPage+1, totalPages, totalItems)
-			fmt.Println("Navigation: [p]revious page, [n]ext page, [/]search, [c]lear search, [q]uit")
+			fmt.Println("Navigation: [h]previous page, [l]next page, [/]search, [c]lear search, [q]uit")
 
 			// Get keyboard input
 			char, _, err := keyboard.GetKey()
@@ -503,13 +500,13 @@ func printTable(data map[string]interface{}) string {
 			}
 
 			switch char {
-			case 'n', 'N':
+			case 'l', 'L':
 				if currentPage < totalPages-1 {
 					currentPage++
 				} else {
 					currentPage = 0
 				}
-			case 'p', 'P':
+			case 'h', 'H':
 				if currentPage > 0 {
 					currentPage--
 				} else {

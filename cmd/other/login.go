@@ -77,8 +77,16 @@ func executeLogin(cmd *cobra.Command, args []string) {
 	}
 
 	configPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
-	viper.SetConfigFile(configPath)
 
+	// Check if config file exists
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		pterm.Error.Println("No valid configuration found.")
+		pterm.Info.Println("Please run 'cfctl config init' to set up your configuration.")
+		pterm.Info.Println("After initialization, run 'cfctl login' to authenticate.")
+		return
+	}
+
+	viper.SetConfigFile(configPath)
 	if err := viper.ReadInConfig(); err != nil {
 		pterm.Error.Printf("Failed to read config file: %v\n", err)
 		return
