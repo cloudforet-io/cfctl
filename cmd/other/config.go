@@ -104,8 +104,8 @@ var configInitURLCmd = &cobra.Command{
 		mainV := viper.New()
 		mainV.SetConfigFile(mainConfigPath)
 
-		// Read the config file
-		if err := mainV.ReadInConfig(); err != nil {
+		// Create empty config if it doesn't exist
+		if err := mainV.ReadInConfig(); err != nil && !os.IsNotExist(err) {
 			pterm.Error.Printf("Failed to read config file: %v\n", err)
 			return
 		}

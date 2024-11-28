@@ -125,7 +125,7 @@ var ApiResourcesCmd = &cobra.Command{
 		}
 
 		// Fetch endpointsMap dynamically
-		endpointsMap, err := fetchEndpointsMap(endpoint)
+		endpointsMap, err := FetchEndpointsMap(endpoint)
 		if err != nil {
 			log.Fatalf("Failed to fetch endpointsMap from '%s': %v", endpoint, err)
 		}
@@ -219,7 +219,7 @@ var ApiResourcesCmd = &cobra.Command{
 	},
 }
 
-func fetchEndpointsMap(endpoint string) (map[string]string, error) {
+func FetchEndpointsMap(endpoint string) (map[string]string, error) {
 	// Parse the endpoint
 	parts := strings.Split(endpoint, "://")
 	if len(parts) != 2 {
