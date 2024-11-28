@@ -72,7 +72,7 @@ func init() {
 	}
 	rootCmd.AddGroup(OtherCommands)
 	rootCmd.AddCommand(other.ApiResourcesCmd)
-	rootCmd.AddCommand(other.ConfigCmd)
+	rootCmd.AddCommand(other.SettingsCmd)
 	rootCmd.AddCommand(other.LoginCmd)
 
 	// Set default group for commands without a group

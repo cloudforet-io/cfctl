@@ -27,19 +27,19 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
-// ConfigCmd represents the config command
-var ConfigCmd = &cobra.Command{
-	Use:   "config",
-	Short: "Manage cfctl configuration files",
-	Long: `Manage configuration files for cfctl. You can initialize,
+// SettingsCmd represents the settings command
+var SettingsCmd = &cobra.Command{
+	Use:   "settings",
+	Short: "Manage cfctl settings files",
+	Long: `Manage settings files for cfctl. You can initialize,
 switch environments, and display the current configuration.`,
 }
 
-// configInitCmd initializes a new environment configuration
-var configInitCmd = &cobra.Command{
+// settingsInitCmd initializes a new environment configuration
+var settingsInitCmd = &cobra.Command{
 	Use:   "init",
-	Short: "Initialize a new environment configuration",
-	Long:  `Initialize a new environment configuration for cfctl by specifying either a URL or a local environment name.`,
+	Short: "Initialize a new environment settings",
+	Long:  `Initialize a new environment settings for cfctl by specifying either a URL or a local environment name.`,
 }
 
 // configInitURLCmd initializes configuration with a URL
@@ -1102,14 +1102,14 @@ func init() {
 	configPath := filepath.Join(configDir, "config.yaml")
 	cacheConfigPath := filepath.Join(configDir, "cache", "config.yaml")
 
-	ConfigCmd.AddCommand(configInitCmd)
-	ConfigCmd.AddCommand(envCmd)
-	ConfigCmd.AddCommand(showCmd)
-	ConfigCmd.AddCommand(configEndpointCmd)
-	configInitCmd.AddCommand(configInitURLCmd)
-	configInitCmd.AddCommand(configInitLocalCmd)
+	SettingsCmd.AddCommand(settingsInitCmd)
+	SettingsCmd.AddCommand(envCmd)
+	SettingsCmd.AddCommand(showCmd)
+	SettingsCmd.AddCommand(configEndpointCmd)
+	settingsInitCmd.AddCommand(configInitURLCmd)
+	settingsInitCmd.AddCommand(configInitLocalCmd)
 
-	configInitCmd.Flags().StringP("environment", "e", "", "Override environment name")
+	settingsInitCmd.Flags().StringP("environment", "e", "", "Override environment name")
 
 	configInitURLCmd.Flags().StringP("url", "u", "", "URL for the environment")
 	configInitURLCmd.Flags().Bool("app", false, fmt.Sprintf("Initialize as application configuration (config stored at %s)", configPath))
