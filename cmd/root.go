@@ -142,30 +142,36 @@ func loadConfig() (*Config, error) {
 	configFile := filepath.Join(home, ".cfctl", "config.yaml")
 	cacheConfigFile := filepath.Join(home, ".cfctl", "cache", "config.yaml")
 
-	var currentEnv string
-	var endpoint string
-	var token string
-
 	// Try to read main config first
 	mainV := viper.New()
 	mainV.SetConfigFile(configFile)
 	mainConfigErr := mainV.ReadInConfig()
 
-	if mainConfigErr == nil {
-		// Main config exists, try to get environment
-		currentEnv = mainV.GetString("environment")
-		if currentEnv != "" {
-			envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
-			if envConfig != nil {
-				endpoint = envConfig.GetString("endpoint")
-				token = envConfig.GetString("token")
-			}
+	if mainConfigErr != nil {
+		pterm.Error.Printf("No valid configuration found.\n")
+		pterm.Info.Println("Please run 'cfctl config init' to set up your configuration.")
+		pterm.Info.Println("After initialization, run 'cfctl login' to authenticate.")
+		return nil, fmt.Errorf("failed to read config file")
+	}
+
+	var currentEnv string
+	var endpoint string
+	var token string
+
+	// Main config exists, try to get environment
+	currentEnv = mainV.GetString("environment")
+	if currentEnv != "" {
+		envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
+		if envConfig != nil {
+			endpoint = envConfig.GetString("endpoint")
+			token = envConfig.GetString("token")
 		}
 	}
 
 	// If main config doesn't have what we need, try cache config
 	if endpoint == "" || token == "" {
 		cacheV := viper.New()
+		
 		cacheV.SetConfigFile(cacheConfigFile)
 		if err := cacheV.ReadInConfig(); err == nil {
 			// If no current environment set, try to get it from cache config
