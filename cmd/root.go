@@ -55,6 +55,10 @@ func init() {
 	}
 	rootCmd.AddGroup(AvailableCommands)
 
+	if len(os.Args) > 1 && os.Args[1] == "__complete" {
+		pterm.DisableColor()
+	}
+
 	// Skip dynamic service loading for config init commands
 	if len(os.Args) >= 3 && os.Args[1] == "config" && os.Args[2] == "init" {
 		// Skip dynamic service loading for initialization
@@ -168,7 +172,7 @@ func loadConfig() (*Config, error) {
 	// If main config doesn't have what we need, try cache config
 	if endpoint == "" || token == "" {
 		cacheV := viper.New()
-		
+
 		cacheV.SetConfigFile(cacheConfigFile)
 		if err := cacheV.ReadInConfig(); err == nil {
 			// If no current environment set, try to get it from cache config
