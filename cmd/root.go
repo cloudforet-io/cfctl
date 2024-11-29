@@ -59,9 +59,9 @@ func init() {
 		pterm.DisableColor()
 	}
 
-	// Skip dynamic service loading for config init commands
-	if len(os.Args) >= 3 && os.Args[1] == "config" && os.Args[2] == "init" {
-		// Skip dynamic service loading for initialization
+	// Skip configuration check for settings init commands
+	if len(os.Args) >= 3 && os.Args[1] == "settings" && os.Args[2] == "init" {
+		// Skip configuration check for initialization
 	} else {
 		// Try to add dynamic service commands
 		if err := addDynamicServiceCommands(); err != nil {
