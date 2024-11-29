@@ -48,9 +48,9 @@ var configInitURLCmd = &cobra.Command{
 	Short: "Initialize configuration with a URL",
 	Long:  `Specify a URL to initialize the environment configuration.`,
 	Args:  cobra.NoArgs,
-	Example: `  cfctl config init url -u https://spaceone.spaceone.megazone.io --app
+	Example: `  cfctl settings init url -u https://spaceone.spaceone.megazone.io --app
                           or
-  cfctl config init url -u https://spaceone.spaceone.megazone.io --user`,
+  cfctl settings init url -u https://spaceone.spaceone.megazone.io --user`,
 	Run: func(cmd *cobra.Command, args []string) {
 		urlStr, _ := cmd.Flags().GetString("url")
 		appFlag, _ := cmd.Flags().GetBool("app")
@@ -128,9 +128,9 @@ var configInitLocalCmd = &cobra.Command{
 	Short: "Initialize configuration with a local environment",
 	Long:  `Specify a local environment name to initialize the configuration.`,
 	Args:  cobra.NoArgs,
-	Example: `  cfctl config init local -n local-cloudone --app
+	Example: `  cfctl settings init local -n local-cloudone --app
                           or
-  cfctl config init local -n local-cloudone --user`,
+  cfctl settings init local -n local-cloudone --user`,
 	Run: func(cmd *cobra.Command, args []string) {
 		localEnv, _ := cmd.Flags().GetString("name")
 		appFlag, _ := cmd.Flags().GetBool("app")
