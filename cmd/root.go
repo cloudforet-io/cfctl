@@ -92,7 +92,7 @@ func showInitializationGuide(originalErr error) {
 		return
 	}
 
-	pterm.Error.Printf("No valid configuration found.\n")
+	pterm.Warning.Printf("No valid configuration found.\n")
 	pterm.Info.Println("Please run 'cfctl config init' to set up your configuration.")
 	pterm.Info.Println("After initialization, run 'cfctl login' to authenticate.")
 }
@@ -148,9 +148,6 @@ func loadConfig() (*Config, error) {
 	mainConfigErr := mainV.ReadInConfig()
 
 	if mainConfigErr != nil {
-		pterm.Error.Printf("No valid configuration found.\n")
-		pterm.Info.Println("Please run 'cfctl config init' to set up your configuration.")
-		pterm.Info.Println("After initialization, run 'cfctl login' to authenticate.")
 		return nil, fmt.Errorf("failed to read config file")
 	}
 
