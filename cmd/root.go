@@ -13,9 +13,11 @@ import (
 
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var cfgFile string
+var cachedEndpointsMap map[string]string
 
 // Config represents the configuration structure
 type Config struct {
@@ -102,38 +104,119 @@ func showInitializationGuide(originalErr error) {
 }
 
 func addDynamicServiceCommands() error {
-	// Load configuration
+	// If we already have in-memory cache, use it
+	if cachedEndpointsMap != nil {
+		for serviceName := range cachedEndpointsMap {
+			cmd := createServiceCommand(serviceName)
+			rootCmd.AddCommand(cmd)
+		}
+		return nil
+	}
+
+	// Try to load endpoints from file cache
+	endpoints, err := loadCachedEndpoints()
+	if err == nil {
+		// Store in memory for subsequent calls
+		cachedEndpointsMap = endpoints
+		
+		// Create commands using cached endpoints
+		for serviceName := range endpoints {
+			cmd := createServiceCommand(serviceName)
+			rootCmd.AddCommand(cmd)
+		}
+		return nil
+	}
+
+	// If no cache available, fetch dynamically (this is slow path)
 	config, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load config: %v", err)
 	}
 
-	// Convert endpoint to identity endpoint if necessary
 	endpoint := config.Endpoint
 	if !strings.Contains(endpoint, "identity") {
 		parts := strings.Split(endpoint, "://")
 		if len(parts) == 2 {
 			hostParts := strings.Split(parts[1], ".")
 			if len(hostParts) >= 4 {
-				env := hostParts[2] // dev or stg
+				env := hostParts[2]
 				endpoint = fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", env)
 			}
 		}
 	}
 
-	// Fetch available microservices
 	endpointsMap, err := other.FetchEndpointsMap(endpoint)
 	if err != nil {
 		return fmt.Errorf("failed to fetch services: %v", err)
 	}
 
-	// Create and register commands for each service
+	// Store in both memory and file cache
+	cachedEndpointsMap = endpointsMap
+	if err := saveEndpointsCache(endpointsMap); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
+	}
+
+	// Create commands for each service
 	for serviceName := range endpointsMap {
 		cmd := createServiceCommand(serviceName)
 		rootCmd.AddCommand(cmd)
 	}
 
 	return nil
+}
+
+func clearEndpointsCache() {
+	cachedEndpointsMap = nil
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	cacheFile := filepath.Join(home, ".cfctl", "cache", "endpoints.yaml")
+	os.Remove(cacheFile)
+}
+
+func loadCachedEndpoints() (map[string]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+
+	// Read from cache file
+	cacheFile := filepath.Join(home, ".cfctl", "cache", "endpoints.yaml")
+	data, err := os.ReadFile(cacheFile)
+	if err != nil {
+		return nil, err
+	}
+
+	// Parse cached endpoints
+	var endpoints map[string]string
+	if err := yaml.Unmarshal(data, &endpoints); err != nil {
+		return nil, err
+	}
+
+	return endpoints, nil
+}
+
+func saveEndpointsCache(endpoints map[string]string) error {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+
+	// Ensure cache directory exists
+	cacheDir := filepath.Join(home, ".cfctl", "cache")
+	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+		return err
+	}
+
+	// Marshal endpoints to YAML format
+	data, err := yaml.Marshal(endpoints)
+	if err != nil {
+		return err
+	}
+
+	// Write to cache file
+	return os.WriteFile(filepath.Join(cacheDir, "endpoints.yaml"), data, 0644)
 }
 
 // loadConfig loads configuration from both main and cache config files
