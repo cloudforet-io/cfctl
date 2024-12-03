@@ -1009,11 +1009,17 @@ func updateSetting(envName, urlStr, settingType string) {
 		}
 
 		// Add new environment configuration
-		environments[envName] = map[string]interface{}{
+		envConfig := map[string]interface{}{
 			"endpoint": endpoint,
 			"proxy":    true,
-			"token":    "",
 		}
+
+		// Only add token field for app configuration
+		if settingType == "app" {
+			envConfig["token"] = ""
+		}
+
+		environments[envName] = envConfig
 
 		// Update entire configuration
 		mainV.Set("environments", environments)
