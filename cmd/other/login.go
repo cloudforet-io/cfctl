@@ -847,42 +847,57 @@ type UserCredentials struct {
 }
 
 // saveCredentials saves the user's credentials to the configuration
-func saveCredentials(currentEnv, userID, password, accessToken, refreshToken, grantToken string) {
+func saveCredentials(currentEnv, userID, encryptedPassword, accessToken, refreshToken, grantToken string) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		pterm.Error.Printf("Failed to get user home directory: %v\n", err)
-		return
+		pterm.Error.Println("Failed to get home directory:", err)
+		exitWithError()
 	}
 
-	// Create environment-specific cache directory
+	// Update main settings file
+	settingPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
+	mainViper := viper.New()
+	mainViper.SetConfigFile(settingPath)
+	mainViper.SetConfigType("toml")
+
+	if err := mainViper.ReadInConfig(); err != nil {
+		pterm.Error.Printf("Failed to read config file: %v\n", err)
+		exitWithError()
+	}
+
+	// Save user_id to environment settings
+	envPath := fmt.Sprintf("environments.%s.user_id", currentEnv)
+	mainViper.Set(envPath, userID)
+
+	if err := mainViper.WriteConfig(); err != nil {
+		pterm.Error.Printf("Failed to save config file: %v\n", err)
+		exitWithError()
+	}
+
+	// Create cache directory
 	envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
 	if err := os.MkdirAll(envCacheDir, 0700); err != nil {
 		pterm.Error.Printf("Failed to create cache directory: %v\n", err)
-		return
+		exitWithError()
 	}
 
-	// Save access token
-	accessTokenPath := filepath.Join(envCacheDir, "access_token")
-	if err := os.WriteFile(accessTokenPath, []byte(accessToken), 0600); err != nil {
+	// Save tokens to cache
+	if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(accessToken), 0600); err != nil {
 		pterm.Error.Printf("Failed to save access token: %v\n", err)
-		return
+		exitWithError()
 	}
 
-	// Save refresh token (if available)
 	if refreshToken != "" {
-		refreshTokenPath := filepath.Join(envCacheDir, "refresh_token")
-		if err := os.WriteFile(refreshTokenPath, []byte(refreshToken), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(envCacheDir, "refresh_token"), []byte(refreshToken), 0600); err != nil {
 			pterm.Error.Printf("Failed to save refresh token: %v\n", err)
-			return
+			exitWithError()
 		}
 	}
 
-	// Save grant token (if available)
 	if grantToken != "" {
-		grantTokenPath := filepath.Join(envCacheDir, "grant_token")
-		if err := os.WriteFile(grantTokenPath, []byte(grantToken), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(envCacheDir, "grant_token"), []byte(grantToken), 0600); err != nil {
 			pterm.Error.Printf("Failed to save grant token: %v\n", err)
-			return
+				exitWithError()
 		}
 	}
 }
