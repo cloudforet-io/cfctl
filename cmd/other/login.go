@@ -87,7 +87,7 @@ func executeLogin(cmd *cobra.Command, args []string) {
 	}
 
 	viper.SetConfigFile(configPath)
-	viper.SetConfigType("toml") // Explicitly set config type
+	viper.SetConfigType("toml")
 	if err := viper.ReadInConfig(); err != nil {
 		pterm.Error.Printf("Failed to read config file: %v\n", err)
 		return
@@ -101,14 +101,17 @@ func executeLogin(cmd *cobra.Command, args []string) {
 
 	// Check if it's an app environment
 	if strings.HasSuffix(currentEnv, "-app") {
-		if err := executeAppLogin(currentEnv); err != nil {
-			pterm.Error.Printf("Login failed: %v\n", err)
-			return
-		}
-	} else {
-		// Execute normal user login
-		executeUserLogin(currentEnv)
+		pterm.DefaultBox.WithTitle("App Environment Detected").
+			WithTitleTopCenter().
+			WithRightPadding(4).
+			WithLeftPadding(4).
+			WithBoxStyle(pterm.NewStyle(pterm.FgYellow)).
+			Println("Login command is not available for app environments.\nPlease use the app token directly in your configuration file.")
+		return
 	}
+
+	// Execute normal user login
+	executeUserLogin(currentEnv)
 }
 
 type TokenInfo struct {
@@ -561,6 +564,7 @@ func executeUserLogin(currentEnv string) {
 
 	// Save the new credentials to the configuration file
 	saveCredentials(currentEnv, userID, encryptedPassword, newAccessToken)
+	fmt.Println(newAccessToken)
 
 	fmt.Println()
 	pterm.Success.Println("Successfully logged in and saved token.")
@@ -1481,7 +1485,7 @@ func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (str
 
 	reqMsg.SetFieldByName("scope", scopeEnum)
 	reqMsg.SetFieldByName("token", refreshToken)
-	reqMsg.SetFieldByName("timeout", int32(86400))
+	reqMsg.SetFieldByName("timeout", int32(21600))
 	reqMsg.SetFieldByName("domain_id", domainID)
 	if workspaceID != "" {
 		reqMsg.SetFieldByName("workspace_id", workspaceID)
