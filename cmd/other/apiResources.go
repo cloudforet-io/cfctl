@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/BurntSushi/toml"
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
 
@@ -32,6 +33,27 @@ import (
 
 var endpoints string
 
+func loadEndpointsFromCache(currentEnv string) (map[string]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("unable to find home directory: %v", err)
+	}
+
+	// Read from environment-specific cache file
+	cacheFile := filepath.Join(home, ".cfctl", "cache", currentEnv, "endpoints.toml")
+	data, err := os.ReadFile(cacheFile)
+	if err != nil {
+		return nil, err
+	}
+
+	var endpoints map[string]string
+	if err := toml.Unmarshal(data, &endpoints); err != nil {
+		return nil, err
+	}
+
+	return endpoints, nil
+}
+
 var ApiResourcesCmd = &cobra.Command{
 	Use:   "api-resources",
 	Short: "Displays supported API resources",
@@ -41,93 +63,41 @@ var ApiResourcesCmd = &cobra.Command{
 			log.Fatalf("Unable to find home directory: %v", err)
 		}
 
-		configFile := filepath.Join(home, ".cfctl", "config.yaml")
-		cacheConfigFile := filepath.Join(home, ".cfctl", "cache", "config.yaml")
-
-		var currentEnv string
-		var envConfig *viper.Viper
-
-		// Try to read main config first
+		settingPath := filepath.Join(home, ".cfctl", "setting.toml")
+		
+		// Read main setting file
 		mainV := viper.New()
-		mainV.SetConfigFile(configFile)
+		mainV.SetConfigFile(settingPath)
+		mainV.SetConfigType("toml")
 		mainConfigErr := mainV.ReadInConfig()
 
+		var currentEnv string
+		var envConfig map[string]interface{}
+
 		if mainConfigErr == nil {
-			// Main config exists, try to get environment
 			currentEnv = mainV.GetString("environment")
 			if currentEnv != "" {
-				envConfig = mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
-			}
-		}
-
-		// If main config doesn't exist or has no environment set, try cache config
-		if mainConfigErr != nil || currentEnv == "" || envConfig == nil {
-			cacheV := viper.New()
-			cacheV.SetConfigFile(cacheConfigFile)
-			if err := cacheV.ReadInConfig(); err != nil {
-				log.Fatalf("Error reading both config files:\nMain config: %v\nCache config: %v", mainConfigErr, err)
-			}
-
-			// If no current environment set, try to get it from cache config
-			if currentEnv == "" {
-				currentEnv = cacheV.GetString("environment")
-			}
-
-			// If still no environment, try to find first user environment
-			if currentEnv == "" {
-				envs := cacheV.GetStringMap("environments")
-				for env := range envs {
-					if strings.HasSuffix(env, "-user") {
-						currentEnv = env
-						break
-					}
-				}
-			}
-
-			// Try to get environment config from cache if not found in main config
-			if envConfig == nil && currentEnv != "" {
-				envConfig = cacheV.Sub(fmt.Sprintf("environments.%s", currentEnv))
+				envConfig = mainV.GetStringMap(fmt.Sprintf("environments.%s", currentEnv))
 			}
 		}
 
 		if envConfig == nil {
-			// Try one more time with both configs
-			mainV := viper.New()
-			mainV.SetConfigFile(configFile)
-			if err := mainV.ReadInConfig(); err == nil {
-				envConfig = mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
-			}
-
-			if envConfig == nil {
-				cacheV := viper.New()
-				cacheV.SetConfigFile(cacheConfigFile)
-				if err := cacheV.ReadInConfig(); err == nil {
-					envConfig = cacheV.Sub(fmt.Sprintf("environments.%s", currentEnv))
-				}
-			}
-
-			if envConfig == nil {
-				log.Fatalf("No configuration found for environment '%s' in either config file", currentEnv)
-			}
+			log.Fatalf("No configuration found for environment '%s'", currentEnv)
 		}
 
-		endpoint := envConfig.GetString("endpoint")
-
-		if !strings.Contains(endpoint, "identity") {
-			parts := strings.Split(endpoint, "://")
-			if len(parts) == 2 {
-				hostParts := strings.Split(parts[1], ".")
-				if len(hostParts) >= 4 {
-					env := hostParts[2] // dev or stg
-					endpoint = fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", env)
-				}
-			}
-		}
-
-		// Fetch endpointsMap dynamically
-		endpointsMap, err := FetchEndpointsMap(endpoint)
+		// Try to load endpoints from cache first
+		endpointsMap, err := loadEndpointsFromCache(currentEnv)
 		if err != nil {
-			log.Fatalf("Failed to fetch endpointsMap from '%s': %v", endpoint, err)
+			// If cache loading fails, fall back to fetching from identity service
+			endpoint, ok := envConfig["endpoint"].(string)
+			if !ok || endpoint == "" {
+				log.Fatalf("No endpoint found for environment '%s'", currentEnv)
+			}
+
+			endpointsMap, err = FetchEndpointsMap(endpoint)
+			if err != nil {
+				log.Fatalf("Failed to fetch endpointsMap from '%s': %v", endpoint, err)
+			}
 		}
 
 		// Load short names configuration
