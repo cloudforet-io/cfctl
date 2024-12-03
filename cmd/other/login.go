@@ -417,99 +417,31 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	var (
-		userID            string
-		password          string
-		accessToken       string
-		refreshToken      string
-		encryptedPassword string
-	)
-
-	// Try to get valid tokens from cache first
-	if err != nil {
-		pterm.Error.Println("Failed to get user home directory:", err)
-		exitWithError()
-	}
-
-	cacheViper := viper.New()
-	cacheConfigPath := filepath.Join(homeDir, ".cfctl", "cache", "setting.toml")
-	cacheViper.SetConfigFile(cacheConfigPath)
-	cacheViper.SetConfigType("toml")
-
-	if err := cacheViper.ReadInConfig(); err == nil {
-		usersField := cacheViper.Get("environments." + currentEnv + ".users")
-		if usersField != nil {
-			users, ok := usersField.([]interface{})
-			if !ok {
-				pterm.Error.Println("Failed to load users correctly.")
-				exitWithError()
-			}
-
-			if len(users) > 0 {
-				pterm.Info.Println("Select an account to login or add a new user:")
-
-				// Display user selection including "Add new user" option
-				userSelection := promptUserSelection(len(users), users)
-
-				if userSelection <= len(users) {
-					// Selected existing user
-					selectedUser := users[userSelection-1].(map[string]interface{})
-					userID = selectedUser["userid"].(string)
-					encryptedPassword = selectedUser["password"].(string)
-					token := selectedUser["token"].(string)
-
-					// Check if token is still valid
-					if !isTokenExpired(token) {
-						// Use stored password
-						decryptedPassword, err := decrypt(encryptedPassword)
-						if err != nil {
-							pterm.Error.Printf("Failed to decrypt password: %v\n", err)
-							exitWithError()
-						}
-						password = decryptedPassword
-						pterm.Success.Printf("Using saved credentials for %s\n", userID)
-					} else {
-						// Token expired, ask for password again
-						password = promptPassword()
-						// Verify the password matches
-						decryptedPassword, err := decrypt(encryptedPassword)
-						if err != nil {
-							pterm.Error.Printf("Failed to decrypt password: %v\n", err)
-							exitWithError()
-						}
-						if password != decryptedPassword {
-							pterm.Error.Println("Password does not match.")
-							exitWithError()
-						}
-					}
-				} else {
-					// Selected to add new user
-					userID, password = promptCredentials()
-				}
-			} else {
-				// No existing users, prompt for new credentials
-				userID, password = promptCredentials()
-			}
-		} else {
-			// Users field doesn't exist, prompt for new credentials
-			userID, password = promptCredentials()
-		}
-	} else {
-		// Configuration cannot be read, prompt for new credentials
-		userID, password = promptCredentials()
-	}
-
-	// Proceed with domain ID fetching and token issuance
+	// Get user_id from current environment
 	mainViper := viper.New()
-	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "setting.toml"))
+	settingPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
+	mainViper.SetConfigFile(settingPath)
+	mainViper.SetConfigType("toml")
+
 	if err := mainViper.ReadInConfig(); err != nil {
-		pterm.Error.Println("Failed to read main config file:", err)
+		pterm.Error.Printf("Failed to read config file: %v\n", err)
 		exitWithError()
 	}
+
+	userID := mainViper.GetString(fmt.Sprintf("environments.%s.user_id", currentEnv))
+	if userID == "" {
+		pterm.Error.Println("No user ID found in current environment configuration.")
+		exitWithError()
+	}
+
+	// Display the current user ID
+	pterm.Info.Printf("Logged in as: %s\n", userID)
+
+	// Prompt for password
+	password := promptPassword()
 
 	// Extract the middle part of the environment name for `name`
-	currentEnvironment := mainViper.GetString("environment")
-	nameParts := strings.Split(currentEnvironment, "-")
+	nameParts := strings.Split(currentEnv, "-")
 	if len(nameParts) < 3 {
 		pterm.Error.Println("Environment name format is invalid.")
 		exitWithError()
@@ -524,22 +456,17 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	// Issue new tokens
-	accessToken, refreshToken, err = getValidTokens(currentEnv)
+	accessToken, refreshToken, err := issueToken(baseUrl, userID, password, domainID)
 	if err != nil {
-		accessToken, refreshToken, err = issueToken(baseUrl, userID, password, domainID)
-	}
-
-	// Encrypt password
-	encryptedPassword, err = encrypt(password)
-	if err != nil {
-		pterm.Error.Printf("Failed to encrypt password: %v\n", err)
+		pterm.Error.Printf("Failed to issue token: %v\n", err)
 		exitWithError()
 	}
 
-	// Use the tokens (either from cache or newly issued)
+	// Use the tokens
 	workspaces, err := fetchWorkspaces(baseUrl, accessToken)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch workspaces:", err)
+		exitWithError()
 	}
 
 	domainID, roleType, err := fetchDomainIDAndRole(baseUrl, accessToken)
@@ -570,18 +497,29 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	// Save all tokens
-	saveCredentials(currentEnv, userID, encryptedPassword, accessToken, refreshToken, grantToken)
+	// Save tokens to cache
+	envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
+	if err := os.MkdirAll(envCacheDir, 0700); err != nil {
+		pterm.Error.Printf("Failed to create cache directory: %v\n", err)
+		exitWithError()
+	}
+
+	if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(accessToken), 0600); err != nil {
+		pterm.Error.Printf("Failed to save access token: %v\n", err)
+		exitWithError()
+	}
+
+	if err := os.WriteFile(filepath.Join(envCacheDir, "refresh_token"), []byte(refreshToken), 0600); err != nil {
+		pterm.Error.Printf("Failed to save refresh token: %v\n", err)
+		exitWithError()
+	}
+
+	if err := os.WriteFile(filepath.Join(envCacheDir, "grant_token"), []byte(grantToken), 0600); err != nil {
+		pterm.Error.Printf("Failed to save grant token: %v\n", err)
+		exitWithError()
+	}
 
 	pterm.Success.Println("Successfully logged in and saved token.")
-}
-
-// Prompt for user credentials if they aren't saved
-func promptCredentials() (string, string) {
-	userId, _ := pterm.DefaultInteractiveTextInput.Show("Enter your user ID")
-	passwordInput := pterm.DefaultInteractiveTextInput.WithMask("*")
-	password, _ := passwordInput.Show("Enter your password")
-	return userId, password
 }
 
 // Prompt for password when token is expired
