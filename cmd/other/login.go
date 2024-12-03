@@ -563,9 +563,8 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	// Save the new credentials to the configuration file
-	saveCredentials(currentEnv, userID, encryptedPassword, newAccessToken)
+	saveCredentials(currentEnv, userID, encryptedPassword, accessToken, refreshToken, newAccessToken)
 
-	fmt.Println()
 	pterm.Success.Println("Successfully logged in and saved token.")
 }
 
@@ -840,79 +839,43 @@ type UserCredentials struct {
 }
 
 // saveCredentials saves the user's credentials to the configuration
-func saveCredentials(currentEnv, userID, password, token string) {
+func saveCredentials(currentEnv, userID, password, accessToken, refreshToken, grantToken string) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		pterm.Error.Printf("Failed to get user home directory: %v\n", err)
 		return
 	}
 
-	cacheDir := filepath.Join(homeDir, ".cfctl", "cache")
-	if err := os.MkdirAll(cacheDir, 0700); err != nil {
+	// Create environment-specific cache directory
+	envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
+	if err := os.MkdirAll(envCacheDir, 0700); err != nil {
 		pterm.Error.Printf("Failed to create cache directory: %v\n", err)
 		return
 	}
 
-	cacheConfigPath := filepath.Join(cacheDir, "setting.toml")
-	cacheViper := viper.New()
-	cacheViper.SetConfigFile(cacheConfigPath)
-	cacheViper.SetConfigType("toml")
-
-	if err := cacheViper.ReadInConfig(); err != nil && !os.IsNotExist(err) {
-		pterm.Error.Printf("Failed to read cache config: %v\n", err)
+	// Save access token
+	accessTokenPath := filepath.Join(envCacheDir, "access_token")
+	if err := os.WriteFile(accessTokenPath, []byte(accessToken), 0600); err != nil {
+		pterm.Error.Printf("Failed to save access token: %v\n", err)
 		return
 	}
 
-	envPath := fmt.Sprintf("environments.%s", currentEnv)
-	envSettings := cacheViper.GetStringMap(envPath)
-	if envSettings == nil {
-		envSettings = make(map[string]interface{})
-	}
-
-	// Save token at the root level of the environment
-	envSettings["token"] = token
-
-	var users []UserCredentials
-	if existingUsers, ok := envSettings["users"]; ok {
-		if userList, ok := existingUsers.([]interface{}); ok {
-			for _, u := range userList {
-				if userMap, ok := u.(map[string]interface{}); ok {
-					user := UserCredentials{
-						UserID:   userMap["userid"].(string),
-						Password: userMap["password"].(string),
-						Token:    userMap["token"].(string),
-					}
-					users = append(users, user)
-				}
-			}
+	// Save refresh token (if available)
+	if refreshToken != "" {
+		refreshTokenPath := filepath.Join(envCacheDir, "refresh_token")
+		if err := os.WriteFile(refreshTokenPath, []byte(refreshToken), 0600); err != nil {
+			pterm.Error.Printf("Failed to save refresh token: %v\n", err)
+			return
 		}
 	}
 
-	// Update existing user or add new user
-	userExists := false
-	for i, user := range users {
-		if user.UserID == userID {
-			users[i].Password = password
-			users[i].Token = token
-			userExists = true
-			break
+	// Save grant token (if available)
+	if grantToken != "" {
+		grantTokenPath := filepath.Join(envCacheDir, "grant_token")
+		if err := os.WriteFile(grantTokenPath, []byte(grantToken), 0600); err != nil {
+			pterm.Error.Printf("Failed to save grant token: %v\n", err)
+			return
 		}
-	}
-
-	if !userExists {
-		newUser := UserCredentials{
-			UserID:   userID,
-			Password: password,
-			Token:    token,
-		}
-		users = append(users, newUser)
-	}
-
-	envSettings["users"] = users
-	cacheViper.Set(envPath, envSettings)
-
-	if err := cacheViper.WriteConfig(); err != nil {
-		pterm.Error.Printf("Failed to save user credentials: %v\n", err)
 	}
 }
 
