@@ -234,16 +234,19 @@ func loadCachedEndpoints() (map[string]string, error) {
 		return nil, fmt.Errorf("no environment set")
 	}
 
-	// Create environment-specific cache directory
+	// Only create endpoints.toml in the environment-specific cache directory
 	envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
-	if err := os.MkdirAll(envCacheDir, 0755); err != nil {
-		return nil, err
-	}
-
-	// Read from environment-specific cache file
 	cacheFile := filepath.Join(envCacheDir, "endpoints.toml")
+	
+	// Read from environment-specific cache file
 	data, err := os.ReadFile(cacheFile)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			// Create directory only if we need to write the cache file
+			if err := os.MkdirAll(envCacheDir, 0755); err != nil {
+				return nil, err
+			}
+		}
 		return nil, err
 	}
 
