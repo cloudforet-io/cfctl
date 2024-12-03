@@ -564,7 +564,6 @@ func executeUserLogin(currentEnv string) {
 
 	// Save the new credentials to the configuration file
 	saveCredentials(currentEnv, userID, encryptedPassword, newAccessToken)
-	fmt.Println(newAccessToken)
 
 	fmt.Println()
 	pterm.Success.Println("Successfully logged in and saved token.")
