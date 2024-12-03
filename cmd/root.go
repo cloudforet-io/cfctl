@@ -11,9 +11,9 @@ import (
 	"github.com/cloudforet-io/cfctl/cmd/common"
 	"github.com/cloudforet-io/cfctl/cmd/other"
 
+	"github.com/BurntSushi/toml"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
-	"gopkg.in/yaml.v3"
 )
 
 var cfgFile string
@@ -113,21 +113,47 @@ func addDynamicServiceCommands() error {
 		return nil
 	}
 
-	// Try to load endpoints from file cache
-	endpoints, err := loadCachedEndpoints()
-	if err == nil {
-		// Store in memory for subsequent calls
-		cachedEndpointsMap = endpoints
-
-		// Create commands using cached endpoints
-		for serviceName := range endpoints {
-			cmd := createServiceCommand(serviceName)
-			rootCmd.AddCommand(cmd)
-		}
-		return nil
+	// Try to load endpoints from environment-specific cache
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return fmt.Errorf("unable to find home directory: %v", err)
 	}
 
-	// If no cache available, fetch dynamically (this is slow path)
+	// Get current environment from main setting file
+	mainV := viper.New()
+	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.toml"))
+	mainV.SetConfigType("toml")
+	if err := mainV.ReadInConfig(); err != nil {
+		return fmt.Errorf("failed to read setting file: %v", err)
+	}
+
+	currentEnv := mainV.GetString("environment")
+	if currentEnv == "" {
+		return fmt.Errorf("no environment set")
+	}
+
+	// Try to load endpoints from environment-specific cache
+	envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
+	cacheFile := filepath.Join(envCacheDir, "endpoints.toml")
+	
+	data, err := os.ReadFile(cacheFile)
+	if err == nil {
+		// Parse cached endpoints from TOML
+		var endpoints map[string]string
+		if err := toml.Unmarshal(data, &endpoints); err == nil {
+			// Store in memory for subsequent calls
+			cachedEndpointsMap = endpoints
+
+			// Create commands using cached endpoints
+			for serviceName := range endpoints {
+				cmd := createServiceCommand(serviceName)
+				rootCmd.AddCommand(cmd)
+			}
+			return nil
+		}
+	}
+
+	// If no cache available or cache is invalid, fetch dynamically (this is slow path)
 	setting, err := loadConfig()
 	if err != nil {
 		return fmt.Errorf("failed to load setting: %v", err)
@@ -150,7 +176,7 @@ func addDynamicServiceCommands() error {
 		return fmt.Errorf("failed to fetch services: %v", err)
 	}
 
-	// Store in both memory and file cache
+	// Store in both memory and environment-specific cache
 	cachedEndpointsMap = endpointsMap
 	if err := saveEndpointsCache(endpointsMap); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
@@ -166,13 +192,27 @@ func addDynamicServiceCommands() error {
 }
 
 func clearEndpointsCache() {
-	cachedEndpointsMap = nil
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
 	}
-	cacheFile := filepath.Join(home, ".cfctl", "cache", "endpoints.yaml")
-	os.Remove(cacheFile)
+
+	mainV := viper.New()
+	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.toml"))
+	mainV.SetConfigType("toml")
+	if err := mainV.ReadInConfig(); err != nil {
+		return
+	}
+
+	currentEnv := mainV.GetString("environment")
+	if currentEnv == "" {
+		return
+	}
+
+	// Remove environment-specific cache directory
+	envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
+	os.RemoveAll(envCacheDir)
+	cachedEndpointsMap = nil
 }
 
 func loadCachedEndpoints() (map[string]string, error) {
@@ -181,16 +221,35 @@ func loadCachedEndpoints() (map[string]string, error) {
 		return nil, err
 	}
 
-	// Read from cache file
-	cacheFile := filepath.Join(home, ".cfctl", "cache", "endpoints.yaml")
+	// Get current environment from main setting file
+	mainV := viper.New()
+	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.toml"))
+	mainV.SetConfigType("toml")
+	if err := mainV.ReadInConfig(); err != nil {
+		return nil, err
+	}
+
+	currentEnv := mainV.GetString("environment")
+	if currentEnv == "" {
+		return nil, fmt.Errorf("no environment set")
+	}
+
+	// Create environment-specific cache directory
+	envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
+	if err := os.MkdirAll(envCacheDir, 0755); err != nil {
+		return nil, err
+	}
+
+	// Read from environment-specific cache file
+	cacheFile := filepath.Join(envCacheDir, "endpoints.toml")
 	data, err := os.ReadFile(cacheFile)
 	if err != nil {
 		return nil, err
 	}
 
-	// Parse cached endpoints
+	// Parse cached endpoints from TOML
 	var endpoints map[string]string
-	if err := yaml.Unmarshal(data, &endpoints); err != nil {
+	if err := toml.Unmarshal(data, &endpoints); err != nil {
 		return nil, err
 	}
 
@@ -203,20 +262,33 @@ func saveEndpointsCache(endpoints map[string]string) error {
 		return err
 	}
 
-	// Ensure cache directory exists
-	cacheDir := filepath.Join(home, ".cfctl", "cache")
-	if err := os.MkdirAll(cacheDir, 0755); err != nil {
+	// Get current environment from main setting file
+	mainV := viper.New()
+	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.toml"))
+	mainV.SetConfigType("toml")
+	if err := mainV.ReadInConfig(); err != nil {
 		return err
 	}
 
-	// Marshal endpoints to YAML format
-	data, err := yaml.Marshal(endpoints)
+	currentEnv := mainV.GetString("environment")
+	if currentEnv == "" {
+		return fmt.Errorf("no environment set")
+	}
+
+	// Create environment-specific cache directory
+	envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
+	if err := os.MkdirAll(envCacheDir, 0755); err != nil {
+		return err
+	}
+
+	// Marshal endpoints to TOML format
+	data, err := toml.Marshal(endpoints)
 	if err != nil {
 		return err
 	}
 
-	// Write to cache file
-	return os.WriteFile(filepath.Join(cacheDir, "endpoints.yaml"), data, 0644)
+	// Write to environment-specific cache file
+	return os.WriteFile(filepath.Join(envCacheDir, "endpoints.toml"), data, 0644)
 }
 
 // loadConfig loads configuration from both main and cache setting files
@@ -226,12 +298,13 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("unable to find home directory: %v", err)
 	}
 
-	settingFile := filepath.Join(home, ".cfctl", "setting.yaml")
-	cacheConfigFile := filepath.Join(home, ".cfctl", "cache", "setting.yaml")
+	// Only use main setting file
+	settingFile := filepath.Join(home, ".cfctl", "setting.toml")
 
-	// Try to read main setting first
+	// Try to read main setting
 	mainV := viper.New()
 	mainV.SetConfigFile(settingFile)
+	mainV.SetConfigType("toml")
 	mainConfigErr := mainV.ReadInConfig()
 
 	if mainConfigErr != nil {
@@ -242,59 +315,13 @@ func loadConfig() (*Config, error) {
 	var endpoint string
 	var token string
 
-	// Main setting exists, try to get environment
+	// Get configuration from main setting only
 	currentEnv = mainV.GetString("environment")
 	if currentEnv != "" {
 		envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
 		if envConfig != nil {
 			endpoint = envConfig.GetString("endpoint")
 			token = envConfig.GetString("token")
-		}
-	}
-
-	// If main setting doesn't have what we need, try cache setting
-	if endpoint == "" || token == "" {
-		cacheV := viper.New()
-
-		cacheV.SetConfigFile(cacheConfigFile)
-		if err := cacheV.ReadInConfig(); err == nil {
-			// If no current environment set, try to get it from cache setting
-			if currentEnv == "" {
-				currentEnv = cacheV.GetString("environment")
-			}
-
-			// Try to get environment setting from cache
-			if currentEnv != "" {
-				envConfig := cacheV.Sub(fmt.Sprintf("environments.%s", currentEnv))
-				if envConfig != nil {
-					if endpoint == "" {
-						endpoint = envConfig.GetString("endpoint")
-					}
-					if token == "" {
-						token = envConfig.GetString("token")
-					}
-				}
-			}
-
-			// If still no environment, try to find first user environment
-			if currentEnv == "" {
-				envs := cacheV.GetStringMap("environments")
-				for env := range envs {
-					if strings.HasSuffix(env, "-user") {
-						currentEnv = env
-						envConfig := cacheV.Sub(fmt.Sprintf("environments.%s", currentEnv))
-						if envConfig != nil {
-							if endpoint == "" {
-								endpoint = envConfig.GetString("endpoint")
-							}
-							if token == "" {
-								token = envConfig.GetString("token")
-							}
-							break
-						}
-					}
-				}
-			}
 		}
 	}
 
