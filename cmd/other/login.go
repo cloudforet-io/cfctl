@@ -411,8 +411,21 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	// Get the home directory
 	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		pterm.Error.Println("Failed to get user home directory:", err)
+		exitWithError()
+	}
+
+	var (
+		userID            string
+		password          string
+		accessToken       string
+		refreshToken      string
+		encryptedPassword string
+	)
+
+	// Try to get valid tokens from cache first
 	if err != nil {
 		pterm.Error.Println("Failed to get user home directory:", err)
 		exitWithError()
@@ -422,9 +435,6 @@ func executeUserLogin(currentEnv string) {
 	cacheConfigPath := filepath.Join(homeDir, ".cfctl", "cache", "setting.toml")
 	cacheViper.SetConfigFile(cacheConfigPath)
 	cacheViper.SetConfigType("toml")
-
-	var userID string
-	var password string
 
 	if err := cacheViper.ReadInConfig(); err == nil {
 		usersField := cacheViper.Get("environments." + currentEnv + ".users")
@@ -445,7 +455,7 @@ func executeUserLogin(currentEnv string) {
 					// Selected existing user
 					selectedUser := users[userSelection-1].(map[string]interface{})
 					userID = selectedUser["userid"].(string)
-					encryptedPassword := selectedUser["password"].(string)
+					encryptedPassword = selectedUser["password"].(string)
 					token := selectedUser["token"].(string)
 
 					// Check if token is still valid
@@ -513,33 +523,31 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	// Attempt to issue token
-	accessToken, refreshToken, err := issueToken(baseUrl, userID, password, domainID)
+	// Issue new tokens
+	accessToken, refreshToken, err = getValidTokens(currentEnv)
 	if err != nil {
-		pterm.Error.Println("Failed to retrieve token:", err)
-		exitWithError()
+		accessToken, refreshToken, err = issueToken(baseUrl, userID, password, domainID)
 	}
 
-	// Encrypt password before saving
-	encryptedPassword, err := encrypt(password)
+	// Encrypt password
+	encryptedPassword, err = encrypt(password)
 	if err != nil {
 		pterm.Error.Printf("Failed to encrypt password: %v\n", err)
 		exitWithError()
 	}
 
+	// Use the tokens (either from cache or newly issued)
 	workspaces, err := fetchWorkspaces(baseUrl, accessToken)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch workspaces:", err)
 	}
 
-	// Fetch Domain ID and Role Type
 	domainID, roleType, err := fetchDomainIDAndRole(baseUrl, accessToken)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch Domain ID and Role Type:", err)
 		exitWithError()
 	}
 
-	// Determine scope and workspace
 	scope := determineScope(roleType, len(workspaces))
 	var workspaceID string
 	if roleType == "DOMAIN_ADMIN" {
@@ -555,15 +563,15 @@ func executeUserLogin(currentEnv string) {
 		scope = "WORKSPACE"
 	}
 
-	// Grant new token
-	newAccessToken, err := grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
+	// Grant new token using the refresh token
+	grantToken, err := grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
 	if err != nil {
 		pterm.Error.Println("Failed to retrieve new access token:", err)
 		exitWithError()
 	}
 
-	// Save the new credentials to the configuration file
-	saveCredentials(currentEnv, userID, encryptedPassword, accessToken, refreshToken, newAccessToken)
+	// Save all tokens
+	saveCredentials(currentEnv, userID, encryptedPassword, accessToken, refreshToken, grantToken)
 
 	pterm.Success.Println("Successfully logged in and saved token.")
 }
@@ -1836,4 +1844,38 @@ func clearInvalidTokens(currentEnv string) error {
 	envSettings["tokens"] = validTokens
 	viper.Set(envPath, envSettings)
 	return viper.WriteConfig()
+}
+
+// readTokenFromFile reads a token from the specified file in the environment cache directory
+func readTokenFromFile(envDir, tokenType string) (string, error) {
+	tokenPath := filepath.Join(envDir, tokenType)
+	data, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+// getValidTokens checks for existing valid tokens in the environment cache directory
+func getValidTokens(currentEnv string) (accessToken, refreshToken string, err error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", "", err
+	}
+
+	envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
+
+	// Try to read and validate access token
+	if accessToken, err = readTokenFromFile(envCacheDir, "access_token"); err == nil {
+		if !isTokenExpired(accessToken) {
+			// Try to read refresh token only if access token is valid
+			if refreshToken, err = readTokenFromFile(envCacheDir, "refresh_token"); err == nil {
+				if !isTokenExpired(refreshToken) {
+					return accessToken, refreshToken, nil
+				}
+			}
+		}
+	}
+
+	return "", "", fmt.Errorf("no valid tokens found")
 }
