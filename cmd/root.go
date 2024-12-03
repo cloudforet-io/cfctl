@@ -92,14 +92,14 @@ func init() {
 // showInitializationGuide displays a helpful message when configuration is missing
 func showInitializationGuide(originalErr error) {
 	// Only show error message for commands that require configuration
-	if len(os.Args) >= 2 && (os.Args[1] == "config" ||
+	if len(os.Args) >= 2 && (os.Args[1] == "setting" ||
 		os.Args[1] == "login" ||
 		os.Args[1] == "api-resources") { // Add api-resources to skip list
 		return
 	}
 
 	pterm.Warning.Printf("No valid configuration found.\n")
-	pterm.Info.Println("Please run 'cfctl config init' to set up your configuration.")
+	pterm.Info.Println("Please run 'cfctl setting init' to set up your configuration.")
 	pterm.Info.Println("After initialization, run 'cfctl login' to authenticate.")
 }
 
@@ -118,7 +118,7 @@ func addDynamicServiceCommands() error {
 	if err == nil {
 		// Store in memory for subsequent calls
 		cachedEndpointsMap = endpoints
-		
+
 		// Create commands using cached endpoints
 		for serviceName := range endpoints {
 			cmd := createServiceCommand(serviceName)
@@ -128,12 +128,12 @@ func addDynamicServiceCommands() error {
 	}
 
 	// If no cache available, fetch dynamically (this is slow path)
-	config, err := loadConfig()
+	setting, err := loadConfig()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %v", err)
+		return fmt.Errorf("failed to load setting: %v", err)
 	}
 
-	endpoint := config.Endpoint
+	endpoint := setting.Endpoint
 	if !strings.Contains(endpoint, "identity") {
 		parts := strings.Split(endpoint, "://")
 		if len(parts) == 2 {
@@ -219,30 +219,30 @@ func saveEndpointsCache(endpoints map[string]string) error {
 	return os.WriteFile(filepath.Join(cacheDir, "endpoints.yaml"), data, 0644)
 }
 
-// loadConfig loads configuration from both main and cache config files
+// loadConfig loads configuration from both main and cache setting files
 func loadConfig() (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("unable to find home directory: %v", err)
 	}
 
-	configFile := filepath.Join(home, ".cfctl", "config.yaml")
-	cacheConfigFile := filepath.Join(home, ".cfctl", "cache", "config.yaml")
+	settingFile := filepath.Join(home, ".cfctl", "setting.yaml")
+	cacheConfigFile := filepath.Join(home, ".cfctl", "cache", "setting.yaml")
 
-	// Try to read main config first
+	// Try to read main setting first
 	mainV := viper.New()
-	mainV.SetConfigFile(configFile)
+	mainV.SetConfigFile(settingFile)
 	mainConfigErr := mainV.ReadInConfig()
 
 	if mainConfigErr != nil {
-		return nil, fmt.Errorf("failed to read config file")
+		return nil, fmt.Errorf("failed to read setting file")
 	}
 
 	var currentEnv string
 	var endpoint string
 	var token string
 
-	// Main config exists, try to get environment
+	// Main setting exists, try to get environment
 	currentEnv = mainV.GetString("environment")
 	if currentEnv != "" {
 		envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
@@ -252,18 +252,18 @@ func loadConfig() (*Config, error) {
 		}
 	}
 
-	// If main config doesn't have what we need, try cache config
+	// If main setting doesn't have what we need, try cache setting
 	if endpoint == "" || token == "" {
 		cacheV := viper.New()
 
 		cacheV.SetConfigFile(cacheConfigFile)
 		if err := cacheV.ReadInConfig(); err == nil {
-			// If no current environment set, try to get it from cache config
+			// If no current environment set, try to get it from cache setting
 			if currentEnv == "" {
 				currentEnv = cacheV.GetString("environment")
 			}
 
-			// Try to get environment config from cache
+			// Try to get environment setting from cache
 			if currentEnv != "" {
 				envConfig := cacheV.Sub(fmt.Sprintf("environments.%s", currentEnv))
 				if envConfig != nil {

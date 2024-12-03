@@ -30,8 +30,8 @@ import (
 // SettingCmd represents the setting command
 var SettingCmd = &cobra.Command{
 	Use:   "setting",
-	Short: "Manage cfctl setting files",
-	Long: `Manage setting files for cfctl. You can initialize,
+	Short: "Manage cfctl setting file",
+	Long: `Manage setting file for cfctl. You can initialize,
 switch environments, and display the current configuration.`,
 }
 
@@ -90,27 +90,20 @@ var settingInitURLCmd = &cobra.Command{
 			}
 		}
 
-		// Initialize the environment
-		if appFlag {
-			envName = fmt.Sprintf("%s-app", envName)
-		} else {
-			envName = fmt.Sprintf("%s-user", envName)
-		}
-
-		// Update configuration
+		// Update configuration in main setting file
 		updateSetting(envName, urlStr, map[bool]string{true: "app", false: "user"}[appFlag])
 
-		// Update the current environment in the main setting
+		// Update the current environment
 		mainV := viper.New()
 		mainV.SetConfigFile(mainSettingPath)
 
-		// Create empty setting if it doesn't exist
 		if err := mainV.ReadInConfig(); err != nil && !os.IsNotExist(err) {
 			pterm.Error.Printf("Failed to read setting file: %v\n", err)
 			return
 		}
 
-		// Set the new environment as current
+		// Set the environment name with app/user suffix
+		envName = fmt.Sprintf("%s-%s", envName, map[bool]string{true: "app", false: "user"}[appFlag])
 		mainV.Set("environment", envName)
 
 		if err := mainV.WriteConfig(); err != nil {
@@ -369,7 +362,7 @@ var envCmd = &cobra.Command{
 			}
 
 			if len(allEnvs) == 0 {
-				pterm.Println("No environments found in setting files")
+				pterm.Println("No environments found in setting file")
 				return
 			}
 
@@ -790,40 +783,19 @@ func getBaseURL(v *viper.Viper) (string, error) {
 
 // getToken retrieves the token for the current environment.
 func getToken(v *viper.Viper) (string, error) {
-	home, _ := os.UserHomeDir()
 	currentEnv := getCurrentEnvironment(v)
 	if currentEnv == "" {
 		return "", fmt.Errorf("no environment is set")
 	}
 
-	// Check if the environment is app or user type
-	if strings.HasSuffix(currentEnv, "-app") {
-		// For app environments, check only in main setting
-		token := v.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
-		if token == "" {
-			return "", fmt.Errorf("no token found for app environment '%s' in %s/.cfctl/setting.yaml", currentEnv, home)
-		}
-		return token, nil
-	} else if strings.HasSuffix(currentEnv, "-user") {
-		// For user environments, check only in cache setting
-		cacheV := viper.New()
-		cachePath := filepath.Join(GetSettingDir(), "cache", "setting.yaml")
-
-		if err := loadSetting(cacheV, cachePath); err != nil {
-			return "", fmt.Errorf("failed to load cache setting: %v", err)
-		}
-
-		token := cacheV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
-		if token == "" {
-			return "", fmt.Errorf("no token found for user environment '%s' in %s", currentEnv, cachePath)
-		}
-		return token, nil
+	token := v.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+	if token == "" {
+		return "", fmt.Errorf("no token found for environment '%s'", currentEnv)
 	}
-
-	return "", fmt.Errorf("environment '%s' has invalid suffix (must end with -app or -user)", currentEnv)
+	return token, nil
 }
 
-// GetSettingDir returns the directory where setting files are stored
+// GetSettingDir returns the directory where setting file are stored
 func GetSettingDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -947,7 +919,7 @@ func parseEnvNameFromURL(urlStr string) (string, error) {
 	return "", fmt.Errorf("URL does not match any known environment patterns")
 }
 
-// updateSetting updates the configuration files based on the environment type
+// updateSetting updates the configuration files
 func updateSetting(envName, urlStr, settingType string) {
 	settingDir := GetSettingDir()
 	mainSettingPath := filepath.Join(settingDir, "setting.yaml")
@@ -963,13 +935,15 @@ func updateSetting(envName, urlStr, settingType string) {
 		}
 	}
 
-	// Handle app type settinguration
-	if settingType == "app" && urlStr != "" {
+	if urlStr != "" {
 		endpoint, err := constructEndpoint(urlStr)
 		if err != nil {
 			pterm.Error.Printf("Failed to construct endpoint: %v\n", err)
 			return
 		}
+
+		// Append -app or -user to the environment name
+		envName = fmt.Sprintf("%s-%s", envName, settingType)
 
 		mainV.Set(fmt.Sprintf("environments.%s.endpoint", envName), endpoint)
 		mainV.Set(fmt.Sprintf("environments.%s.proxy", envName), true)
@@ -977,53 +951,6 @@ func updateSetting(envName, urlStr, settingType string) {
 
 		if err := mainV.WriteConfig(); err != nil {
 			pterm.Error.Printf("Failed to write setting: %v\n", err)
-			return
-		}
-	}
-
-	// Handle user type configuration
-	if settingType == "user" {
-		cacheDir := filepath.Join(settingDir, "cache")
-		if err := os.MkdirAll(cacheDir, 0755); err != nil {
-			pterm.Error.Printf("Failed to create cache directory: %v\n", err)
-			return
-		}
-
-		cacheSettingPath := filepath.Join(cacheDir, "setting.yaml")
-
-		// Create cache setting file if it doesn't exist
-		if _, err := os.Stat(cacheSettingPath); os.IsNotExist(err) {
-			initialSetting := []byte("environments:\n")
-			if err := os.WriteFile(cacheSettingPath, initialSetting, 0644); err != nil {
-				pterm.Error.Printf("Failed to create cache setting file: %v\n", err)
-				return
-			}
-		}
-
-		cacheV := viper.New()
-		cacheV.SetConfigFile(cacheSettingPath)
-
-		if err := cacheV.ReadInConfig(); err != nil {
-			if !os.IsNotExist(err) {
-				pterm.Error.Printf("Error reading cache setting: %v\n", err)
-				return
-			}
-		}
-
-		if urlStr != "" {
-			endpoint, err := constructEndpoint(urlStr)
-			if err != nil {
-				pterm.Error.Printf("Failed to construct endpoint: %v\n", err)
-				return
-			}
-
-			cacheV.Set(fmt.Sprintf("environments.%s.endpoint", envName), endpoint)
-			cacheV.Set(fmt.Sprintf("environments.%s.proxy", envName), true)
-			cacheV.Set(fmt.Sprintf("environments.%s.token", envName), "")
-		}
-
-		if err := cacheV.WriteConfig(); err != nil {
-			pterm.Error.Printf("Failed to write cache setting: %v\n", err)
 			return
 		}
 	}
@@ -1098,10 +1025,6 @@ func constructEndpoint(baseURL string) (string, error) {
 }
 
 func init() {
-	settingDir := GetSettingDir()
-	settingPath := filepath.Join(settingDir, "setting.yaml")
-	cacheSettingPath := filepath.Join(settingDir, "cache", "setting.yaml")
-
 	SettingCmd.AddCommand(settingInitCmd)
 	SettingCmd.AddCommand(envCmd)
 	SettingCmd.AddCommand(showCmd)
@@ -1112,12 +1035,12 @@ func init() {
 	settingInitCmd.Flags().StringP("environment", "e", "", "Override environment name")
 
 	settingInitURLCmd.Flags().StringP("url", "u", "", "URL for the environment")
-	settingInitURLCmd.Flags().Bool("app", false, fmt.Sprintf("Initialize as application settinguration (setting stored at %s)", settingPath))
-	settingInitURLCmd.Flags().Bool("user", false, fmt.Sprintf("Initialize as user-specific settinguration (setting stored at %s)", cacheSettingPath))
+	settingInitURLCmd.Flags().Bool("app", false, "Initialize as application configuration")
+	settingInitURLCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
 
 	settingInitLocalCmd.Flags().StringP("name", "n", "", "Local environment name for the environment")
-	settingInitLocalCmd.Flags().Bool("app", false, fmt.Sprintf("Initialize as application settinguration (setting stored at %s)", settingPath))
-	settingInitLocalCmd.Flags().Bool("user", false, fmt.Sprintf("Initialize as user-specific settinguration (setting stored at %s)", cacheSettingPath))
+	settingInitLocalCmd.Flags().Bool("app", false, "Initialize as application configuration")
+	settingInitLocalCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
 
 	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
 	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
