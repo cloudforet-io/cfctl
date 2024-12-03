@@ -76,17 +76,18 @@ func executeLogin(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	configPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
+	configPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
 
 	// Check if config file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
 		pterm.Error.Println("No valid configuration found.")
-		pterm.Info.Println("Please run 'cfctl config init' to set up your configuration.")
+		pterm.Info.Println("Please run 'cfctl setting init' to set up your configuration.")
 		pterm.Info.Println("After initialization, run 'cfctl login' to authenticate.")
 		return
 	}
 
 	viper.SetConfigFile(configPath)
+	viper.SetConfigType("toml") // Explicitly set config type
 	if err := viper.ReadInConfig(); err != nil {
 		pterm.Error.Printf("Failed to read config file: %v\n", err)
 		return
@@ -399,7 +400,7 @@ func getTokenDisplayName(claims map[string]interface{}) string {
 }
 
 func executeUserLogin(currentEnv string) {
-	loadEnvironmentConfig() // Load the environment-specific configuration
+	loadEnvironmentConfig()
 
 	baseUrl := providedUrl
 	if baseUrl == "" {
@@ -415,8 +416,9 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	cacheViper := viper.New()
-	cacheConfigPath := filepath.Join(homeDir, ".cfctl", "cache", "config.yaml")
+	cacheConfigPath := filepath.Join(homeDir, ".cfctl", "cache", "setting.toml")
 	cacheViper.SetConfigFile(cacheConfigPath)
+	cacheViper.SetConfigType("toml")
 
 	var userID string
 	var password string
@@ -486,7 +488,7 @@ func executeUserLogin(currentEnv string) {
 
 	// Proceed with domain ID fetching and token issuance
 	mainViper := viper.New()
-	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
+	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "setting.toml"))
 	if err := mainViper.ReadInConfig(); err != nil {
 		pterm.Error.Println("Failed to read main config file:", err)
 		exitWithError()
@@ -848,9 +850,10 @@ func saveCredentials(currentEnv, userID, password, token string) {
 		return
 	}
 
-	cacheConfigPath := filepath.Join(cacheDir, "config.yaml")
+	cacheConfigPath := filepath.Join(cacheDir, "setting.toml")
 	cacheViper := viper.New()
 	cacheViper.SetConfigFile(cacheConfigPath)
+	cacheViper.SetConfigType("toml")
 
 	if err := cacheViper.ReadInConfig(); err != nil && !os.IsNotExist(err) {
 		pterm.Error.Printf("Failed to read cache config: %v\n", err)
@@ -972,49 +975,37 @@ func loadEnvironmentConfig() {
 		exitWithError()
 	}
 
-	mainConfigPath := filepath.Join(homeDir, ".cfctl", "config.yaml")
-	cacheConfigPath := filepath.Join(homeDir, ".cfctl", "cache", "config.yaml")
+	settingPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
+	viper.SetConfigFile(settingPath)
+	viper.SetConfigType("toml")
 
-	viper.SetConfigFile(mainConfigPath)
 	if err := viper.ReadInConfig(); err != nil {
-		pterm.Error.Println("Failed to read config.yaml:", err)
+		pterm.Error.Printf("Failed to read setting file: %v\n", err)
 		exitWithError()
 	}
 
-	currentEnvironment := viper.GetString("environment")
-	if currentEnvironment == "" {
-		pterm.Error.Println("No environment specified in config.yaml")
+	currentEnv := viper.GetString("environment")
+	if currentEnv == "" {
+		pterm.Error.Println("No environment selected")
 		exitWithError()
 	}
 
-	configFound := false
-	for _, configPath := range []string{mainConfigPath, cacheConfigPath} {
-		v := viper.New()
-		v.SetConfigFile(configPath)
-		if err := v.ReadInConfig(); err == nil {
-			endpointKey := fmt.Sprintf("environments.%s.endpoint", currentEnvironment)
-			tokenKey := fmt.Sprintf("environments.%s.token", currentEnvironment)
+	v := viper.New()
+	v.SetConfigFile(settingPath)
+	if err := v.ReadInConfig(); err == nil {
+		endpointKey := fmt.Sprintf("environments.%s.endpoint", currentEnv)
+		tokenKey := fmt.Sprintf("environments.%s.token", currentEnv)
 
-			if providedUrl == "" {
-				providedUrl = v.GetString(endpointKey)
-			}
+		if providedUrl == "" {
+			providedUrl = v.GetString(endpointKey)
+		}
 
-			if token := v.GetString(tokenKey); token != "" {
-				viper.Set("token", token)
-			}
-
-			if providedUrl != "" {
-				configFound = true
-			}
+		if token := v.GetString(tokenKey); token != "" {
+			viper.Set("token", token)
 		}
 	}
 
-	if !configFound {
-		pterm.Error.Printf("No endpoint found for the current environment '%s'\n", currentEnvironment)
-		exitWithError()
-	}
-
-	isProxyEnabled := viper.GetBool(fmt.Sprintf("environments.%s.proxy", currentEnvironment))
+	isProxyEnabled := viper.GetBool(fmt.Sprintf("environments.%s.proxy", currentEnv))
 	containsIdentity := strings.Contains(strings.ToLower(providedUrl), "identity")
 
 	if !isProxyEnabled && !containsIdentity {
