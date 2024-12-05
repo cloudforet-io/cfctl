@@ -411,12 +411,7 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		pterm.Error.Println("Failed to get user home directory:", err)
-		exitWithError()
-	}
-
+	homeDir, _ := os.UserHomeDir()
 	// Get user_id from current environment
 	mainViper := viper.New()
 	settingPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
@@ -429,27 +424,24 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	userID := mainViper.GetString(fmt.Sprintf("environments.%s.user_id", currentEnv))
-	// If no user ID is found, prompt for it
 	if userID == "" {
-		// Prompt for user ID
 		userIDInput := pterm.DefaultInteractiveTextInput
 		userID, _ = userIDInput.Show("Enter your User ID")
 
-		// Save user ID to configuration
 		mainViper.Set(fmt.Sprintf("environments.%s.user_id", currentEnv), userID)
 		if err := mainViper.WriteConfig(); err != nil {
 			pterm.Error.Printf("Failed to save user ID to config: %v\n", err)
 			exitWithError()
 		}
 	} else {
-		// Show current user ID before password prompt
 		pterm.Info.Printf("Logging in as: %s\n", userID)
 	}
 
-	// Prompt for password
-	password := promptPassword()
+	// Check for valid tokens first
+	accessToken, refreshToken, newAccessToken, err := getValidTokens(currentEnv)
+	var password string
 
-	// Extract the middle part of the environment name for `name`
+	// Extract domain name from environment
 	nameParts := strings.Split(currentEnv, "-")
 	if len(nameParts) < 3 {
 		pterm.Error.Println("Environment name format is invalid.")
@@ -457,20 +449,24 @@ func executeUserLogin(currentEnv string) {
 	}
 	name := nameParts[1]
 
-	// Fetch Domain ID using the base URL and domain name
+	// Fetch Domain ID
 	domainID, err := fetchDomainID(baseUrl, name)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch Domain ID:", err)
 		exitWithError()
 	}
 
-	// Issue new tokens
-	accessToken, refreshToken, err := issueToken(baseUrl, userID, password, domainID)
-	if err != nil {
-		pterm.Error.Printf("Failed to issue token: %v\n", err)
-		exitWithError()
+	// If refresh token is not valid, get new tokens with password
+	if refreshToken == "" || isTokenExpired(refreshToken) {
+		password = promptPassword()
+		accessToken, refreshToken, err = issueToken(baseUrl, userID, password, domainID)
+		if err != nil {
+			pterm.Error.Printf("Failed to issue token: %v\n", err)
+			exitWithError()
+		}
 	}
 
+	// Create cache directory and save tokens
 	envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
 	if err := os.MkdirAll(envCacheDir, 0700); err != nil {
 		pterm.Error.Printf("Failed to create cache directory: %v\n", err)
@@ -479,7 +475,7 @@ func executeUserLogin(currentEnv string) {
 
 	pterm.Info.Printf("Logged in as %s\n", userID)
 
-	// Use the tokens
+	// Use the tokens to fetch workspaces and role
 	workspaces, err := fetchWorkspaces(baseUrl, accessToken)
 	if err != nil {
 		pterm.Error.Println("Failed to fetch workspaces:", err)
@@ -492,6 +488,7 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
+	// Determine scope and select workspace
 	scope := determineScope(roleType, len(workspaces))
 	var workspaceID string
 	if roleType == "DOMAIN_ADMIN" {
@@ -508,12 +505,13 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	// Grant new token using the refresh token
-	grantToken, err := grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
+	newAccessToken, err = grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
 	if err != nil {
 		pterm.Error.Println("Failed to retrieve new access token:", err)
 		exitWithError()
 	}
 
+	// Save all tokens
 	if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(accessToken), 0600); err != nil {
 		pterm.Error.Printf("Failed to save access token: %v\n", err)
 		exitWithError()
@@ -524,7 +522,7 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	if err := os.WriteFile(filepath.Join(envCacheDir, "grant_token"), []byte(grantToken), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(envCacheDir, "grant_token"), []byte(newAccessToken), 0600); err != nil {
 		pterm.Error.Printf("Failed to save grant token: %v\n", err)
 		exitWithError()
 	}
@@ -1655,25 +1653,42 @@ func readTokenFromFile(envDir, tokenType string) (string, error) {
 }
 
 // getValidTokens checks for existing valid tokens in the environment cache directory
-func getValidTokens(currentEnv string) (accessToken, refreshToken string, err error) {
+func getValidTokens(currentEnv string) (accessToken, refreshToken, newAccessToken string, err error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return "", "", err
+		return "", "", "", err
 	}
 
 	envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
 
-	// Try to read and validate access token
-	if accessToken, err = readTokenFromFile(envCacheDir, "access_token"); err == nil {
-		if !isTokenExpired(accessToken) {
-			// Try to read refresh token only if access token is valid
-			if refreshToken, err = readTokenFromFile(envCacheDir, "refresh_token"); err == nil {
-				if !isTokenExpired(refreshToken) {
-					return accessToken, refreshToken, nil
+	// Try to read and validate grant token first
+	if newAccessToken, err = readTokenFromFile(envCacheDir, "grant_token"); err == nil {
+		claims, err := validateAndDecodeToken(newAccessToken)
+		if err == nil {
+			// Check if token has expired
+			if exp, ok := claims["exp"].(float64); ok {
+				if time.Now().Unix() < int64(exp) {
+					accessToken, _ = readTokenFromFile(envCacheDir, "access_token")
+					refreshToken, _ = readTokenFromFile(envCacheDir, "refresh_token")
+					return accessToken, refreshToken, newAccessToken, nil
 				}
 			}
 		}
 	}
 
-	return "", "", fmt.Errorf("no valid tokens found")
+	// If grant token is invalid or expired, check refresh token
+	if accessToken, err = readTokenFromFile(envCacheDir, "access_token"); err == nil {
+		if refreshToken, err = readTokenFromFile(envCacheDir, "refresh_token"); err == nil {
+			claims, err := validateAndDecodeToken(refreshToken)
+			if err == nil {
+				if exp, ok := claims["exp"].(float64); ok {
+					if time.Now().Unix() < int64(exp) {
+						return accessToken, refreshToken, "", nil
+					}
+				}
+			}
+		}
+	}
+
+	return "", "", "", fmt.Errorf("no valid tokens found")
 }
