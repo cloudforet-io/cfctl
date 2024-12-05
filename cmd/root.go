@@ -113,7 +113,6 @@ func init() {
 	rootCmd.AddCommand(other.SettingCmd)
 	rootCmd.AddCommand(other.LoginCmd)
 	rootCmd.AddCommand(other.ShortNameCmd)
-	rootCmd.AddCommand(other.AnalyzeCmd)
 
 	// Set default group for commands without a group
 	for _, cmd := range rootCmd.Commands() {
