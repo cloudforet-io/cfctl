@@ -279,9 +279,6 @@ func loadCachedEndpoints() (map[string]string, error) {
 
 	// Create environment-specific cache directory
 	envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
-	if err := os.MkdirAll(envCacheDir, 0755); err != nil {
-		return nil, err
-	}
 
 	// Read from environment-specific cache file
 	cacheFile := filepath.Join(envCacheDir, "endpoints.toml")
@@ -348,7 +345,7 @@ func loadConfig() (*Config, error) {
 	// Try to read main setting first
 	mainV := viper.New()
 	mainV.SetConfigFile(settingFile)
-	mainV.SetConfigType("toml")  // Explicitly set config type to TOML
+	mainV.SetConfigType("toml") // Explicitly set config type to TOML
 	mainConfigErr := mainV.ReadInConfig()
 
 	if mainConfigErr != nil {
@@ -373,7 +370,7 @@ func loadConfig() (*Config, error) {
 	if endpoint == "" || token == "" {
 		cacheV := viper.New()
 		cacheV.SetConfigFile(cacheConfigFile)
-		cacheV.SetConfigType("toml")  // Explicitly set config type to TOML
+		cacheV.SetConfigType("toml") // Explicitly set config type to TOML
 
 		if err := cacheV.ReadInConfig(); err == nil {
 			// If no current environment set, try to get it from cache setting
