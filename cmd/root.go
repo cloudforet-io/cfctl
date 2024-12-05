@@ -47,8 +47,27 @@ var rootCmd = &cobra.Command{
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	err := rootCmd.Execute()
-	if err != nil {
+	args := os.Args[1:]
+
+	if len(args) > 0 {
+		// Check if the first argument is a short name
+		v := viper.New()
+		if home, err := os.UserHomeDir(); err == nil {
+			settingPath := filepath.Join(home, ".cfctl", "setting.toml")
+			v.SetConfigFile(settingPath)
+			v.SetConfigType("toml")
+
+			if err := v.ReadInConfig(); err == nil {
+				if command := v.GetString(fmt.Sprintf("short_names.%s", args[0])); command != "" {
+					// Replace the short name with the actual command
+					newArgs := append(strings.Fields(command), args[1:]...)
+					os.Args = append([]string{os.Args[0]}, newArgs...)
+				}
+			}
+		}
+	}
+
+	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
 }
@@ -90,6 +109,7 @@ func init() {
 	rootCmd.AddCommand(other.ApiResourcesCmd)
 	rootCmd.AddCommand(other.SettingCmd)
 	rootCmd.AddCommand(other.LoginCmd)
+	rootCmd.AddCommand(other.ShortNameCmd)
 
 	// Set default group for commands without a group
 	for _, cmd := range rootCmd.Commands() {
