@@ -1,10 +1,14 @@
 package cmd
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/spf13/viper"
 
@@ -56,6 +60,12 @@ func init() {
 		Title: "Available Commands:",
 	}
 	rootCmd.AddGroup(AvailableCommands)
+
+	go func() {
+		if _, err := loadCachedEndpoints(); err == nil {
+			return
+		}
+	}()
 
 	if len(os.Args) > 1 && os.Args[1] == "__complete" {
 		pterm.DisableColor()
@@ -185,14 +195,31 @@ func addDynamicServiceCommands() error {
 	// Try to load endpoints from file cache
 	endpoints, err := loadCachedEndpoints()
 	if err == nil {
-		// Store in memory for subsequent calls
 		cachedEndpointsMap = endpoints
 
-		// Create commands using cached endpoints
+		// 병렬로 커맨드 생성
+		var wg sync.WaitGroup
+		cmdChan := make(chan *cobra.Command, len(endpoints))
+
 		for serviceName := range endpoints {
-			cmd := createServiceCommand(serviceName)
+			wg.Add(1)
+			go func(svc string) {
+				defer wg.Done()
+				cmd := createServiceCommand(svc)
+				cmdChan <- cmd
+			}(serviceName)
+		}
+
+		// 별도 고루틴에서 커맨드 추가
+		go func() {
+			wg.Wait()
+			close(cmdChan)
+		}()
+
+		for cmd := range cmdChan {
 			rootCmd.AddCommand(cmd)
 		}
+
 		return nil
 	}
 
@@ -287,6 +314,15 @@ func loadCachedEndpoints() (map[string]string, error) {
 		return nil, err
 	}
 
+	cacheInfo, err := os.Stat(cacheFile)
+	if err != nil {
+		return nil, err
+	}
+
+	if time.Since(cacheInfo.ModTime()) > 24*time.Hour {
+		return nil, fmt.Errorf("cache expired")
+	}
+
 	// Parse cached endpoints from TOML
 	var endpoints map[string]string
 	if err := toml.Unmarshal(data, &endpoints); err != nil {
@@ -321,14 +357,20 @@ func saveEndpointsCache(endpoints map[string]string) error {
 		return err
 	}
 
-	// Marshal endpoints to TOML format
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+
 	data, err := toml.Marshal(endpoints)
 	if err != nil {
 		return err
 	}
 
-	// Write to environment-specific cache file
-	return os.WriteFile(filepath.Join(envCacheDir, "endpoints.toml"), data, 0644)
+	if _, err := gw.Write(data); err != nil {
+		return err
+	}
+	gw.Close()
+
+	return os.WriteFile(filepath.Join(envCacheDir, "endpoints.toml.gz"), buf.Bytes(), 0644)
 }
 
 // loadConfig loads configuration from both main and cache setting files
