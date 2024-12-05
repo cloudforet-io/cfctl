@@ -24,6 +24,7 @@ type FetchOptions struct {
 	OutputFormat    string
 	CopyToClipboard bool
 	SortBy          string
+	MinimalColumns  bool
 }
 
 // AddVerbCommands adds subcommands for each verb to the parent command
@@ -124,6 +125,7 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 					OutputFormat:    outputFormat,
 					CopyToClipboard: copyToClipboard,
 					SortBy:          sortBy,
+					MinimalColumns:  cmd.Flag("minimal").Changed,
 				}
 
 				if currentVerb == "list" && !cmd.Flags().Changed("output") {
@@ -152,6 +154,7 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 		if currentVerb == "list" {
 			verbCmd.Flags().BoolP("watch", "w", false, "Watch for changes")
 			verbCmd.Flags().StringP("sort", "s", "", "Sort by field (e.g. 'name', 'created_at')")
+			verbCmd.Flags().BoolP("minimal", "m", false, "Show minimal columns")
 		}
 
 		// Define flags for verbCmd

@@ -153,6 +153,40 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		return nil, nil
 	}
 
+	// Get hostPort based on environment prefix
+	var envPrefix string
+	if strings.HasPrefix(config.Environment, "dev-") {
+		envPrefix = "dev"
+	} else if strings.HasPrefix(config.Environment, "stg-") {
+		envPrefix = "stg"
+	}
+	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
+
+	// Configure gRPC connection
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: false,
+	}
+	creds := credentials.NewTLS(tlsConfig)
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(creds),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(10*1024*1024), // 10MB
+			grpc.MaxCallSendMsgSize(10*1024*1024), // 10MB
+		),
+	}
+
+	// Establish the connection
+	conn, err := grpc.Dial(hostPort, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("connection failed: unable to connect to %s: %v", hostPort, err)
+	}
+	defer conn.Close()
+
+	// Create reflection client for both service calls and minimal fields detection
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", config.Environments[config.Environment].Token)
+	refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	defer refClient.Reset()
+
 	// Call the service
 	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options)
 	if err != nil {
@@ -175,14 +209,14 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 				options.Parameters = append(options.Parameters, fmt.Sprintf("%s=%s", paramName, value))
 
 				// Retry the call with the new parameter
-				jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options)
+				jsonBytes, err = fetchJSONResponse(config, serviceName, verb, resourceName, options)
 				if err != nil {
 					return nil, err
 				}
 
 				// Unmarshal JSON bytes to a map
 				var respMap map[string]interface{}
-				if err := json.Unmarshal(jsonBytes, &respMap); err != nil {
+				if err = json.Unmarshal(jsonBytes, &respMap); err != nil {
 					return nil, fmt.Errorf("failed to unmarshal JSON: %v", err)
 				}
 
@@ -222,7 +256,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 							respMap["results"] = results
 						}
 					}
-					printData(respMap, options)
+					printData(respMap, options, serviceName, resourceName, refClient)
 				}
 
 				return respMap, nil
@@ -233,7 +267,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 	// Unmarshal JSON bytes to a map
 	var respMap map[string]interface{}
-	if err := json.Unmarshal(jsonBytes, &respMap); err != nil {
+	if err = json.Unmarshal(jsonBytes, &respMap); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal JSON: %v", err)
 	}
 
@@ -273,7 +307,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 				respMap["results"] = results
 			}
 		}
-		printData(respMap, options)
+		printData(respMap, options, serviceName, resourceName, refClient)
 	}
 
 	return respMap, nil
@@ -495,7 +529,7 @@ func discoverService(refClient *grpcreflect.Client, serviceName string, resource
 	return "", fmt.Errorf("service not found for %s.%s", serviceName, resourceName)
 }
 
-func printData(data map[string]interface{}, options *FetchOptions) {
+func printData(data map[string]interface{}, options *FetchOptions, serviceName, resourceName string, refClient *grpcreflect.Client) {
 	var output string
 
 	switch options.OutputFormat {
@@ -521,13 +555,13 @@ func printData(data map[string]interface{}, options *FetchOptions) {
 	case "table":
 		// Check if data has 'results' key
 		if _, ok := data["results"].([]interface{}); ok {
-			output = printTable(data)
+			output = printTable(data, options, serviceName, resourceName, refClient)
 		} else {
 			// If no 'results' key, treat the entire data as results
 			wrappedData := map[string]interface{}{
 				"results": []interface{}{data},
 			}
-			output = printTable(wrappedData)
+			output = printTable(wrappedData, options, serviceName, resourceName, refClient)
 		}
 
 	case "csv":
@@ -554,7 +588,83 @@ func printData(data map[string]interface{}, options *FetchOptions) {
 	}
 }
 
-func printTable(data map[string]interface{}) string {
+func getMinimalFields(serviceName, resourceName string, refClient *grpcreflect.Client) []string {
+	// Default minimal fields that should always be included if they exist
+	defaultFields := []string{"name", "created_at"}
+
+	// Try to get message descriptor for the resource
+	fullServiceName := fmt.Sprintf("spaceone.api.%s.v1.%s", serviceName, resourceName)
+	serviceDesc, err := refClient.ResolveService(fullServiceName)
+	if err != nil {
+		// Try v2 if v1 fails
+		fullServiceName = fmt.Sprintf("spaceone.api.%s.v2.%s", serviceName, resourceName)
+		serviceDesc, err = refClient.ResolveService(fullServiceName)
+		if err != nil {
+			return defaultFields
+		}
+	}
+
+	// Get list method descriptor
+	listMethod := serviceDesc.FindMethodByName("list")
+	if listMethod == nil {
+		return defaultFields
+	}
+
+	// Get response message descriptor
+	respDesc := listMethod.GetOutputType()
+	if respDesc == nil {
+		return defaultFields
+	}
+
+	// Find the 'results' field which should be repeated message type
+	resultsField := respDesc.FindFieldByName("results")
+	if resultsField == nil {
+		return defaultFields
+	}
+
+	// Get the message type of items in the results
+	itemMsgDesc := resultsField.GetMessageType()
+	if itemMsgDesc == nil {
+		return defaultFields
+	}
+
+	// Collect required fields and important fields
+	minimalFields := make([]string, 0)
+	fields := itemMsgDesc.GetFields()
+	for _, field := range fields {
+		// Add ID fields
+		if strings.HasSuffix(field.GetName(), "_id") {
+			minimalFields = append(minimalFields, field.GetName())
+			continue
+		}
+
+		// Add status/state fields
+		if field.GetName() == "status" || field.GetName() == "state" {
+			minimalFields = append(minimalFields, field.GetName())
+			continue
+		}
+
+		// Add timestamp fields
+		if field.GetName() == "created_at" || field.GetName() == "finished_at" {
+			minimalFields = append(minimalFields, field.GetName())
+			continue
+		}
+
+		// Add name field
+		if field.GetName() == "name" {
+			minimalFields = append(minimalFields, field.GetName())
+			continue
+		}
+	}
+
+	if len(minimalFields) == 0 {
+		return defaultFields
+	}
+
+	return minimalFields
+}
+
+func printTable(data map[string]interface{}, options *FetchOptions, serviceName, resourceName string, refClient *grpcreflect.Client) string {
 	if results, ok := data["results"].([]interface{}); ok {
 		pageSize := 10
 		currentPage := 0
@@ -584,6 +694,20 @@ func printTable(data map[string]interface{}) string {
 			headerSlice = append(headerSlice, key)
 		}
 		sort.Strings(headerSlice)
+
+		// If minimal columns are requested, only show essential fields
+		if options.MinimalColumns {
+			minimalFields := getMinimalFields(serviceName, resourceName, refClient)
+			var minimalHeaderSlice []string
+			for _, field := range minimalFields {
+				if headers[field] {
+					minimalHeaderSlice = append(minimalHeaderSlice, field)
+				}
+			}
+			if len(minimalHeaderSlice) > 0 {
+				headerSlice = minimalHeaderSlice
+			}
+		}
 
 		for {
 			if searchTerm != "" {
