@@ -471,6 +471,12 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
+	envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
+	if err := os.MkdirAll(envCacheDir, 0700); err != nil {
+		pterm.Error.Printf("Failed to create cache directory: %v\n", err)
+		exitWithError()
+	}
+
 	pterm.Info.Printf("Logged in as %s\n", userID)
 
 	// Use the tokens
@@ -508,13 +514,6 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	// Save tokens to cache
-	envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
-	if err := os.MkdirAll(envCacheDir, 0700); err != nil {
-		pterm.Error.Printf("Failed to create cache directory: %v\n", err)
-		exitWithError()
-	}
-
 	if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(accessToken), 0600); err != nil {
 		pterm.Error.Printf("Failed to save access token: %v\n", err)
 		exitWithError()
@@ -538,171 +537,6 @@ func promptPassword() string {
 	passwordInput := pterm.DefaultInteractiveTextInput.WithMask("*")
 	password, _ := passwordInput.Show("Enter your password")
 	return password
-}
-
-// Prompt for user selection, now receiving 'users' slice as an argument
-func promptUserSelection(max int, users []interface{}) int {
-	if err := keyboard.Open(); err != nil {
-		pterm.Error.Println("Failed to initialize keyboard:", err)
-		exitWithError()
-	}
-	defer keyboard.Close()
-
-	selectedIndex := 0
-	currentPage := 0
-	pageSize := 10
-	searchMode := false
-	searchTerm := ""
-	filteredUsers := users
-
-	for {
-		fmt.Print("\033[H\033[2J") // Clear the screen
-
-		// Apply search filter
-		if searchTerm != "" {
-			filteredUsers = filterUsers(users, searchTerm)
-			if len(filteredUsers) == 0 {
-				filteredUsers = users // Show all users if no search results
-			}
-		} else {
-			filteredUsers = users
-		}
-
-		// Calculate pagination
-		totalUsers := len(filteredUsers)
-		totalPages := (totalUsers + pageSize - 1) / pageSize
-		startIndex := currentPage * pageSize
-		endIndex := startIndex + pageSize
-		if endIndex > totalUsers {
-			endIndex = totalUsers
-		}
-
-		// Display header with page information
-		pterm.DefaultHeader.WithFullWidth().
-			WithBackgroundStyle(pterm.NewStyle(pterm.BgDarkGray)).
-			WithTextStyle(pterm.NewStyle(pterm.FgLightWhite)).
-			Printf("Select a user account (Page %d of %d)", currentPage+1, totalPages)
-
-		// Display option to add new user first
-		if selectedIndex == 0 {
-			pterm.Printf("→ %d: Add new user\n", 1)
-		} else {
-			pterm.Printf("  %d: Add new user\n", 1)
-		}
-
-		// Display existing users
-		for i := startIndex; i < endIndex; i++ {
-			userMap := filteredUsers[i].(map[string]interface{})
-			if i+1 == selectedIndex {
-				pterm.Printf("→ %d: %s\n", i+2, userMap["userid"].(string))
-			} else {
-				pterm.Printf("  %d: %s\n", i+2, userMap["userid"].(string))
-			}
-		}
-
-		// Show navigation help
-		pterm.DefaultBasicText.WithStyle(pterm.NewStyle(pterm.FgGray)).
-			Println("\nNavigation: [h]prev-page [j]down [k]up [l]next-page [/]search [Enter]select [q]quit")
-
-		// Show search prompt if in search mode
-		if searchMode {
-			fmt.Println()
-			pterm.Info.Printf("Search (ESC to cancel, Enter to confirm): %s", searchTerm)
-		}
-
-		// Get keyboard input
-		char, key, err := keyboard.GetKey()
-		if err != nil {
-			pterm.Error.Println("Error reading keyboard input:", err)
-			exitWithError()
-		}
-
-		// Handle search mode input
-		if searchMode {
-			switch key {
-			case keyboard.KeyEsc:
-				searchMode = false
-				searchTerm = ""
-				filteredUsers = users // Return to full user list when search term is cleared
-			case keyboard.KeyBackspace, keyboard.KeyBackspace2:
-				if len(searchTerm) > 0 {
-					searchTerm = searchTerm[:len(searchTerm)-1]
-				}
-			case keyboard.KeyEnter:
-				searchMode = false
-			default:
-				if char != 0 {
-					searchTerm += string(char)
-				}
-			}
-			currentPage = 0
-			selectedIndex = 0
-			continue
-		}
-
-		// Handle normal mode input
-		switch key {
-		case keyboard.KeyEnter:
-			if selectedIndex == 0 {
-				return len(users) + 1 // Add new user
-			} else if selectedIndex <= len(filteredUsers) {
-				// Find the original index of the selected user
-				selectedUserMap := filteredUsers[selectedIndex-1].(map[string]interface{})
-				selectedUserID := selectedUserMap["userid"].(string)
-
-				for i, user := range users {
-					userMap := user.(map[string]interface{})
-					if userMap["userid"].(string) == selectedUserID {
-						return i + 1
-					}
-				}
-			}
-		}
-
-		switch char {
-		case 'j': // Down
-			if selectedIndex < min(endIndex-startIndex, totalUsers) {
-				selectedIndex++
-			}
-		case 'k': // Up
-			if selectedIndex > 0 {
-				selectedIndex--
-			}
-		case 'l': // Next page
-			if currentPage < totalPages-1 {
-				currentPage++
-				selectedIndex = 0
-			}
-		case 'h': // Previous page
-			if currentPage > 0 {
-				currentPage--
-				selectedIndex = 0
-			}
-		case '/': // Enter search mode
-			searchMode = true
-			searchTerm = ""
-			selectedIndex = 0
-		case 'q', 'Q':
-			fmt.Println()
-			pterm.Error.Println("User selection cancelled.")
-			os.Exit(1)
-		}
-	}
-}
-
-// filterUsers filters the users list based on the search term
-func filterUsers(users []interface{}, searchTerm string) []interface{} {
-	var filtered []interface{}
-	searchTerm = strings.ToLower(searchTerm)
-
-	for _, user := range users {
-		userMap := user.(map[string]interface{})
-		userid := strings.ToLower(userMap["userid"].(string))
-		if strings.Contains(userid, searchTerm) {
-			filtered = append(filtered, user)
-		}
-	}
-	return filtered
 }
 
 // min returns the minimum of two integers
