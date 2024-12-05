@@ -188,6 +188,40 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 				// Print the data if not in watch mode
 				if options.OutputFormat != "" {
+					if options.SortBy != "" && verb == "list" {
+						if results, ok := respMap["results"].([]interface{}); ok {
+							// Sort the results by the specified field
+							sort.Slice(results, func(i, j int) bool {
+								iMap := results[i].(map[string]interface{})
+								jMap := results[j].(map[string]interface{})
+
+								iVal, iOk := iMap[options.SortBy]
+								jVal, jOk := jMap[options.SortBy]
+
+								// Handle cases where the field doesn't exist
+								if !iOk && !jOk {
+									return false
+								} else if !iOk {
+									return false
+								} else if !jOk {
+									return true
+								}
+
+								// Compare based on type
+								switch v := iVal.(type) {
+								case string:
+									return v < jVal.(string)
+								case float64:
+									return v < jVal.(float64)
+								case bool:
+									return !v && jVal.(bool)
+								default:
+									return false
+								}
+							})
+							respMap["results"] = results
+						}
+					}
 					printData(respMap, options)
 				}
 
@@ -205,6 +239,40 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 	// Print the data if not in watch mode
 	if options.OutputFormat != "" {
+		if options.SortBy != "" && verb == "list" {
+			if results, ok := respMap["results"].([]interface{}); ok {
+				// Sort the results by the specified field
+				sort.Slice(results, func(i, j int) bool {
+					iMap := results[i].(map[string]interface{})
+					jMap := results[j].(map[string]interface{})
+
+					iVal, iOk := iMap[options.SortBy]
+					jVal, jOk := jMap[options.SortBy]
+
+					// Handle cases where the field doesn't exist
+					if !iOk && !jOk {
+						return false
+					} else if !iOk {
+						return false
+					} else if !jOk {
+						return true
+					}
+
+					// Compare based on type
+					switch v := iVal.(type) {
+					case string:
+						return v < jVal.(string)
+					case float64:
+						return v < jVal.(float64)
+					case bool:
+						return !v && jVal.(bool)
+					default:
+						return false
+					}
+				})
+				respMap["results"] = results
+			}
+		}
 		printData(respMap, options)
 	}
 
