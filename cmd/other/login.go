@@ -423,24 +423,6 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	userID := mainViper.GetString(fmt.Sprintf("environments.%s.user_id", currentEnv))
-	if userID == "" {
-		userIDInput := pterm.DefaultInteractiveTextInput
-		userID, _ = userIDInput.Show("Enter your User ID")
-
-		mainViper.Set(fmt.Sprintf("environments.%s.user_id", currentEnv), userID)
-		if err := mainViper.WriteConfig(); err != nil {
-			pterm.Error.Printf("Failed to save user ID to config: %v\n", err)
-			exitWithError()
-		}
-	} else {
-		pterm.Info.Printf("Logging in as: %s\n", userID)
-	}
-
-	// Check for valid tokens first
-	accessToken, refreshToken, newAccessToken, err := getValidTokens(currentEnv)
-	var password string
-
 	// Extract domain name from environment
 	nameParts := strings.Split(currentEnv, "-")
 	if len(nameParts) < 3 {
@@ -456,13 +438,38 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	// If refresh token is not valid, get new tokens with password
-	if refreshToken == "" || isTokenExpired(refreshToken) {
-		password = promptPassword()
-		accessToken, refreshToken, err = issueToken(baseUrl, userID, password, domainID)
+	// Check for existing user_id in config
+	userID := mainViper.GetString(fmt.Sprintf("environments.%s.user_id", currentEnv))
+	var tempUserID string
+
+	if userID == "" {
+		userIDInput := pterm.DefaultInteractiveTextInput
+		tempUserID, _ = userIDInput.Show("Enter your User ID")
+	} else {
+		tempUserID = userID
+		pterm.Info.Printf("Logging in as: %s\n", userID)
+	}
+
+	accessToken, refreshToken, newAccessToken, err := getValidTokens(currentEnv)
+	if err == nil && refreshToken != "" && !isTokenExpired(refreshToken) {
+		// Use existing valid refresh token
+		accessToken = newAccessToken
+	} else {
+		// Get new tokens with password
+		password := promptPassword()
+		accessToken, refreshToken, err = issueToken(baseUrl, tempUserID, password, domainID)
 		if err != nil {
 			pterm.Error.Printf("Failed to issue token: %v\n", err)
 			exitWithError()
+		}
+
+		// Only save user_id after successful token issue
+		if userID == "" {
+			mainViper.Set(fmt.Sprintf("environments.%s.user_id", currentEnv), tempUserID)
+			if err := mainViper.WriteConfig(); err != nil {
+				pterm.Error.Printf("Failed to save user ID to config: %v\n", err)
+				exitWithError()
+			}
 		}
 	}
 
@@ -473,7 +480,7 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	pterm.Info.Printf("Logged in as %s\n", userID)
+	pterm.Info.Printf("Logged in as %s\n", tempUserID)
 
 	// Use the tokens to fetch workspaces and role
 	workspaces, err := fetchWorkspaces(baseUrl, accessToken)

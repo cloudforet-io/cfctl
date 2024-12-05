@@ -165,9 +165,9 @@ func showInitializationGuide(originalErr error) {
 
 			pterm.Info.Println("After updating the token, please try your command again.")
 		} else {
-			// Show user login guide
 			pterm.Warning.Printf("Authentication required.\n")
-			pterm.Info.Println("Please run 'cfctl login' to authenticate.")
+			pterm.Info.Println("To see Available Commands, please authenticate first:")
+			pterm.Info.Println("$ cfctl login")
 		}
 	}
 }
@@ -338,87 +338,51 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("unable to find home directory: %v", err)
 	}
 
-	// Change file extension from .yaml to .toml
 	settingFile := filepath.Join(home, ".cfctl", "setting.toml")
-	cacheConfigFile := filepath.Join(home, ".cfctl", "cache", "setting.toml")
 
-	// Try to read main setting first
+	// Read main setting file
 	mainV := viper.New()
 	mainV.SetConfigFile(settingFile)
-	mainV.SetConfigType("toml") // Explicitly set config type to TOML
-	mainConfigErr := mainV.ReadInConfig()
-
-	if mainConfigErr != nil {
+	mainV.SetConfigType("toml")
+	if err := mainV.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read setting file")
 	}
 
-	var currentEnv string
-	var endpoint string
-	var token string
-
-	// Main setting exists, try to get environment
-	currentEnv = mainV.GetString("environment")
-	if currentEnv != "" {
-		envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
-		if envConfig != nil {
-			endpoint = envConfig.GetString("endpoint")
-			token = envConfig.GetString("token")
-		}
+	currentEnv := mainV.GetString("environment")
+	if currentEnv == "" {
+		return nil, fmt.Errorf("no environment set")
 	}
 
-	// If main setting doesn't have what we need, try cache setting
-	if endpoint == "" || token == "" {
-		cacheV := viper.New()
-		cacheV.SetConfigFile(cacheConfigFile)
-		cacheV.SetConfigType("toml") // Explicitly set config type to TOML
-
-		if err := cacheV.ReadInConfig(); err == nil {
-			// If no current environment set, try to get it from cache setting
-			if currentEnv == "" {
-				currentEnv = cacheV.GetString("environment")
-			}
-
-			// Try to get environment setting from cache
-			if currentEnv != "" {
-				envConfig := cacheV.Sub(fmt.Sprintf("environments.%s", currentEnv))
-				if envConfig != nil {
-					if endpoint == "" {
-						endpoint = envConfig.GetString("endpoint")
-					}
-					if token == "" {
-						token = envConfig.GetString("token")
-					}
-				}
-			}
-
-			// If still no environment, try to find first user environment
-			if currentEnv == "" {
-				envs := cacheV.GetStringMap("environments")
-				for env := range envs {
-					if strings.HasSuffix(env, "-user") {
-						currentEnv = env
-						envConfig := cacheV.Sub(fmt.Sprintf("environments.%s", currentEnv))
-						if envConfig != nil {
-							if endpoint == "" {
-								endpoint = envConfig.GetString("endpoint")
-							}
-							if token == "" {
-								token = envConfig.GetString("token")
-							}
-							break
-						}
-					}
-				}
-			}
-		}
+	// Get environment config
+	envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
+	if envConfig == nil {
+		return nil, fmt.Errorf("environment %s not found", currentEnv)
 	}
 
+	endpoint := envConfig.GetString("endpoint")
 	if endpoint == "" {
 		return nil, fmt.Errorf("no endpoint found in configuration")
 	}
 
-	if token == "" {
-		return nil, fmt.Errorf("no token found in configuration")
+	var token string
+	// Check environment suffix
+	if strings.HasSuffix(currentEnv, "-user") {
+		// For user environments, read from cache directory
+		envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
+		grantTokenPath := filepath.Join(envCacheDir, "grant_token")
+		data, err := os.ReadFile(grantTokenPath)
+		if err != nil {
+			return nil, fmt.Errorf("no valid token found in cache")
+		}
+		token = string(data)
+	} else if strings.HasSuffix(currentEnv, "-app") {
+		// For app environments, read from setting.toml
+		token = envConfig.GetString("token")
+		if token == "" {
+			return nil, fmt.Errorf("no token found in configuration")
+		}
+	} else {
+		return nil, fmt.Errorf("invalid environment suffix: must end with -user or -app")
 	}
 
 	return &Config{
