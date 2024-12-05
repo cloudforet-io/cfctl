@@ -51,7 +51,8 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 	// Read configuration file
 	mainViper := viper.New()
-	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
+	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "setting.toml"))
+	mainViper.SetConfigType("toml")
 	if err := mainViper.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read configuration file. Please run 'cfctl login' first")
 	}
@@ -62,13 +63,13 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		return nil, fmt.Errorf("no environment set. Please run 'cfctl login' first")
 	}
 
-	// Load configuration first (including cache)
+	// Load configuration first
 	config, err := loadConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
 
-	// Check token from both main config and cache
+	// Check token
 	token := config.Environments[config.Environment].Token
 	if token == "" {
 		pterm.Error.Println("No token found for authentication.")
@@ -179,8 +180,9 @@ func loadConfig() (*Config, error) {
 
 	// Load main configuration file
 	mainV := viper.New()
-	mainConfigPath := filepath.Join(home, ".cfctl", "config.yaml")
+	mainConfigPath := filepath.Join(home, ".cfctl", "setting.toml")
 	mainV.SetConfigFile(mainConfigPath)
+	mainV.SetConfigType("toml")
 	if err := mainV.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read config file: %v", err)
 	}
@@ -190,21 +192,23 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("no environment set in config")
 	}
 
-	// First try to get environment config from main config file
+	// Get environment config from main config file
 	envConfig := &Environment{
 		Endpoint: mainV.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv)),
-		Token:    mainV.GetString(fmt.Sprintf("environments.%s.token", currentEnv)),
 		Proxy:    mainV.GetString(fmt.Sprintf("environments.%s.proxy", currentEnv)),
 	}
 
-	// If it's a -user environment and token is empty, try to get token from cache config
-	if strings.HasSuffix(currentEnv, "-user") && envConfig.Token == "" {
-		cacheV := viper.New()
-		cacheConfigPath := filepath.Join(home, ".cfctl", "cache", "config.yaml")
-		cacheV.SetConfigFile(cacheConfigPath)
-		if err := cacheV.ReadInConfig(); err == nil {
-			envConfig.Token = cacheV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+	// Handle token based on environment type
+	if strings.HasSuffix(currentEnv, "-user") {
+		// For user environments, read from grant_token file
+		grantTokenPath := filepath.Join(home, ".cfctl", "cache", currentEnv, "grant_token")
+		tokenBytes, err := os.ReadFile(grantTokenPath)
+		if err == nil {
+			envConfig.Token = strings.TrimSpace(string(tokenBytes))
 		}
+	} else if strings.HasSuffix(currentEnv, "-app") {
+		// For app environments, get token from main config
+		envConfig.Token = mainV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
 	}
 
 	if envConfig == nil {
