@@ -383,18 +383,24 @@ func fetchServiceResources(service, endpoint string, shortNamesMap map[string]st
         verbsWithShortNames := make(map[string]string)
         remainingVerbs := make([]string, 0)
 
-        for _, verb := range verbs {
-            hasShortName := false
-            for sn, cmd := range registeredShortNames {
-                if strings.Contains(cmd, fmt.Sprintf("%s %s %s", service, verb, resourceName)) {
-                    verbsWithShortNames[verb] = sn
-                    hasShortName = true
-                    break
+        // Get service-specific short names
+        serviceShortNames := registeredShortNames[service]
+        if serviceMap, ok := serviceShortNames.(map[string]interface{}); ok {
+            for _, verb := range verbs {
+                hasShortName := false
+                for sn, cmd := range serviceMap {
+                    if strings.Contains(cmd.(string), fmt.Sprintf("%s %s", verb, resourceName)) {
+                        verbsWithShortNames[verb] = sn
+                        hasShortName = true
+                        break
+                    }
+                }
+                if !hasShortName {
+                    remainingVerbs = append(remainingVerbs, verb)
                 }
             }
-            if !hasShortName {
-                remainingVerbs = append(remainingVerbs, verb)
-            }
+        } else {
+            remainingVerbs = verbs
         }
         
         // Add row for verbs without short names

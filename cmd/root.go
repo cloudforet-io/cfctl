@@ -49,8 +49,8 @@ var rootCmd = &cobra.Command{
 func Execute() {
 	args := os.Args[1:]
 
-	if len(args) > 0 {
-		// Check if the first argument is a short name
+	if len(args) > 1 {
+		// Check if the first argument is a service name and second is a short name
 		v := viper.New()
 		if home, err := os.UserHomeDir(); err == nil {
 			settingPath := filepath.Join(home, ".cfctl", "setting.toml")
@@ -58,9 +58,12 @@ func Execute() {
 			v.SetConfigType("toml")
 
 			if err := v.ReadInConfig(); err == nil {
-				if command := v.GetString(fmt.Sprintf("short_names.%s", args[0])); command != "" {
+				serviceName := args[0]
+				shortName := args[1]
+				if command := v.GetString(fmt.Sprintf("short_names.%s.%s", serviceName, shortName)); command != "" {
 					// Replace the short name with the actual command
-					newArgs := append(strings.Fields(command), args[1:]...)
+					newArgs := append([]string{args[0]}, strings.Fields(command)...)
+					newArgs = append(newArgs, args[2:]...)
 					os.Args = append([]string{os.Args[0]}, newArgs...)
 				}
 			}
@@ -460,12 +463,50 @@ func createServiceCommand(serviceName string) *cobra.Command {
 		Short:   fmt.Sprintf("Interact with the %s service", serviceName),
 		Long:    fmt.Sprintf(`Use this command to interact with the %s service.`, serviceName),
 		GroupID: "available",
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// If no args provided, show available verbs
 			if len(args) == 0 {
 				common.PrintAvailableVerbs(cmd)
-				return
+				return nil
 			}
-			cmd.Help()
+
+			// Process command arguments
+			if len(args) < 2 {
+				return cmd.Help()
+			}
+
+			verb := args[0]
+			resource := args[1]
+
+			// Create options from remaining args
+			options := &common.FetchOptions{
+				Parameters: make([]string, 0),
+			}
+
+			// Process remaining args as parameters
+			for i := 2; i < len(args); i++ {
+				if strings.HasPrefix(args[i], "--") {
+					paramName := strings.TrimPrefix(args[i], "--")
+					if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
+						options.Parameters = append(options.Parameters, fmt.Sprintf("%s=%s", paramName, args[i+1]))
+						i++
+					}
+				}
+			}
+
+			// Call FetchService with the processed arguments
+			result, err := common.FetchService(serviceName, verb, resource, options)
+			if err != nil {
+				pterm.Error.Printf("Failed to execute command: %v\n", err)
+				return err
+			}
+
+			if result != nil {
+				// The result will be printed by FetchService if needed
+				return nil
+			}
+
+			return nil
 		},
 	}
 
