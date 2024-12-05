@@ -248,7 +248,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 								case float64:
 									return v < jVal.(float64)
 								case bool:
-									return !v && jVal.(bool)
+									return v && !jVal.(bool)
 								default:
 									return false
 								}
@@ -256,6 +256,37 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 							respMap["results"] = results
 						}
 					}
+
+					// Apply limit if specified
+					if options.Limit > 0 && verb == "list" {
+						if results, ok := respMap["results"].([]interface{}); ok {
+							if len(results) > options.Limit {
+								respMap["results"] = results[:options.Limit]
+							}
+						}
+					}
+
+					// Filter columns if specified
+					if options.Columns != "" && verb == "list" {
+						if results, ok := respMap["results"].([]interface{}); ok {
+							columns := strings.Split(options.Columns, ",")
+							filteredResults := make([]interface{}, len(results))
+							
+							for i, result := range results {
+								if resultMap, ok := result.(map[string]interface{}); ok {
+									filteredMap := make(map[string]interface{})
+									for _, col := range columns {
+										if val, exists := resultMap[strings.TrimSpace(col)]; exists {
+											filteredMap[strings.TrimSpace(col)] = val
+										}
+									}
+									filteredResults[i] = filteredMap
+								}
+							}
+							respMap["results"] = filteredResults
+						}
+					}
+
 					printData(respMap, options, serviceName, resourceName, refClient)
 				}
 
@@ -299,7 +330,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 					case float64:
 						return v < jVal.(float64)
 					case bool:
-						return !v && jVal.(bool)
+						return v && !jVal.(bool)
 					default:
 						return false
 					}
@@ -307,6 +338,37 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 				respMap["results"] = results
 			}
 		}
+
+		// Apply limit if specified
+		if options.Limit > 0 && verb == "list" {
+			if results, ok := respMap["results"].([]interface{}); ok {
+				if len(results) > options.Limit {
+					respMap["results"] = results[:options.Limit]
+				}
+			}
+		}
+
+		// Filter columns if specified
+		if options.Columns != "" && verb == "list" {
+			if results, ok := respMap["results"].([]interface{}); ok {
+				columns := strings.Split(options.Columns, ",")
+				filteredResults := make([]interface{}, len(results))
+				
+				for i, result := range results {
+					if resultMap, ok := result.(map[string]interface{}); ok {
+						filteredMap := make(map[string]interface{})
+						for _, col := range columns {
+							if val, exists := resultMap[strings.TrimSpace(col)]; exists {
+								filteredMap[strings.TrimSpace(col)] = val
+							}
+						}
+						filteredResults[i] = filteredMap
+					}
+				}
+				respMap["results"] = filteredResults
+			}
+		}
+
 		printData(respMap, options, serviceName, resourceName, refClient)
 	}
 

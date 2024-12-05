@@ -25,6 +25,8 @@ type FetchOptions struct {
 	CopyToClipboard bool
 	SortBy          string
 	MinimalColumns  bool
+	Columns         string
+	Limit           int
 }
 
 // AddVerbCommands adds subcommands for each verb to the parent command
@@ -113,8 +115,12 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 				}
 
 				sortBy := ""
+				columns := ""
+				limit := 0
 				if currentVerb == "list" {
 					sortBy, _ = cmd.Flags().GetString("sort")
+					columns, _ = cmd.Flags().GetString("columns")
+					limit, _ = cmd.Flags().GetInt("limit")
 				}
 
 				options := &FetchOptions{
@@ -126,6 +132,8 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 					CopyToClipboard: copyToClipboard,
 					SortBy:          sortBy,
 					MinimalColumns:  cmd.Flag("minimal").Changed,
+					Columns:         columns,
+					Limit:           limit,
 				}
 
 				if currentVerb == "list" && !cmd.Flags().Changed("output") {
@@ -155,6 +163,8 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 			verbCmd.Flags().BoolP("watch", "w", false, "Watch for changes")
 			verbCmd.Flags().StringP("sort", "s", "", "Sort by field (e.g. 'name', 'created_at')")
 			verbCmd.Flags().BoolP("minimal", "m", false, "Show minimal columns")
+			verbCmd.Flags().StringP("columns", "c", "", "Specific columns (-c id,name)")
+			verbCmd.Flags().IntP("limit", "l", 0, "Number of rows")
 		}
 
 		// Define flags for verbCmd
@@ -163,7 +173,7 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 		verbCmd.Flags().StringP("file-parameter", "f", "", "YAML file parameter")
 		verbCmd.Flags().StringP("api-version", "v", "v1", "API Version")
 		verbCmd.Flags().StringP("output", "o", "yaml", "Output format (yaml, json, table, csv)")
-		verbCmd.Flags().BoolP("copy", "c", false, "Copy the output to the clipboard (copies any output format)")
+		verbCmd.Flags().BoolP("copy", "y", false, "Copy the output to the clipboard (copies any output format)")
 
 		// Set custom help function
 		verbCmd.SetHelpFunc(CustomVerbHelpFunc)
