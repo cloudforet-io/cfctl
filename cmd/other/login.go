@@ -441,10 +441,10 @@ func executeUserLogin(currentEnv string) {
 			pterm.Error.Printf("Failed to save user ID to config: %v\n", err)
 			exitWithError()
 		}
+	} else {
+		// Show current user ID before password prompt
+		pterm.Info.Printf("Logging in as: %s\n", userID)
 	}
-
-	// Display the current user ID
-	pterm.Info.Printf("Logged in as: %s\n", userID)
 
 	// Prompt for password
 	password := promptPassword()
@@ -470,6 +470,8 @@ func executeUserLogin(currentEnv string) {
 		pterm.Error.Printf("Failed to issue token: %v\n", err)
 		exitWithError()
 	}
+
+	pterm.Info.Printf("Logged in as %s\n", userID)
 
 	// Use the tokens
 	workspaces, err := fetchWorkspaces(baseUrl, accessToken)
