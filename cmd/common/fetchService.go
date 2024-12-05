@@ -568,16 +568,22 @@ func printTable(data map[string]interface{}) string {
 		}
 		defer keyboard.Close()
 
-		// Extract headers
-		headers := []string{}
-		if len(results) > 0 {
-			if row, ok := results[0].(map[string]interface{}); ok {
+		// Extract headers from all results to ensure we get all possible fields
+		headers := make(map[string]bool)
+		for _, result := range results {
+			if row, ok := result.(map[string]interface{}); ok {
 				for key := range row {
-					headers = append(headers, key)
+					headers[key] = true
 				}
-				sort.Strings(headers)
 			}
 		}
+
+		// Convert headers map to sorted slice
+		headerSlice := make([]string, 0, len(headers))
+		for key := range headers {
+			headerSlice = append(headerSlice, key)
+		}
+		sort.Strings(headerSlice)
 
 		for {
 			if searchTerm != "" {
@@ -589,7 +595,7 @@ func printTable(data map[string]interface{}) string {
 			totalItems := len(filteredResults)
 			totalPages := (totalItems + pageSize - 1) / pageSize
 
-			tableData := pterm.TableData{headers}
+			tableData := pterm.TableData{headerSlice}
 
 			// Calculate current page items
 			startIdx := currentPage * pageSize
@@ -608,8 +614,8 @@ func printTable(data map[string]interface{}) string {
 			// Add rows for current page using filteredResults
 			for _, result := range filteredResults[startIdx:endIdx] {
 				if row, ok := result.(map[string]interface{}); ok {
-					rowData := make([]string, len(headers))
-					for i, key := range headers {
+					rowData := make([]string, len(headerSlice))
+					for i, key := range headerSlice {
 						rowData[i] = formatTableValue(row[key])
 					}
 					tableData = append(tableData, rowData)
@@ -799,3 +805,4 @@ func formatCSVValue(val interface{}) string {
 		return fmt.Sprintf("%v", v)
 	}
 }
+
