@@ -476,8 +476,8 @@ func printTable(data map[string]interface{}) string {
 				fmt.Printf("Search: %s (Found: %d items)\n", searchTerm, totalItems)
 			}
 
-			// Add rows for current page
-			for _, result := range results[startIdx:endIdx] {
+			// Add rows for current page using filteredResults
+			for _, result := range filteredResults[startIdx:endIdx] {
 				if row, ok := result.(map[string]interface{}); ok {
 					rowData := make([]string, len(headers))
 					for i, key := range headers {
@@ -532,7 +532,6 @@ func printTable(data map[string]interface{}) string {
 			}
 		}
 	} else {
-		// 단일 객체인 경우 (get 명령어)
 		headers := make([]string, 0)
 		for key := range data {
 			headers = append(headers, key)
@@ -559,7 +558,6 @@ func filterResults(results []interface{}, searchTerm string) []interface{} {
 
 	for _, result := range results {
 		if row, ok := result.(map[string]interface{}); ok {
-			// 모든 필드에서 검색
 			for _, value := range row {
 				strValue := strings.ToLower(fmt.Sprintf("%v", value))
 				if strings.Contains(strValue, searchTerm) {
