@@ -23,6 +23,8 @@ type FetchOptions struct {
 	APIVersion      string
 	OutputFormat    string
 	CopyToClipboard bool
+	SortBy          string
+	MinimalColumns  bool
 }
 
 // AddVerbCommands adds subcommands for each verb to the parent command
@@ -50,7 +52,32 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 		verbCmd := &cobra.Command{
 			Use:   currentVerb + " <resource>",
 			Short: shortDesc,
-			Args:  cobra.ArbitraryArgs, // Allow any number of arguments
+			Long: fmt.Sprintf(`Supported %d resources for %s command.
+
+%s
+
+%s`,
+				len(resources),
+				currentVerb,
+				pterm.DefaultBox.WithTitle("Interactive Mode").WithTitleTopCenter().Sprint(
+					func() string {
+						str, _ := pterm.DefaultBulletList.WithItems([]pterm.BulletListItem{
+							{Level: 0, Text: "Required parameters will be prompted if not provided"},
+							{Level: 0, Text: "Missing parameters will be requested interactively"},
+							{Level: 0, Text: "Just follow the prompts to fill in the required fields"},
+						}).Srender()
+						return str
+					}()),
+				pterm.DefaultBox.WithTitle("Example").WithTitleTopCenter().Sprint(
+					fmt.Sprintf("List resources:\n"+
+						"  $ cfctl %s list <Resource>\n\n"+
+						"List and sort by field:\n"+
+						"  $ cfctl %s list <Resource> -s name\n"+
+						"  $ cfctl %s list <Resource> -s created_at\n\n"+
+						"Watch for changes:\n"+
+						"  $ cfctl %s list <Resource> -w",
+						serviceName, serviceName, serviceName, serviceName))),
+			Args: cobra.ArbitraryArgs, // Allow any number of arguments
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if len(args) != 1 {
 					// Display the help message
@@ -85,6 +112,11 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 					return err
 				}
 
+				sortBy := ""
+				if currentVerb == "list" {
+					sortBy, _ = cmd.Flags().GetString("sort")
+				}
+
 				options := &FetchOptions{
 					Parameters:      parameters,
 					JSONParameter:   jsonParameter,
@@ -92,6 +124,8 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 					APIVersion:      apiVersion,
 					OutputFormat:    outputFormat,
 					CopyToClipboard: copyToClipboard,
+					SortBy:          sortBy,
+					MinimalColumns:  cmd.Flag("minimal").Changed,
 				}
 
 				if currentVerb == "list" && !cmd.Flags().Changed("output") {
@@ -119,6 +153,8 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 
 		if currentVerb == "list" {
 			verbCmd.Flags().BoolP("watch", "w", false, "Watch for changes")
+			verbCmd.Flags().StringP("sort", "s", "", "Sort by field (e.g. 'name', 'created_at')")
+			verbCmd.Flags().BoolP("minimal", "m", false, "Show minimal columns")
 		}
 
 		// Define flags for verbCmd
@@ -131,6 +167,35 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 
 		// Set custom help function
 		verbCmd.SetHelpFunc(CustomVerbHelpFunc)
+
+		// Update example for list command
+		if currentVerb == "list" {
+			verbCmd.Long = fmt.Sprintf(`Supported %d resources for %s command.
+
+%s
+
+%s`,
+				len(resources),
+				currentVerb,
+				pterm.DefaultBox.WithTitle("Interactive Mode").WithTitleTopCenter().Sprint(
+					func() string {
+						str, _ := pterm.DefaultBulletList.WithItems([]pterm.BulletListItem{
+							{Level: 0, Text: "Required parameters will be prompted if not provided"},
+							{Level: 0, Text: "Missing parameters will be requested interactively"},
+							{Level: 0, Text: "Just follow the prompts to fill in the required fields"},
+						}).Srender()
+						return str
+					}()),
+				pterm.DefaultBox.WithTitle("Example").WithTitleTopCenter().Sprint(
+					fmt.Sprintf("List resources:\n"+
+						"  $ cfctl %s list <Resource>\n\n"+
+						"List and sort by field:\n"+
+						"  $ cfctl %s list <Resource> -s name\n"+
+						"  $ cfctl %s list <Resource> -s created_at\n\n"+
+						"Watch for changes:\n"+
+						"  $ cfctl %s list <Resource> -w",
+						serviceName, serviceName, serviceName, serviceName)))
+		}
 
 		parentCmd.AddCommand(verbCmd)
 	}

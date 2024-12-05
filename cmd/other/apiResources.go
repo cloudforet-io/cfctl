@@ -55,7 +55,7 @@ func loadEndpointsFromCache(currentEnv string) (map[string]string, error) {
 }
 
 var ApiResourcesCmd = &cobra.Command{
-	Use:   "api-resources",
+	Use:   "api_resources",
 	Short: "Displays supported API resources",
 	Run: func(cmd *cobra.Command, args []string) {
 		home, err := os.UserHomeDir()
@@ -64,7 +64,7 @@ var ApiResourcesCmd = &cobra.Command{
 		}
 
 		settingPath := filepath.Join(home, ".cfctl", "setting.toml")
-		
+
 		// Read main setting file
 		mainV := viper.New()
 		mainV.SetConfigFile(settingPath)
@@ -366,18 +366,55 @@ func fetchServiceResources(service, endpoint string, shortNamesMap map[string]st
 	}
 
 	services := resp.GetListServicesResponse().Service
-	data := [][]string{}
-	for _, s := range services {
-		if strings.HasPrefix(s.Name, "grpc.reflection.v1alpha.") {
-			continue
-		}
-		resourceName := s.Name[strings.LastIndex(s.Name, ".")+1:]
-		verbs := getServiceMethods(client, s.Name)
-		shortName := shortNamesMap[fmt.Sprintf("%s.%s", service, resourceName)]
-		data = append(data, []string{service, resourceName, shortName, strings.Join(verbs, ", ")})
-	}
+	registeredShortNames, err := listShortNames()
+    if err != nil {
+        return nil, fmt.Errorf("failed to load short names: %v", err)
+    }
 
-	return data, nil
+    data := [][]string{}
+    for _, s := range services {
+        if strings.HasPrefix(s.Name, "grpc.reflection.v1alpha.") {
+            continue
+        }
+        resourceName := s.Name[strings.LastIndex(s.Name, ".")+1:]
+        verbs := getServiceMethods(client, s.Name)
+        
+        // Find all matching short names for this resource
+        verbsWithShortNames := make(map[string]string)
+        remainingVerbs := make([]string, 0)
+
+        // Get service-specific short names
+        serviceShortNames := registeredShortNames[service]
+        if serviceMap, ok := serviceShortNames.(map[string]interface{}); ok {
+            for _, verb := range verbs {
+                hasShortName := false
+                for sn, cmd := range serviceMap {
+                    if strings.Contains(cmd.(string), fmt.Sprintf("%s %s", verb, resourceName)) {
+                        verbsWithShortNames[verb] = sn
+                        hasShortName = true
+                        break
+                    }
+                }
+                if !hasShortName {
+                    remainingVerbs = append(remainingVerbs, verb)
+                }
+            }
+        } else {
+            remainingVerbs = verbs
+        }
+        
+        // Add row for verbs without short names
+        if len(remainingVerbs) > 0 {
+            data = append(data, []string{service, resourceName, "", strings.Join(remainingVerbs, ", ")})
+        }
+        
+        // Add separate rows for each verb with a short name
+        for verb, shortName := range verbsWithShortNames {
+            data = append(data, []string{service, resourceName, shortName, verb})
+        }
+    }
+
+    return data, nil
 }
 
 func getServiceMethods(client grpc_reflection_v1alpha.ServerReflectionClient, serviceName string) []string {

@@ -21,6 +21,12 @@ import (
 	"github.com/jhump/protoreflect/grpcreflect"
 )
 
+func convertServiceNameToEndpoint(serviceName string) string {
+	// cost_analysis -> cost-analysis
+	// file_manager -> file-manager
+	return strings.ReplaceAll(serviceName, "_", "-")
+}
+
 // BuildVerbResourceMap builds a mapping from verbs to resources for a given service
 func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 	config, err := loadConfig()
@@ -36,7 +42,10 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 	} else {
 		return nil, fmt.Errorf("unsupported environment prefix")
 	}
-	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
+
+	// Convert service name to endpoint format
+	endpointServiceName := convertServiceNameToEndpoint(serviceName)
+	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", endpointServiceName, envPrefix)
 
 	// Configure gRPC connection
 	var opts []grpc.DialOption

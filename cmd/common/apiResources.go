@@ -14,6 +14,7 @@ import (
 
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pterm/pterm"
+	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
@@ -121,7 +122,31 @@ func fetchServiceResources(serviceName, endpoint string, shortNamesMap map[strin
 		return nil, fmt.Errorf("failed to list services: %v", err)
 	}
 
+	// Load short names from setting.toml
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home directory: %v", err)
+	}
+
+	settingPath := filepath.Join(home, ".cfctl", "setting.toml")
+	v := viper.New()
+	v.SetConfigFile(settingPath)
+	v.SetConfigType("toml")
+
+	serviceShortNames := make(map[string]string)
+	if err := v.ReadInConfig(); err == nil {
+		// Get short names for this service
+		shortNamesSection := v.GetStringMap(fmt.Sprintf("short_names.%s", serviceName))
+		for shortName, cmd := range shortNamesSection {
+			if cmdStr, ok := cmd.(string); ok {
+				serviceShortNames[shortName] = cmdStr
+			}
+		}
+	}
+
 	data := [][]string{}
+	resourceData := make(map[string][][]string)
+
 	for _, s := range services {
 		if strings.HasPrefix(s, "grpc.reflection.") {
 			continue
@@ -137,64 +162,67 @@ func fetchServiceResources(serviceName, endpoint string, shortNamesMap map[strin
 		}
 
 		resourceName := s[strings.LastIndex(s, ".")+1:]
-		shortName := shortNamesMap[fmt.Sprintf("%s.%s", serviceName, resourceName)]
-
 		verbs := []string{}
 		for _, method := range serviceDesc.GetMethods() {
 			verbs = append(verbs, method.GetName())
 		}
 
-		data = append(data, []string{strings.Join(verbs, ", "), resourceName, shortName})
+		// Create a map to track which verbs have been used in short names
+		usedVerbs := make(map[string]bool)
+		resourceRows := [][]string{}
+
+		// First, check for verbs with short names
+		for shortName, cmdStr := range serviceShortNames {
+			parts := strings.Fields(cmdStr)
+			if len(parts) == 2 && parts[1] == resourceName {
+				verb := parts[0]
+				usedVerbs[verb] = true
+				// Add a row for the verb with short name
+				resourceRows = append(resourceRows, []string{serviceName, verb, resourceName, shortName})
+			}
+		}
+
+		// Then add remaining verbs
+		remainingVerbs := []string{}
+		for _, verb := range verbs {
+			if !usedVerbs[verb] {
+				remainingVerbs = append(remainingVerbs, verb)
+			}
+		}
+
+		if len(remainingVerbs) > 0 {
+			resourceRows = append([][]string{{serviceName, strings.Join(remainingVerbs, ", "), resourceName, ""}}, resourceRows...)
+		}
+
+		resourceData[resourceName] = resourceRows
+	}
+
+	// Sort resources alphabetically
+	var resources []string
+	for resource := range resourceData {
+		resources = append(resources, resource)
+	}
+	sort.Strings(resources)
+
+	// Build final data array
+	for _, resource := range resources {
+		data = append(data, resourceData[resource]...)
 	}
 
 	return data, nil
 }
 
 func renderAPITable(data [][]string) {
-	// Sort the data by the 'Resource' column alphabetically
-	sort.Slice(data, func(i, j int) bool {
-		return data[i][1] < data[j][1]
-	})
-
-	// Calculate the terminal width
-	terminalWidth, _, err := pterm.GetTerminalSize()
-	if err != nil {
-		terminalWidth = 80 // Default width if unable to get terminal size
+	// Create table header
+	table := pterm.TableData{
+		{"Service", "Verb", "Resource", "Short Names"},
 	}
 
-	// Define the minimum widths for the columns
-	minResourceWidth := 15
-	minShortNameWidth := 15
-	padding := 5 // Padding between columns and borders
+	// Add data rows
+	table = append(table, data...)
 
-	// Calculate the available width for the Verb column
-	verbColumnWidth := terminalWidth - (minResourceWidth + minShortNameWidth + padding)
-	if verbColumnWidth < 20 {
-		verbColumnWidth = 20 // Minimum width for the Verb column
-	}
-
-	// Prepare the table data with headers
-	table := pterm.TableData{{"Verb", "Resource", "Short Names"}}
-
-	for _, row := range data {
-		verbs := row[0]
-		resource := row[1]
-		shortName := row[2]
-
-		// Wrap the verbs text based on the calculated column width
-		wrappedVerbs := wordWrap(verbs, verbColumnWidth)
-
-		// Build the table row
-		table = append(table, []string{wrappedVerbs, resource, shortName})
-	}
-
-	// Render the table using pterm with separators
-	pterm.DefaultTable.WithHasHeader().
-		WithRowSeparator("-").
-		WithHeaderRowSeparator("-").
-		WithLeftAlignment().
-		WithData(table).
-		Render()
+	// Render the table
+	pterm.DefaultTable.WithHasHeader().WithData(table).Render()
 }
 
 // wordWrap function remains the same

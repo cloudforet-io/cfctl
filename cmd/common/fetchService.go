@@ -51,7 +51,8 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 	// Read configuration file
 	mainViper := viper.New()
-	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "config.yaml"))
+	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "setting.toml"))
+	mainViper.SetConfigType("toml")
 	if err := mainViper.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read configuration file. Please run 'cfctl login' first")
 	}
@@ -62,13 +63,13 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		return nil, fmt.Errorf("no environment set. Please run 'cfctl login' first")
 	}
 
-	// Load configuration first (including cache)
+	// Load configuration first
 	config, err := loadConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
 
-	// Check token from both main config and cache
+	// Check token
 	token := config.Environments[config.Environment].Token
 	if token == "" {
 		pterm.Error.Println("No token found for authentication.")
@@ -152,23 +153,186 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		return nil, nil
 	}
 
+	// Get hostPort based on environment prefix
+	var envPrefix string
+	if strings.HasPrefix(config.Environment, "dev-") {
+		envPrefix = "dev"
+	} else if strings.HasPrefix(config.Environment, "stg-") {
+		envPrefix = "stg"
+	}
+	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
+
+	// Configure gRPC connection
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: false,
+	}
+	creds := credentials.NewTLS(tlsConfig)
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(creds),
+		grpc.WithDefaultCallOptions(
+			grpc.MaxCallRecvMsgSize(10*1024*1024), // 10MB
+			grpc.MaxCallSendMsgSize(10*1024*1024), // 10MB
+		),
+	}
+
+	// Establish the connection
+	conn, err := grpc.Dial(hostPort, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("connection failed: unable to connect to %s: %v", hostPort, err)
+	}
+	defer conn.Close()
+
+	// Create reflection client for both service calls and minimal fields detection
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", config.Environments[config.Environment].Token)
+	refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	defer refClient.Reset()
+
+	// Call the service
 	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options)
 	if err != nil {
+		// Check if the error is about missing required parameters
+		if strings.Contains(err.Error(), "ERROR_REQUIRED_PARAMETER") {
+			// Extract parameter name from error message
+			paramName := extractParameterName(err.Error())
+			if paramName != "" {
+				// Ask user for the missing parameter
+				pterm.Info.Printf("Required parameter '%s' is missing.\n", paramName)
+				value, err := promptForParameter(paramName)
+				if err != nil {
+					return nil, err
+				}
+
+				// Add the parameter to options
+				if options.Parameters == nil {
+					options.Parameters = make([]string, 0)
+				}
+				options.Parameters = append(options.Parameters, fmt.Sprintf("%s=%s", paramName, value))
+
+				// Retry the call with the new parameter
+				jsonBytes, err = fetchJSONResponse(config, serviceName, verb, resourceName, options)
+				if err != nil {
+					return nil, err
+				}
+
+				// Unmarshal JSON bytes to a map
+				var respMap map[string]interface{}
+				if err = json.Unmarshal(jsonBytes, &respMap); err != nil {
+					return nil, fmt.Errorf("failed to unmarshal JSON: %v", err)
+				}
+
+				// Print the data if not in watch mode
+				if options.OutputFormat != "" {
+					if options.SortBy != "" && verb == "list" {
+						if results, ok := respMap["results"].([]interface{}); ok {
+							// Sort the results by the specified field
+							sort.Slice(results, func(i, j int) bool {
+								iMap := results[i].(map[string]interface{})
+								jMap := results[j].(map[string]interface{})
+
+								iVal, iOk := iMap[options.SortBy]
+								jVal, jOk := jMap[options.SortBy]
+
+								// Handle cases where the field doesn't exist
+								if !iOk && !jOk {
+									return false
+								} else if !iOk {
+									return false
+								} else if !jOk {
+									return true
+								}
+
+								// Compare based on type
+								switch v := iVal.(type) {
+								case string:
+									return v < jVal.(string)
+								case float64:
+									return v < jVal.(float64)
+								case bool:
+									return !v && jVal.(bool)
+								default:
+									return false
+								}
+							})
+							respMap["results"] = results
+						}
+					}
+					printData(respMap, options, serviceName, resourceName, refClient)
+				}
+
+				return respMap, nil
+			}
+		}
 		return nil, err
 	}
 
 	// Unmarshal JSON bytes to a map
 	var respMap map[string]interface{}
-	if err := json.Unmarshal(jsonBytes, &respMap); err != nil {
+	if err = json.Unmarshal(jsonBytes, &respMap); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal JSON: %v", err)
 	}
 
 	// Print the data if not in watch mode
 	if options.OutputFormat != "" {
-		printData(respMap, options)
+		if options.SortBy != "" && verb == "list" {
+			if results, ok := respMap["results"].([]interface{}); ok {
+				// Sort the results by the specified field
+				sort.Slice(results, func(i, j int) bool {
+					iMap := results[i].(map[string]interface{})
+					jMap := results[j].(map[string]interface{})
+
+					iVal, iOk := iMap[options.SortBy]
+					jVal, jOk := jMap[options.SortBy]
+
+					// Handle cases where the field doesn't exist
+					if !iOk && !jOk {
+						return false
+					} else if !iOk {
+						return false
+					} else if !jOk {
+						return true
+					}
+
+					// Compare based on type
+					switch v := iVal.(type) {
+					case string:
+						return v < jVal.(string)
+					case float64:
+						return v < jVal.(float64)
+					case bool:
+						return !v && jVal.(bool)
+					default:
+						return false
+					}
+				})
+				respMap["results"] = results
+			}
+		}
+		printData(respMap, options, serviceName, resourceName, refClient)
 	}
 
 	return respMap, nil
+}
+
+// extractParameterName extracts the parameter name from the error message
+func extractParameterName(errMsg string) string {
+	if strings.Contains(errMsg, "Required parameter. (key = ") {
+		start := strings.Index(errMsg, "key = ") + 6
+		end := strings.Index(errMsg[start:], ")")
+		if end != -1 {
+			return errMsg[start : start+end]
+		}
+	}
+	return ""
+}
+
+// promptForParameter prompts the user to enter a value for the given parameter
+func promptForParameter(paramName string) (string, error) {
+	prompt := fmt.Sprintf("Please enter value for '%s'", paramName)
+	result, err := pterm.DefaultInteractiveTextInput.WithDefaultText("").Show(prompt)
+	if err != nil {
+		return "", fmt.Errorf("failed to read input: %v", err)
+	}
+	return result, nil
 }
 
 func loadConfig() (*Config, error) {
@@ -179,8 +343,9 @@ func loadConfig() (*Config, error) {
 
 	// Load main configuration file
 	mainV := viper.New()
-	mainConfigPath := filepath.Join(home, ".cfctl", "config.yaml")
+	mainConfigPath := filepath.Join(home, ".cfctl", "setting.toml")
 	mainV.SetConfigFile(mainConfigPath)
+	mainV.SetConfigType("toml")
 	if err := mainV.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read config file: %v", err)
 	}
@@ -190,21 +355,23 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("no environment set in config")
 	}
 
-	// First try to get environment config from main config file
+	// Get environment config from main config file
 	envConfig := &Environment{
 		Endpoint: mainV.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv)),
-		Token:    mainV.GetString(fmt.Sprintf("environments.%s.token", currentEnv)),
 		Proxy:    mainV.GetString(fmt.Sprintf("environments.%s.proxy", currentEnv)),
 	}
 
-	// If it's a -user environment and token is empty, try to get token from cache config
-	if strings.HasSuffix(currentEnv, "-user") && envConfig.Token == "" {
-		cacheV := viper.New()
-		cacheConfigPath := filepath.Join(home, ".cfctl", "cache", "config.yaml")
-		cacheV.SetConfigFile(cacheConfigPath)
-		if err := cacheV.ReadInConfig(); err == nil {
-			envConfig.Token = cacheV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+	// Handle token based on environment type
+	if strings.HasSuffix(currentEnv, "-user") {
+		// For user environments, read from grant_token file
+		grantTokenPath := filepath.Join(home, ".cfctl", "cache", currentEnv, "grant_token")
+		tokenBytes, err := os.ReadFile(grantTokenPath)
+		if err == nil {
+			envConfig.Token = strings.TrimSpace(string(tokenBytes))
 		}
+	} else if strings.HasSuffix(currentEnv, "-app") {
+		// For app environments, get token from main config
+		envConfig.Token = mainV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
 	}
 
 	if envConfig == nil {
@@ -362,7 +529,7 @@ func discoverService(refClient *grpcreflect.Client, serviceName string, resource
 	return "", fmt.Errorf("service not found for %s.%s", serviceName, resourceName)
 }
 
-func printData(data map[string]interface{}, options *FetchOptions) {
+func printData(data map[string]interface{}, options *FetchOptions, serviceName, resourceName string, refClient *grpcreflect.Client) {
 	var output string
 
 	switch options.OutputFormat {
@@ -388,13 +555,13 @@ func printData(data map[string]interface{}, options *FetchOptions) {
 	case "table":
 		// Check if data has 'results' key
 		if _, ok := data["results"].([]interface{}); ok {
-			output = printTable(data)
+			output = printTable(data, options, serviceName, resourceName, refClient)
 		} else {
 			// If no 'results' key, treat the entire data as results
 			wrappedData := map[string]interface{}{
 				"results": []interface{}{data},
 			}
-			output = printTable(wrappedData)
+			output = printTable(wrappedData, options, serviceName, resourceName, refClient)
 		}
 
 	case "csv":
@@ -421,7 +588,83 @@ func printData(data map[string]interface{}, options *FetchOptions) {
 	}
 }
 
-func printTable(data map[string]interface{}) string {
+func getMinimalFields(serviceName, resourceName string, refClient *grpcreflect.Client) []string {
+	// Default minimal fields that should always be included if they exist
+	defaultFields := []string{"name", "created_at"}
+
+	// Try to get message descriptor for the resource
+	fullServiceName := fmt.Sprintf("spaceone.api.%s.v1.%s", serviceName, resourceName)
+	serviceDesc, err := refClient.ResolveService(fullServiceName)
+	if err != nil {
+		// Try v2 if v1 fails
+		fullServiceName = fmt.Sprintf("spaceone.api.%s.v2.%s", serviceName, resourceName)
+		serviceDesc, err = refClient.ResolveService(fullServiceName)
+		if err != nil {
+			return defaultFields
+		}
+	}
+
+	// Get list method descriptor
+	listMethod := serviceDesc.FindMethodByName("list")
+	if listMethod == nil {
+		return defaultFields
+	}
+
+	// Get response message descriptor
+	respDesc := listMethod.GetOutputType()
+	if respDesc == nil {
+		return defaultFields
+	}
+
+	// Find the 'results' field which should be repeated message type
+	resultsField := respDesc.FindFieldByName("results")
+	if resultsField == nil {
+		return defaultFields
+	}
+
+	// Get the message type of items in the results
+	itemMsgDesc := resultsField.GetMessageType()
+	if itemMsgDesc == nil {
+		return defaultFields
+	}
+
+	// Collect required fields and important fields
+	minimalFields := make([]string, 0)
+	fields := itemMsgDesc.GetFields()
+	for _, field := range fields {
+		// Add ID fields
+		if strings.HasSuffix(field.GetName(), "_id") {
+			minimalFields = append(minimalFields, field.GetName())
+			continue
+		}
+
+		// Add status/state fields
+		if field.GetName() == "status" || field.GetName() == "state" {
+			minimalFields = append(minimalFields, field.GetName())
+			continue
+		}
+
+		// Add timestamp fields
+		if field.GetName() == "created_at" || field.GetName() == "finished_at" {
+			minimalFields = append(minimalFields, field.GetName())
+			continue
+		}
+
+		// Add name field
+		if field.GetName() == "name" {
+			minimalFields = append(minimalFields, field.GetName())
+			continue
+		}
+	}
+
+	if len(minimalFields) == 0 {
+		return defaultFields
+	}
+
+	return minimalFields
+}
+
+func printTable(data map[string]interface{}, options *FetchOptions, serviceName, resourceName string, refClient *grpcreflect.Client) string {
 	if results, ok := data["results"].([]interface{}); ok {
 		pageSize := 10
 		currentPage := 0
@@ -435,14 +678,34 @@ func printTable(data map[string]interface{}) string {
 		}
 		defer keyboard.Close()
 
-		// Extract headers
-		headers := []string{}
-		if len(results) > 0 {
-			if row, ok := results[0].(map[string]interface{}); ok {
+		// Extract headers from all results to ensure we get all possible fields
+		headers := make(map[string]bool)
+		for _, result := range results {
+			if row, ok := result.(map[string]interface{}); ok {
 				for key := range row {
-					headers = append(headers, key)
+					headers[key] = true
 				}
-				sort.Strings(headers)
+			}
+		}
+
+		// Convert headers map to sorted slice
+		headerSlice := make([]string, 0, len(headers))
+		for key := range headers {
+			headerSlice = append(headerSlice, key)
+		}
+		sort.Strings(headerSlice)
+
+		// If minimal columns are requested, only show essential fields
+		if options.MinimalColumns {
+			minimalFields := getMinimalFields(serviceName, resourceName, refClient)
+			var minimalHeaderSlice []string
+			for _, field := range minimalFields {
+				if headers[field] {
+					minimalHeaderSlice = append(minimalHeaderSlice, field)
+				}
+			}
+			if len(minimalHeaderSlice) > 0 {
+				headerSlice = minimalHeaderSlice
 			}
 		}
 
@@ -456,7 +719,7 @@ func printTable(data map[string]interface{}) string {
 			totalItems := len(filteredResults)
 			totalPages := (totalItems + pageSize - 1) / pageSize
 
-			tableData := pterm.TableData{headers}
+			tableData := pterm.TableData{headerSlice}
 
 			// Calculate current page items
 			startIdx := currentPage * pageSize
@@ -472,11 +735,11 @@ func printTable(data map[string]interface{}) string {
 				fmt.Printf("Search: %s (Found: %d items)\n", searchTerm, totalItems)
 			}
 
-			// Add rows for current page
-			for _, result := range results[startIdx:endIdx] {
+			// Add rows for current page using filteredResults
+			for _, result := range filteredResults[startIdx:endIdx] {
 				if row, ok := result.(map[string]interface{}); ok {
-					rowData := make([]string, len(headers))
-					for i, key := range headers {
+					rowData := make([]string, len(headerSlice))
+					for i, key := range headerSlice {
 						rowData[i] = formatTableValue(row[key])
 					}
 					tableData = append(tableData, rowData)
@@ -528,7 +791,6 @@ func printTable(data map[string]interface{}) string {
 			}
 		}
 	} else {
-		// 단일 객체인 경우 (get 명령어)
 		headers := make([]string, 0)
 		for key := range data {
 			headers = append(headers, key)
@@ -555,7 +817,6 @@ func filterResults(results []interface{}, searchTerm string) []interface{} {
 
 	for _, result := range results {
 		if row, ok := result.(map[string]interface{}); ok {
-			// 모든 필드에서 검색
 			for _, value := range row {
 				strValue := strings.ToLower(fmt.Sprintf("%v", value))
 				if strings.Contains(strValue, searchTerm) {
@@ -668,3 +929,4 @@ func formatCSVValue(val interface{}) string {
 		return fmt.Sprintf("%v", v)
 	}
 }
+
