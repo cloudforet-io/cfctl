@@ -153,8 +153,47 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		return nil, nil
 	}
 
+	// Call the service
 	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options)
 	if err != nil {
+		// Check if the error is about missing required parameters
+		if strings.Contains(err.Error(), "ERROR_REQUIRED_PARAMETER") {
+			// Extract parameter name from error message
+			paramName := extractParameterName(err.Error())
+			if paramName != "" {
+				// Ask user for the missing parameter
+				pterm.Info.Printf("Required parameter '%s' is missing.\n", paramName)
+				value, err := promptForParameter(paramName)
+				if err != nil {
+					return nil, err
+				}
+
+				// Add the parameter to options
+				if options.Parameters == nil {
+					options.Parameters = make([]string, 0)
+				}
+				options.Parameters = append(options.Parameters, fmt.Sprintf("%s=%s", paramName, value))
+
+				// Retry the call with the new parameter
+				jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options)
+				if err != nil {
+					return nil, err
+				}
+
+				// Unmarshal JSON bytes to a map
+				var respMap map[string]interface{}
+				if err := json.Unmarshal(jsonBytes, &respMap); err != nil {
+					return nil, fmt.Errorf("failed to unmarshal JSON: %v", err)
+				}
+
+				// Print the data if not in watch mode
+				if options.OutputFormat != "" {
+					printData(respMap, options)
+				}
+
+				return respMap, nil
+			}
+		}
 		return nil, err
 	}
 
@@ -170,6 +209,28 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	}
 
 	return respMap, nil
+}
+
+// extractParameterName extracts the parameter name from the error message
+func extractParameterName(errMsg string) string {
+	if strings.Contains(errMsg, "Required parameter. (key = ") {
+		start := strings.Index(errMsg, "key = ") + 6
+		end := strings.Index(errMsg[start:], ")")
+		if end != -1 {
+			return errMsg[start : start+end]
+		}
+	}
+	return ""
+}
+
+// promptForParameter prompts the user to enter a value for the given parameter
+func promptForParameter(paramName string) (string, error) {
+	prompt := fmt.Sprintf("Please enter value for '%s'", paramName)
+	result, err := pterm.DefaultInteractiveTextInput.WithDefaultText("").Show(prompt)
+	if err != nil {
+		return "", fmt.Errorf("failed to read input: %v", err)
+	}
+	return result, nil
 }
 
 func loadConfig() (*Config, error) {
