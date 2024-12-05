@@ -50,7 +50,30 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 		verbCmd := &cobra.Command{
 			Use:   currentVerb + " <resource>",
 			Short: shortDesc,
-			Args:  cobra.ArbitraryArgs, // Allow any number of arguments
+			Long: fmt.Sprintf(`Supported %d resources for %s command.
+
+%s
+
+%s`,
+				len(resources),
+				currentVerb,
+				pterm.DefaultBox.WithTitle("Interactive Mode").WithTitleTopCenter().Sprint(
+					func() string {
+						str, _ := pterm.DefaultBulletList.WithItems([]pterm.BulletListItem{
+							{Level: 0, Text: "Required parameters will be prompted if not provided"},
+							{Level: 0, Text: "Missing parameters will be requested interactively"},
+							{Level: 0, Text: "Just follow the prompts to fill in the required fields"},
+						}).Srender()
+						return str
+					}()),
+				pterm.DefaultBox.WithTitle("Example").WithTitleTopCenter().Sprint(
+					fmt.Sprintf("Instead of:\n"+
+						"  $ cfctl %s %s <Resource> -p key=value\n\n"+
+						"You can simply run:\n"+
+						"  $ cfctl %s %s <Resource>\n\n"+
+						"The tool will interactively prompt for the required parameters.",
+						serviceName, currentVerb, serviceName, currentVerb))),
+			Args: cobra.ArbitraryArgs, // Allow any number of arguments
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if len(args) != 1 {
 					// Display the help message

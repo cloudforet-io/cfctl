@@ -117,6 +117,11 @@ func CustomParentHelpFunc(cmd *cobra.Command, args []string) {
 		cmd.Println()
 	}
 
+	if cmd.Long != "" {
+		cmd.Println(cmd.Long)
+		cmd.Println()
+	}
+
 	printSortedBulletList(cmd, "Verbs")
 
 	cmd.Println("Flags:")
@@ -165,6 +170,11 @@ func CustomVerbHelpFunc(cmd *cobra.Command, args []string) {
 
 	if cmd.Short != "" {
 		cmd.Println(cmd.Short)
+		cmd.Println()
+	}
+
+	if cmd.Long != "" {
+		cmd.Println(cmd.Long)
 		cmd.Println()
 	}
 
