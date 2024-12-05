@@ -429,9 +429,18 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	userID := mainViper.GetString(fmt.Sprintf("environments.%s.user_id", currentEnv))
+	// If no user ID is found, prompt for it
 	if userID == "" {
-		pterm.Error.Println("No user ID found in current environment configuration.")
-		exitWithError()
+		// Prompt for user ID
+		userIDInput := pterm.DefaultInteractiveTextInput
+		userID, _ = userIDInput.Show("Enter your User ID")
+
+		// Save user ID to configuration
+		mainViper.Set(fmt.Sprintf("environments.%s.user_id", currentEnv), userID)
+		if err := mainViper.WriteConfig(); err != nil {
+			pterm.Error.Printf("Failed to save user ID to config: %v\n", err)
+			exitWithError()
+		}
 	}
 
 	// Display the current user ID
@@ -835,7 +844,7 @@ func saveCredentials(currentEnv, userID, encryptedPassword, accessToken, refresh
 	if grantToken != "" {
 		if err := os.WriteFile(filepath.Join(envCacheDir, "grant_token"), []byte(grantToken), 0600); err != nil {
 			pterm.Error.Printf("Failed to save grant token: %v\n", err)
-				exitWithError()
+			exitWithError()
 		}
 	}
 }
