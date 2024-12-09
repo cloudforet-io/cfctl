@@ -6,7 +6,7 @@ on:
       version:
         description: 'enter version(x.y.z)'
         required: true
-        default: '2.0.0'
+        default: '0.0.0'
       container_arch:
         type: choice
         description: 'choose container architecture'
@@ -14,7 +14,6 @@ on:
         options:
         - "linux/amd64"
         - "linux/amd64,linux/arm64"
-
 
 env:
   ARCH: ${{ github.event.inputs.container_arch }}
@@ -46,37 +45,38 @@ jobs:
           fields: repo,workflow,job
           author_name: Github Action Slack
 
-  pypi:
-    needs: tagging
+  build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-        with:
-          token: ${{ secrets.PAT_TOKEN }}
+      - uses: actions/checkout@v3
 
-      - name: Set python
-        uses: actions/setup-python@v4
+      - name: Set up Go
+        uses: actions/setup-go@v4
         with:
-          python-version: '3.8'
+          go-version: '1.23.1'
 
-      - name: Install dependencies
+      - name: Build for all platforms
         run: |
-            python -m pip install --upgrade pip
-            pip install setuptools wheel twine
+          # macOS (Intel, Apple Silicon)
+          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/cfctl-darwin-amd64
+          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/cfctl-darwin-arm64
+          
+          # Linux (64bit, ARM)
+          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/cfctl-linux-amd64
+          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/cfctl-linux-arm64
+          
+          # Windows (64bit)
+          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/cfctl-windows-amd64.exe
 
-      - name: Make all and Packaging
-        run: |
-          cd src
-          python setup.py sdist bdist_wheel
-
-      - name: Publish a Python distribution to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
         with:
-          user: __token__
-          password: ${{ secrets.PYPI_API_TOKEN }}
-          verbose: true
-          packages-dir: src/dist/
+          files: |
+            dist/cfctl-darwin-amd64
+            dist/cfctl-darwin-arm64
+            dist/cfctl-linux-amd64
+            dist/cfctl-linux-arm64
+            dist/cfctl-windows-amd64.exe
 
       - name: Notice when job fails
         if: failure()
