@@ -15,7 +15,7 @@ require (
 	github.com/zalando/go-keyring v0.2.6
 	google.golang.org/grpc v1.62.1
 	google.golang.org/protobuf v1.35.1
-	gopkg.in/yaml.v2 v2.2.4
+	gopkg.in/yaml.v2 v2.2.8
 	gopkg.in/yaml.v3 v3.0.1
 )
 
