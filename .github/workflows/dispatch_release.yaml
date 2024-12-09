@@ -4,16 +4,16 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'enter version(x.y.z)'
+        description: "enter version(x.y.z)"
         required: true
-        default: '0.0.0'
+        default: "0.0.0"
       container_arch:
         type: choice
-        description: 'choose container architecture'
+        description: "choose container architecture"
         default: linux/amd64
         options:
-        - "linux/amd64"
-        - "linux/amd64,linux/arm64"
+          - "linux/amd64"
+          - "linux/amd64,linux/arm64"
 
 env:
   ARCH: ${{ github.event.inputs.container_arch }}
@@ -46,37 +46,26 @@ jobs:
           author_name: Github Action Slack
 
   build:
+    needs: tagging
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v4
         with:
-          go-version: '1.23.1'
+          go-version: "1.23.1"
 
-      - name: Build for all platforms
-        run: |
-          # macOS (Intel, Apple Silicon)
-          GOOS=darwin GOARCH=amd64 go build -ldflags="-s -w" -o dist/cfctl-darwin-amd64
-          GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o dist/cfctl-darwin-arm64
-          
-          # Linux (64bit, ARM)
-          GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/cfctl-linux-amd64
-          GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/cfctl-linux-arm64
-          
-          # Windows (64bit)
-          GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/cfctl-windows-amd64.exe
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v5
         with:
-          files: |
-            dist/cfctl-darwin-amd64
-            dist/cfctl-darwin-arm64
-            dist/cfctl-linux-amd64
-            dist/cfctl-linux-arm64
-            dist/cfctl-windows-amd64.exe
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Notice when job fails
         if: failure()
