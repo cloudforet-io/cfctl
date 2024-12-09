@@ -34,7 +34,7 @@ brews:
   - repository:
       owner: cloudforet-io
       name: homebrew-tap
-      token: "{{ .Env.GITHUB_TOKEN }}"
+      token: "{{ .Env.PAT_TOKEN }}"
     homepage: "https://github.com/cloudforet-io/cfctl"
     description: "Command-line interface for SpaceONE"
     license: "Apache-2.0"
