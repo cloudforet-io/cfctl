@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"bytes"
-	"compress/gzip"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -330,7 +328,6 @@ func loadCachedEndpoints() (map[string]string, error) {
 	// Create environment-specific cache directory
 	envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
 
-	// Read from environment-specific cache file
 	cacheFile := filepath.Join(envCacheDir, "endpoints.toml")
 	data, err := os.ReadFile(cacheFile)
 	if err != nil {
@@ -346,7 +343,6 @@ func loadCachedEndpoints() (map[string]string, error) {
 		return nil, fmt.Errorf("cache expired")
 	}
 
-	// Parse cached endpoints from TOML
 	var endpoints map[string]string
 	if err := toml.Unmarshal(data, &endpoints); err != nil {
 		return nil, err
@@ -380,20 +376,12 @@ func saveEndpointsCache(endpoints map[string]string) error {
 		return err
 	}
 
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-
 	data, err := toml.Marshal(endpoints)
 	if err != nil {
 		return err
 	}
 
-	if _, err := gw.Write(data); err != nil {
-		return err
-	}
-	gw.Close()
-
-	return os.WriteFile(filepath.Join(envCacheDir, "endpoints.toml.gz"), buf.Bytes(), 0644)
+	return os.WriteFile(filepath.Join(envCacheDir, "endpoints.toml"), data, 0644)
 }
 
 // loadConfig loads configuration from both main and cache setting files
