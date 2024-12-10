@@ -154,15 +154,32 @@ func showInitializationGuide(originalErr error) {
 		return
 	}
 
+	// Check if token exists for the current environment
+	envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
+	if envConfig != nil && envConfig.GetString("token") != "" {
+		// Token exists, no need to show guide
+		return
+	}
+
 	// Parse environment name to extract service name and environment
 	parts := strings.Split(currentEnv, "-")
 	if len(parts) >= 3 {
-		envPrefix := parts[0]   // dev, stg
-		serviceName := parts[1] // cloudone, spaceone, etc.
-		url := fmt.Sprintf("https://%s.console.%s.spaceone.dev", serviceName, envPrefix)
+		var url string
+		if parts[0] == "local" {
+			if len(parts) >= 4 {
+				envPrefix := parts[1]   // dev
+				serviceName := parts[2] // cloudone
+				url = fmt.Sprintf("https://%s.console.%s.spaceone.dev\n"+
+					"     Note: If you're running a local console server,\n"+
+					"     you can also access it at http://localhost:8080", serviceName, envPrefix)
+			}
+		} else {
+			envPrefix := parts[0]   // dev
+			serviceName := parts[1] // cloudone
+			url = fmt.Sprintf("https://%s.console.%s.spaceone.dev", serviceName, envPrefix)
+		}
 
 		if strings.HasSuffix(currentEnv, "-app") {
-			// Show app token guide
 			pterm.DefaultBox.
 				WithTitle("Token Not Found").
 				WithTitleTopCenter().
