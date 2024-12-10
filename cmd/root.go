@@ -244,7 +244,7 @@ func addDynamicServiceCommands() error {
 		// Try connecting to local gRPC server
 		conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(), grpc.WithBlock(), grpc.WithTimeout(2*time.Second))
 		if err != nil {
-			pterm.Error.Printf("Cannot connect to local gRPC server (localhost:50051)\n")
+			pterm.Error.Printf("Cannot connect to local gRPC server (grpc://localhost:50051)\n")
 			pterm.Info.Println("Please check if your gRPC server is running")
 			return fmt.Errorf("local gRPC server connection failed: %v", err)
 		}
