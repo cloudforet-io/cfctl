@@ -244,20 +244,12 @@ var envCmd = &cobra.Command{
 		// Set paths for app and user configurations
 		settingDir := GetSettingDir()
 		appSettingPath := filepath.Join(settingDir, "setting.toml")
-		userSettingPath := filepath.Join(settingDir, "cache", "setting.toml")
 
 		// Create separate Viper instances
 		appV := viper.New()
-		userV := viper.New()
 
 		// Load app configuration
 		if err := loadSetting(appV, appSettingPath); err != nil {
-			pterm.Error.Println(err)
-			return
-		}
-
-		// Load user configuration
-		if err := loadSetting(userV, userSettingPath); err != nil {
 			pterm.Error.Println(err)
 			return
 		}
@@ -273,7 +265,6 @@ var envCmd = &cobra.Command{
 		if switchEnv != "" {
 			// Check environment in both app and user settings
 			appEnvMap := appV.GetStringMap("environments")
-			userEnvMap := userV.GetStringMap("environments")
 
 			if currentEnv == switchEnv {
 				pterm.Info.Printf("Already in '%s' environment.\n", currentEnv)
@@ -281,12 +272,10 @@ var envCmd = &cobra.Command{
 			}
 
 			if _, existsApp := appEnvMap[switchEnv]; !existsApp {
-				if _, existsUser := userEnvMap[switchEnv]; !existsUser {
-					home, _ := os.UserHomeDir()
-					pterm.Error.Printf("Environment '%s' not found in %s/.cfctl/setting.toml",
-						switchEnv, home)
-					return
-				}
+				home, _ := os.UserHomeDir()
+				pterm.Error.Printf("Environment '%s' not found in %s/.cfctl/setting.toml",
+					switchEnv, home)
+				return
 			}
 
 			// Update only the environment field in app setting
@@ -308,14 +297,10 @@ var envCmd = &cobra.Command{
 			var targetViper *viper.Viper
 			var targetSettingPath string
 			envMapApp := appV.GetStringMap("environments")
-			envMapUser := userV.GetStringMap("environments")
 
 			if _, exists := envMapApp[removeEnv]; exists {
 				targetViper = appV
 				targetSettingPath = appSettingPath
-			} else if _, exists := envMapUser[removeEnv]; exists {
-				targetViper = userV
-				targetSettingPath = userSettingPath
 			} else {
 				home, _ := os.UserHomeDir()
 				pterm.Error.Printf("Environment '%s' not found in %s/.cfctl/setting.toml",
@@ -366,18 +351,12 @@ var envCmd = &cobra.Command{
 		if listOnly {
 			// Get environment maps from both app and user settings
 			appEnvMap := appV.GetStringMap("environments")
-			userEnvMap := userV.GetStringMap("environments")
 
 			// Map to store all unique environments
 			allEnvs := make(map[string]bool)
 
 			// Add app environments
 			for envName := range appEnvMap {
-				allEnvs[envName] = true
-			}
-
-			// Add user environments
-			for envName := range userEnvMap {
 				allEnvs[envName] = true
 			}
 
@@ -394,8 +373,6 @@ var envCmd = &cobra.Command{
 					pterm.FgGreen.Printf("%s (current)\n", envName)
 				} else {
 					if _, isApp := appEnvMap[envName]; isApp {
-						pterm.Printf("%s\n", envName)
-					} else {
 						pterm.Printf("%s\n", envName)
 					}
 				}
