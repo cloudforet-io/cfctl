@@ -269,7 +269,7 @@ func addDynamicServiceCommands() error {
 					serviceName := parts[2]
 					// Skip core service
 					if serviceName != "core" {
-						endpointsMap[serviceName] = "localhost:50051"
+						endpointsMap[serviceName] = "grpc://localhost:50051"
 					}
 				}
 			}
