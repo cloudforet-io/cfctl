@@ -121,13 +121,15 @@ var settingInitLocalCmd = &cobra.Command{
 	Short: "Initialize configuration with a local environment",
 	Long:  `Specify a local environment name to initialize the configuration.`,
 	Args:  cobra.NoArgs,
-	Example: `  cfctl setting init local -n local-cloudone --app
-                          or
-  cfctl setting init local -n local-cloudone --user`,
+	Example: `  cfctl setting init local -n [domain] --app --dev
+                            or
+  cfctl setting init local -n [domain] --user --stg`,
 	Run: func(cmd *cobra.Command, args []string) {
 		localEnv, _ := cmd.Flags().GetString("name")
 		appFlag, _ := cmd.Flags().GetBool("app")
 		userFlag, _ := cmd.Flags().GetBool("user")
+		devFlag, _ := cmd.Flags().GetBool("dev")
+		stgFlag, _ := cmd.Flags().GetBool("stg")
 
 		if localEnv == "" {
 			pterm.Error.Println("The --name flag is required.")
@@ -136,6 +138,11 @@ var settingInitLocalCmd = &cobra.Command{
 		}
 		if !appFlag && !userFlag {
 			pterm.Error.Println("You must specify either --app or --user flag.")
+			cmd.Help()
+			return
+		}
+		if !devFlag && !stgFlag {
+			pterm.Error.Println("You must specify either --dev or --stg flag.")
 			cmd.Help()
 			return
 		}
@@ -158,12 +165,23 @@ var settingInitLocalCmd = &cobra.Command{
 			}
 		}
 
+		envPrefix := ""
+		if devFlag {
+			envPrefix = "dev"
+		} else if stgFlag {
+			envPrefix = "stg"
+		}
+
 		var envName string
 		if appFlag {
-			envName = fmt.Sprintf("%s-app", localEnv)
+			envName = fmt.Sprintf("local-%s-%s-app", envPrefix, localEnv)
+		} else {
+			envName = fmt.Sprintf("local-%s-%s-user", envPrefix, localEnv)
+		}
+
+		if appFlag {
 			updateLocalSetting(envName, "app", mainSettingPath)
 		} else {
-			envName = fmt.Sprintf("%s-user", localEnv)
 			updateLocalSetting(envName, "user", filepath.Join(settingDir, "cache", "setting.toml"))
 		}
 
@@ -874,7 +892,7 @@ func loadSetting(v *viper.Viper, settingPath string) error {
 			// Initialize with default values if file doesn't exist
 			defaultSettings := map[string]interface{}{
 				"environments": map[string]interface{}{},
-				"environment": "",
+				"environment":  "",
 			}
 
 			// Convert to TOML
@@ -1118,6 +1136,8 @@ func init() {
 	settingInitLocalCmd.Flags().StringP("name", "n", "", "Local environment name for the environment")
 	settingInitLocalCmd.Flags().Bool("app", false, "Initialize as application configuration")
 	settingInitLocalCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
+	settingInitLocalCmd.Flags().Bool("dev", false, "Initialize as development environment")
+	settingInitLocalCmd.Flags().Bool("stg", false, "Initialize as staging environment")
 
 	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
 	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
