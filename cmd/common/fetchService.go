@@ -274,7 +274,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 						if results, ok := respMap["results"].([]interface{}); ok {
 							columns := strings.Split(options.Columns, ",")
 							filteredResults := make([]interface{}, len(results))
-							
+
 							for i, result := range results {
 								if resultMap, ok := result.(map[string]interface{}); ok {
 									filteredMap := make(map[string]interface{})
@@ -356,7 +356,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 			if results, ok := respMap["results"].([]interface{}); ok {
 				columns := strings.Split(options.Columns, ",")
 				filteredResults := make([]interface{}, len(results))
-				
+
 				for i, result := range results {
 					if resultMap, ok := result.(map[string]interface{}); ok {
 						filteredMap := make(map[string]interface{})
@@ -452,32 +452,42 @@ func loadConfig() (*Config, error) {
 }
 
 func fetchJSONResponse(config *Config, serviceName string, verb string, resourceName string, options *FetchOptions) ([]byte, error) {
-	var envPrefix string
-	if strings.HasPrefix(config.Environment, "dev-") {
-		envPrefix = "dev"
-	} else if strings.HasPrefix(config.Environment, "stg-") {
-		envPrefix = "stg"
-	}
-	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
+	var conn *grpc.ClientConn
+	var err error
 
-	// Configure gRPC connection
-	var opts []grpc.DialOption
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: false,
-	}
-	creds := credentials.NewTLS(tlsConfig)
-	opts = append(opts, grpc.WithTransportCredentials(creds))
+	if strings.HasPrefix(config.Environment, "local-") {
+		conn, err = grpc.Dial("localhost:50051", grpc.WithInsecure(),
+			grpc.WithDefaultCallOptions(
+				grpc.MaxCallRecvMsgSize(10*1024*1024),
+				grpc.MaxCallSendMsgSize(10*1024*1024),
+			))
+		if err != nil {
+			return nil, fmt.Errorf("connection failed: unable to connect to local server: %v", err)
+		}
+	} else {
+		var envPrefix string
+		if strings.HasPrefix(config.Environment, "dev-") {
+			envPrefix = "dev"
+		} else if strings.HasPrefix(config.Environment, "stg-") {
+			envPrefix = "stg"
+		}
+		hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false,
+		}
+		creds := credentials.NewTLS(tlsConfig)
 
-	opts = append(opts, grpc.WithDefaultCallOptions(
-		grpc.MaxCallRecvMsgSize(10*1024*1024), // 10MB
-		grpc.MaxCallSendMsgSize(10*1024*1024), // 10MB
-	))
-
-	// Establish the connection
-	conn, err := grpc.Dial(hostPort, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("connection failed: unable to connect to %s: %v", hostPort, err)
+		conn, err = grpc.Dial(hostPort,
+			grpc.WithTransportCredentials(creds),
+			grpc.WithDefaultCallOptions(
+				grpc.MaxCallRecvMsgSize(10*1024*1024),
+				grpc.MaxCallSendMsgSize(10*1024*1024),
+			))
+		if err != nil {
+			return nil, fmt.Errorf("connection failed: unable to connect to %s: %v", hostPort, err)
+		}
 	}
+
 	defer conn.Close()
 
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", config.Environments[config.Environment].Token)
@@ -994,4 +1004,3 @@ func formatCSVValue(val interface{}) string {
 		return fmt.Sprintf("%v", v)
 	}
 }
-
