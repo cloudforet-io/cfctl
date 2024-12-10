@@ -1,13 +1,14 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/spf13/viper"
 
 	"github.com/cloudforet-io/cfctl/cmd/common"
@@ -16,6 +17,8 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 )
 
 var cfgFile string
@@ -230,43 +233,64 @@ func addDynamicServiceCommands() error {
 		return nil
 	}
 
-	// Try to load endpoints from file cache
-	endpoints, err := loadCachedEndpoints()
-	if err == nil {
-		cachedEndpointsMap = endpoints
+	// Load configuration
+	setting, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load setting: %v", err)
+	}
 
-		// 병렬로 커맨드 생성
-		var wg sync.WaitGroup
-		cmdChan := make(chan *cobra.Command, len(endpoints))
+	// Handle local environment
+	if strings.HasPrefix(setting.Environment, "local-") {
+		// Try connecting to local gRPC server
+		conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(), grpc.WithBlock(), grpc.WithTimeout(2*time.Second))
+		if err != nil {
+			pterm.Error.Printf("Cannot connect to local gRPC server (localhost:50051)\n")
+			pterm.Info.Println("Please check if your gRPC server is running")
+			return fmt.Errorf("local gRPC server connection failed: %v", err)
+		}
+		defer conn.Close()
 
-		for serviceName := range endpoints {
-			wg.Add(1)
-			go func(svc string) {
-				defer wg.Done()
-				cmd := createServiceCommand(svc)
-				cmdChan <- cmd
-			}(serviceName)
+		// Create reflection client
+		ctx := context.Background()
+		refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+		defer refClient.Reset()
+
+		// List all services
+		services, err := refClient.ListServices()
+		if err != nil {
+			return fmt.Errorf("failed to list local services: %v", err)
 		}
 
-		// 별도 고루틴에서 커맨드 추가
-		go func() {
-			wg.Wait()
-			close(cmdChan)
-		}()
+		endpointsMap := make(map[string]string)
+		for _, svc := range services {
+			if strings.HasPrefix(svc, "spaceone.api.") {
+				parts := strings.Split(svc, ".")
+				if len(parts) >= 4 {
+					serviceName := parts[2]
+					// Skip core service
+					if serviceName != "core" {
+						endpointsMap[serviceName] = "localhost:50051"
+					}
+				}
+			}
+		}
 
-		for cmd := range cmdChan {
+		// Store in both memory and file cache
+		cachedEndpointsMap = endpointsMap
+		if err := saveEndpointsCache(endpointsMap); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
+		}
+
+		// Create commands for each service
+		for serviceName := range endpointsMap {
+			cmd := createServiceCommand(serviceName)
 			rootCmd.AddCommand(cmd)
 		}
 
 		return nil
 	}
 
-	// If no cache available, fetch dynamically (this is slow path)
-	setting, err := loadConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load setting: %v", err)
-	}
-
+	// Continue with existing logic for non-local environments
 	endpoint := setting.Endpoint
 	if !strings.Contains(endpoint, "identity") {
 		parts := strings.Split(endpoint, "://")
@@ -284,13 +308,11 @@ func addDynamicServiceCommands() error {
 		return fmt.Errorf("failed to fetch services: %v", err)
 	}
 
-	// Store in both memory and file cache
 	cachedEndpointsMap = endpointsMap
 	if err := saveEndpointsCache(endpointsMap); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
 	}
 
-	// Create commands for each service
 	for serviceName := range endpointsMap {
 		cmd := createServiceCommand(serviceName)
 		rootCmd.AddCommand(cmd)

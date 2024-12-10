@@ -163,22 +163,25 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
 
 	// Configure gRPC connection
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: false,
-	}
-	creds := credentials.NewTLS(tlsConfig)
-	opts := []grpc.DialOption{
-		grpc.WithTransportCredentials(creds),
-		grpc.WithDefaultCallOptions(
-			grpc.MaxCallRecvMsgSize(10*1024*1024), // 10MB
-			grpc.MaxCallSendMsgSize(10*1024*1024), // 10MB
-		),
-	}
-
-	// Establish the connection
-	conn, err := grpc.Dial(hostPort, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("connection failed: unable to connect to %s: %v", hostPort, err)
+	var conn *grpc.ClientConn
+	if strings.HasPrefix(config.Environment, "local-") {
+		// For local environment, use insecure connection
+		conn, err = grpc.Dial("localhost:50051", grpc.WithInsecure())
+		if err != nil {
+			pterm.Error.Printf("Cannot connect to local gRPC server (localhost:50051)\n")
+			pterm.Info.Println("Please check if your gRPC server is running")
+			return nil, fmt.Errorf("failed to connect to local server: %v", err)
+		}
+	} else {
+		// Existing SSL connection logic for non-local environments
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false,
+		}
+		creds := credentials.NewTLS(tlsConfig)
+		conn, err = grpc.Dial(hostPort, grpc.WithTransportCredentials(creds))
+		if err != nil {
+			return nil, fmt.Errorf("connection failed: %v", err)
+		}
 	}
 	defer conn.Close()
 
