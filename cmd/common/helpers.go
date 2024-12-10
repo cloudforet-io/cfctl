@@ -34,39 +34,42 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
 
-	var envPrefix string
-	if strings.HasPrefix(config.Environment, "dev-") {
-		envPrefix = "dev"
-	} else if strings.HasPrefix(config.Environment, "stg-") {
-		envPrefix = "stg"
+	var conn *grpc.ClientConn
+	var refClient *grpcreflect.Client
+
+	if strings.HasPrefix(config.Environment, "local-") {
+		conn, err = grpc.Dial("localhost:50051", grpc.WithInsecure())
+		if err != nil {
+			return nil, fmt.Errorf("local connection failed: %v", err)
+		}
 	} else {
-		return nil, fmt.Errorf("unsupported environment prefix")
-	}
+		var envPrefix string
+		if strings.HasPrefix(config.Environment, "dev-") {
+			envPrefix = "dev"
+		} else if strings.HasPrefix(config.Environment, "stg-") {
+			envPrefix = "stg"
+		} else {
+			return nil, fmt.Errorf("unsupported environment prefix")
+		}
 
-	// Convert service name to endpoint format
-	endpointServiceName := convertServiceNameToEndpoint(serviceName)
-	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", endpointServiceName, envPrefix)
+		endpointServiceName := convertServiceNameToEndpoint(serviceName)
+		hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", endpointServiceName, envPrefix)
 
-	// Configure gRPC connection
-	var opts []grpc.DialOption
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: false,
-	}
-	creds := credentials.NewTLS(tlsConfig)
-	opts = append(opts, grpc.WithTransportCredentials(creds))
-
-	// Establish the connection
-	conn, err := grpc.Dial(hostPort, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("connection failed: unable to connect to %s: %v", hostPort, err)
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false,
+		}
+		creds := credentials.NewTLS(tlsConfig)
+		conn, err = grpc.Dial(hostPort, grpc.WithTransportCredentials(creds))
+		if err != nil {
+			return nil, fmt.Errorf("connection failed: %v", err)
+		}
 	}
 	defer conn.Close()
 
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", config.Environments[config.Environment].Token)
-	refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	refClient = grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
 	defer refClient.Reset()
 
-	// List all services
 	services, err := refClient.ListServices()
 	if err != nil {
 		return nil, fmt.Errorf("failed to list services: %v", err)
@@ -88,7 +91,6 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 			continue
 		}
 
-		// Extract the resource name from the service name
 		parts := strings.Split(s, ".")
 		resourceName := parts[len(parts)-1]
 
@@ -101,10 +103,9 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 		}
 	}
 
-	// Convert the map of resources to slices
 	result := make(map[string][]string)
 	for verb, resourcesSet := range verbResourceMap {
-		resources := []string{}
+		resources := make([]string, 0, len(resourcesSet))
 		for resource := range resourcesSet {
 			resources = append(resources, resource)
 		}

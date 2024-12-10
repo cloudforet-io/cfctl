@@ -1,15 +1,14 @@
 package cmd
 
 import (
-	"bytes"
-	"compress/gzip"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/spf13/viper"
 
 	"github.com/cloudforet-io/cfctl/cmd/common"
@@ -18,6 +17,8 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 )
 
 var cfgFile string
@@ -156,15 +157,32 @@ func showInitializationGuide(originalErr error) {
 		return
 	}
 
+	// Check if token exists for the current environment
+	envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
+	if envConfig != nil && envConfig.GetString("token") != "" {
+		// Token exists, no need to show guide
+		return
+	}
+
 	// Parse environment name to extract service name and environment
 	parts := strings.Split(currentEnv, "-")
 	if len(parts) >= 3 {
-		envPrefix := parts[0]   // dev, stg
-		serviceName := parts[1] // cloudone, spaceone, etc.
-		url := fmt.Sprintf("https://%s.console.%s.spaceone.dev", serviceName, envPrefix)
+		var url string
+		if parts[0] == "local" {
+			if len(parts) >= 4 {
+				envPrefix := parts[1]   // dev
+				serviceName := parts[2] // cloudone
+				url = fmt.Sprintf("https://%s.console.%s.spaceone.dev\n"+
+					"     Note: If you're running a local console server,\n"+
+					"     you can also access it at http://localhost:8080", serviceName, envPrefix)
+			}
+		} else {
+			envPrefix := parts[0]   // dev
+			serviceName := parts[1] // cloudone
+			url = fmt.Sprintf("https://%s.console.%s.spaceone.dev", serviceName, envPrefix)
+		}
 
 		if strings.HasSuffix(currentEnv, "-app") {
-			// Show app token guide
 			pterm.DefaultBox.
 				WithTitle("Token Not Found").
 				WithTitleTopCenter().
@@ -215,43 +233,64 @@ func addDynamicServiceCommands() error {
 		return nil
 	}
 
-	// Try to load endpoints from file cache
-	endpoints, err := loadCachedEndpoints()
-	if err == nil {
-		cachedEndpointsMap = endpoints
+	// Load configuration
+	setting, err := loadConfig()
+	if err != nil {
+		return fmt.Errorf("failed to load setting: %v", err)
+	}
 
-		// 병렬로 커맨드 생성
-		var wg sync.WaitGroup
-		cmdChan := make(chan *cobra.Command, len(endpoints))
+	// Handle local environment
+	if strings.HasPrefix(setting.Environment, "local-") {
+		// Try connecting to local gRPC server
+		conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(), grpc.WithBlock(), grpc.WithTimeout(2*time.Second))
+		if err != nil {
+			pterm.Error.Printf("Cannot connect to local gRPC server (grpc://localhost:50051)\n")
+			pterm.Info.Println("Please check if your gRPC server is running")
+			return fmt.Errorf("local gRPC server connection failed: %v", err)
+		}
+		defer conn.Close()
 
-		for serviceName := range endpoints {
-			wg.Add(1)
-			go func(svc string) {
-				defer wg.Done()
-				cmd := createServiceCommand(svc)
-				cmdChan <- cmd
-			}(serviceName)
+		// Create reflection client
+		ctx := context.Background()
+		refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+		defer refClient.Reset()
+
+		// List all services
+		services, err := refClient.ListServices()
+		if err != nil {
+			return fmt.Errorf("failed to list local services: %v", err)
 		}
 
-		// 별도 고루틴에서 커맨드 추가
-		go func() {
-			wg.Wait()
-			close(cmdChan)
-		}()
+		endpointsMap := make(map[string]string)
+		for _, svc := range services {
+			if strings.HasPrefix(svc, "spaceone.api.") {
+				parts := strings.Split(svc, ".")
+				if len(parts) >= 4 {
+					serviceName := parts[2]
+					// Skip core service
+					if serviceName != "core" {
+						endpointsMap[serviceName] = "grpc://localhost:50051"
+					}
+				}
+			}
+		}
 
-		for cmd := range cmdChan {
+		// Store in both memory and file cache
+		cachedEndpointsMap = endpointsMap
+		if err := saveEndpointsCache(endpointsMap); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
+		}
+
+		// Create commands for each service
+		for serviceName := range endpointsMap {
+			cmd := createServiceCommand(serviceName)
 			rootCmd.AddCommand(cmd)
 		}
 
 		return nil
 	}
 
-	// If no cache available, fetch dynamically (this is slow path)
-	setting, err := loadConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load setting: %v", err)
-	}
-
+	// Continue with existing logic for non-local environments
 	endpoint := setting.Endpoint
 	if !strings.Contains(endpoint, "identity") {
 		parts := strings.Split(endpoint, "://")
@@ -269,13 +308,11 @@ func addDynamicServiceCommands() error {
 		return fmt.Errorf("failed to fetch services: %v", err)
 	}
 
-	// Store in both memory and file cache
 	cachedEndpointsMap = endpointsMap
 	if err := saveEndpointsCache(endpointsMap); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
 	}
 
-	// Create commands for each service
 	for serviceName := range endpointsMap {
 		cmd := createServiceCommand(serviceName)
 		rootCmd.AddCommand(cmd)
@@ -330,7 +367,6 @@ func loadCachedEndpoints() (map[string]string, error) {
 	// Create environment-specific cache directory
 	envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
 
-	// Read from environment-specific cache file
 	cacheFile := filepath.Join(envCacheDir, "endpoints.toml")
 	data, err := os.ReadFile(cacheFile)
 	if err != nil {
@@ -346,7 +382,6 @@ func loadCachedEndpoints() (map[string]string, error) {
 		return nil, fmt.Errorf("cache expired")
 	}
 
-	// Parse cached endpoints from TOML
 	var endpoints map[string]string
 	if err := toml.Unmarshal(data, &endpoints); err != nil {
 		return nil, err
@@ -380,20 +415,12 @@ func saveEndpointsCache(endpoints map[string]string) error {
 		return err
 	}
 
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-
 	data, err := toml.Marshal(endpoints)
 	if err != nil {
 		return err
 	}
 
-	if _, err := gw.Write(data); err != nil {
-		return err
-	}
-	gw.Close()
-
-	return os.WriteFile(filepath.Join(envCacheDir, "endpoints.toml.gz"), buf.Bytes(), 0644)
+	return os.WriteFile(filepath.Join(envCacheDir, "endpoints.toml"), data, 0644)
 }
 
 // loadConfig loads configuration from both main and cache setting files

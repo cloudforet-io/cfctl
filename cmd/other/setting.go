@@ -121,13 +121,15 @@ var settingInitLocalCmd = &cobra.Command{
 	Short: "Initialize configuration with a local environment",
 	Long:  `Specify a local environment name to initialize the configuration.`,
 	Args:  cobra.NoArgs,
-	Example: `  cfctl setting init local -n local-cloudone --app
-                          or
-  cfctl setting init local -n local-cloudone --user`,
+	Example: `  cfctl setting init local -n [domain] --app --dev
+                            or
+  cfctl setting init local -n [domain] --user --stg`,
 	Run: func(cmd *cobra.Command, args []string) {
 		localEnv, _ := cmd.Flags().GetString("name")
 		appFlag, _ := cmd.Flags().GetBool("app")
 		userFlag, _ := cmd.Flags().GetBool("user")
+		devFlag, _ := cmd.Flags().GetBool("dev")
+		stgFlag, _ := cmd.Flags().GetBool("stg")
 
 		if localEnv == "" {
 			pterm.Error.Println("The --name flag is required.")
@@ -136,6 +138,11 @@ var settingInitLocalCmd = &cobra.Command{
 		}
 		if !appFlag && !userFlag {
 			pterm.Error.Println("You must specify either --app or --user flag.")
+			cmd.Help()
+			return
+		}
+		if !devFlag && !stgFlag {
+			pterm.Error.Println("You must specify either --dev or --stg flag.")
 			cmd.Help()
 			return
 		}
@@ -158,12 +165,23 @@ var settingInitLocalCmd = &cobra.Command{
 			}
 		}
 
+		envPrefix := ""
+		if devFlag {
+			envPrefix = "dev"
+		} else if stgFlag {
+			envPrefix = "stg"
+		}
+
 		var envName string
 		if appFlag {
-			envName = fmt.Sprintf("%s-app", localEnv)
+			envName = fmt.Sprintf("local-%s-%s-app", envPrefix, localEnv)
+		} else {
+			envName = fmt.Sprintf("local-%s-%s-user", envPrefix, localEnv)
+		}
+
+		if appFlag {
 			updateLocalSetting(envName, "app", mainSettingPath)
 		} else {
-			envName = fmt.Sprintf("%s-user", localEnv)
 			updateLocalSetting(envName, "user", filepath.Join(settingDir, "cache", "setting.toml"))
 		}
 
@@ -226,20 +244,12 @@ var envCmd = &cobra.Command{
 		// Set paths for app and user configurations
 		settingDir := GetSettingDir()
 		appSettingPath := filepath.Join(settingDir, "setting.toml")
-		userSettingPath := filepath.Join(settingDir, "cache", "setting.toml")
 
 		// Create separate Viper instances
 		appV := viper.New()
-		userV := viper.New()
 
 		// Load app configuration
 		if err := loadSetting(appV, appSettingPath); err != nil {
-			pterm.Error.Println(err)
-			return
-		}
-
-		// Load user configuration
-		if err := loadSetting(userV, userSettingPath); err != nil {
 			pterm.Error.Println(err)
 			return
 		}
@@ -255,7 +265,6 @@ var envCmd = &cobra.Command{
 		if switchEnv != "" {
 			// Check environment in both app and user settings
 			appEnvMap := appV.GetStringMap("environments")
-			userEnvMap := userV.GetStringMap("environments")
 
 			if currentEnv == switchEnv {
 				pterm.Info.Printf("Already in '%s' environment.\n", currentEnv)
@@ -263,12 +272,10 @@ var envCmd = &cobra.Command{
 			}
 
 			if _, existsApp := appEnvMap[switchEnv]; !existsApp {
-				if _, existsUser := userEnvMap[switchEnv]; !existsUser {
-					home, _ := os.UserHomeDir()
-					pterm.Error.Printf("Environment '%s' not found in %s/.cfctl/setting.toml",
-						switchEnv, home)
-					return
-				}
+				home, _ := os.UserHomeDir()
+				pterm.Error.Printf("Environment '%s' not found in %s/.cfctl/setting.toml",
+					switchEnv, home)
+				return
 			}
 
 			// Update only the environment field in app setting
@@ -290,14 +297,10 @@ var envCmd = &cobra.Command{
 			var targetViper *viper.Viper
 			var targetSettingPath string
 			envMapApp := appV.GetStringMap("environments")
-			envMapUser := userV.GetStringMap("environments")
 
 			if _, exists := envMapApp[removeEnv]; exists {
 				targetViper = appV
 				targetSettingPath = appSettingPath
-			} else if _, exists := envMapUser[removeEnv]; exists {
-				targetViper = userV
-				targetSettingPath = userSettingPath
 			} else {
 				home, _ := os.UserHomeDir()
 				pterm.Error.Printf("Environment '%s' not found in %s/.cfctl/setting.toml",
@@ -348,18 +351,12 @@ var envCmd = &cobra.Command{
 		if listOnly {
 			// Get environment maps from both app and user settings
 			appEnvMap := appV.GetStringMap("environments")
-			userEnvMap := userV.GetStringMap("environments")
 
 			// Map to store all unique environments
 			allEnvs := make(map[string]bool)
 
 			// Add app environments
 			for envName := range appEnvMap {
-				allEnvs[envName] = true
-			}
-
-			// Add user environments
-			for envName := range userEnvMap {
 				allEnvs[envName] = true
 			}
 
@@ -376,8 +373,6 @@ var envCmd = &cobra.Command{
 					pterm.FgGreen.Printf("%s (current)\n", envName)
 				} else {
 					if _, isApp := appEnvMap[envName]; isApp {
-						pterm.Printf("%s\n", envName)
-					} else {
 						pterm.Printf("%s\n", envName)
 					}
 				}
@@ -874,7 +869,7 @@ func loadSetting(v *viper.Viper, settingPath string) error {
 			// Initialize with default values if file doesn't exist
 			defaultSettings := map[string]interface{}{
 				"environments": map[string]interface{}{},
-				"environment": "",
+				"environment":  "",
 			}
 
 			// Convert to TOML
@@ -1118,6 +1113,8 @@ func init() {
 	settingInitLocalCmd.Flags().StringP("name", "n", "", "Local environment name for the environment")
 	settingInitLocalCmd.Flags().Bool("app", false, "Initialize as application configuration")
 	settingInitLocalCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
+	settingInitLocalCmd.Flags().Bool("dev", false, "Initialize as development environment")
+	settingInitLocalCmd.Flags().Bool("stg", false, "Initialize as staging environment")
 
 	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
 	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
