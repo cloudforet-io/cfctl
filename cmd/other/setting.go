@@ -46,9 +46,9 @@ var settingInitURLCmd = &cobra.Command{
 	Short: "Initialize configuration with a URL",
 	Long:  `Specify a URL to initialize the environment configuration.`,
 	Args:  cobra.NoArgs,
-	Example: `  cfctl setting init url -u https://spaceone.spaceone.megazone.io --app
+	Example: `  cfctl setting init url -u https://example.com --app
                           or
-  cfctl setting init url -u https://spaceone.spaceone.megazone.io --user`,
+  cfctl setting init url -u https://example.com --user`,
 	Run: func(cmd *cobra.Command, args []string) {
 		urlStr, _ := cmd.Flags().GetString("url")
 		appFlag, _ := cmd.Flags().GetBool("app")
