@@ -46,9 +46,9 @@ var settingInitURLCmd = &cobra.Command{
 	Short: "Initialize configuration with a URL",
 	Long:  `Specify a URL to initialize the environment configuration.`,
 	Args:  cobra.NoArgs,
-	Example: `  cfctl setting init url -u https://spaceone.spaceone.megazone.io --app
+	Example: `  cfctl setting init url -u https://example.com --app
                           or
-  cfctl setting init url -u https://spaceone.spaceone.megazone.io --user`,
+  cfctl setting init url -u https://example.com --user`,
 	Run: func(cmd *cobra.Command, args []string) {
 		urlStr, _ := cmd.Flags().GetString("url")
 		appFlag, _ := cmd.Flags().GetBool("app")
@@ -182,7 +182,7 @@ var settingInitLocalCmd = &cobra.Command{
 		if appFlag {
 			updateLocalSetting(envName, "app", mainSettingPath)
 		} else {
-			updateLocalSetting(envName, "user", filepath.Join(settingDir, "cache", "setting.toml"))
+			updateLocalSetting(envName, "user", mainSettingPath)
 		}
 
 		// Update the current environment in the main setting
@@ -226,7 +226,12 @@ func updateLocalSetting(envName, settingType, settingPath string) {
 
 	// Set environment configuration
 	v.Set(fmt.Sprintf("environments.%s.endpoint", envName), "grpc://localhost:50051")
-	v.Set(fmt.Sprintf("environments.%s.token", envName), "")
+	if settingType == "app" {
+		v.Set(fmt.Sprintf("environments.%s.token", envName), "")
+		v.Set(fmt.Sprintf("environments.%s.proxy", envName), true)
+	} else if settingType == "user" {
+		v.Set(fmt.Sprintf("environments.%s.proxy", envName), false)
+	}
 
 	// Write configuration
 	if err := v.WriteConfig(); err != nil {
@@ -400,12 +405,6 @@ var showCmd = &cobra.Command{
 
 		// Load app configuration
 		if err := loadSetting(appV, appSettingPath); err != nil {
-			pterm.Error.Println(err)
-			return
-		}
-
-		// Load user configuration
-		if err := loadSetting(userV, userSettingPath); err != nil {
 			pterm.Error.Println(err)
 			return
 		}
