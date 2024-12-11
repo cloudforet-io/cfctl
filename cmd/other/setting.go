@@ -1120,7 +1120,7 @@ func init() {
 	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
 	envCmd.Flags().BoolP("list", "l", false, "List available environments")
 
-	showCmd.Flags().StringP("output", "o", "yaml", "Output format (yaml/json)")
+	showCmd.Flags().StringP("output", "o", "toml", "Output format (toml/json)")
 
 	settingEndpointCmd.Flags().StringP("service", "s", "", "Service to set the endpoint for")
 
