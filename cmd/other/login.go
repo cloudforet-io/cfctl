@@ -451,10 +451,7 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	accessToken, refreshToken, newAccessToken, err := getValidTokens(currentEnv)
-	if err == nil && refreshToken != "" && !isTokenExpired(refreshToken) {
-		// Use existing valid refresh token
-		accessToken = newAccessToken
-	} else {
+	if err != nil || refreshToken == "" || isTokenExpired(refreshToken) {
 		// Get new tokens with password
 		password := promptPassword()
 		accessToken, refreshToken, err = issueToken(baseUrl, tempUserID, password, domainID)
