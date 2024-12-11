@@ -94,11 +94,18 @@ func init() {
 		pterm.DisableColor()
 	}
 
-	// Skip configuration check for settings init commands
-	if len(os.Args) >= 3 && os.Args[1] == "settings" && os.Args[2] == "init" {
-		// Skip configuration check for initialization
-	} else {
-		// Try to add dynamic service commands
+	// Determine if the current command is 'setting environment -l'
+	skipDynamicCommands := false
+	if len(os.Args) >= 3 && os.Args[1] == "setting" && os.Args[2] == "environment" {
+		for _, arg := range os.Args[3:] {
+			if arg == "-l" || arg == "--list" {
+				skipDynamicCommands = true
+				break
+			}
+		}
+	}
+
+	if !skipDynamicCommands {
 		if err := addDynamicServiceCommands(); err != nil {
 			showInitializationGuide(err)
 		}
