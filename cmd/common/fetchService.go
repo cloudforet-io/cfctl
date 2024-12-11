@@ -7,11 +7,14 @@ import (
 	"encoding/csv"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"google.golang.org/protobuf/types/known/structpb"
 
 	"github.com/eiannone/keyboard"
 	"github.com/spf13/viper"
@@ -198,102 +201,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 			// Extract parameter name from error message
 			paramName := extractParameterName(err.Error())
 			if paramName != "" {
-				// Ask user for the missing parameter
-				pterm.Info.Printf("Required parameter '%s' is missing.\n", paramName)
-				value, err := promptForParameter(paramName)
-				if err != nil {
-					return nil, err
-				}
-
-				// Add the parameter to options
-				if options.Parameters == nil {
-					options.Parameters = make([]string, 0)
-				}
-				options.Parameters = append(options.Parameters, fmt.Sprintf("%s=%s", paramName, value))
-
-				// Retry the call with the new parameter
-				jsonBytes, err = fetchJSONResponse(config, serviceName, verb, resourceName, options)
-				if err != nil {
-					return nil, err
-				}
-
-				// Unmarshal JSON bytes to a map
-				var respMap map[string]interface{}
-				if err = json.Unmarshal(jsonBytes, &respMap); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal JSON: %v", err)
-				}
-
-				// Print the data if not in watch mode
-				if options.OutputFormat != "" {
-					if options.SortBy != "" && verb == "list" {
-						if results, ok := respMap["results"].([]interface{}); ok {
-							// Sort the results by the specified field
-							sort.Slice(results, func(i, j int) bool {
-								iMap := results[i].(map[string]interface{})
-								jMap := results[j].(map[string]interface{})
-
-								iVal, iOk := iMap[options.SortBy]
-								jVal, jOk := jMap[options.SortBy]
-
-								// Handle cases where the field doesn't exist
-								if !iOk && !jOk {
-									return false
-								} else if !iOk {
-									return false
-								} else if !jOk {
-									return true
-								}
-
-								// Compare based on type
-								switch v := iVal.(type) {
-								case string:
-									return v < jVal.(string)
-								case float64:
-									return v < jVal.(float64)
-								case bool:
-									return v && !jVal.(bool)
-								default:
-									return false
-								}
-							})
-							respMap["results"] = results
-						}
-					}
-
-					// Apply limit if specified
-					if options.Limit > 0 && verb == "list" {
-						if results, ok := respMap["results"].([]interface{}); ok {
-							if len(results) > options.Limit {
-								respMap["results"] = results[:options.Limit]
-							}
-						}
-					}
-
-					// Filter columns if specified
-					if options.Columns != "" && verb == "list" {
-						if results, ok := respMap["results"].([]interface{}); ok {
-							columns := strings.Split(options.Columns, ",")
-							filteredResults := make([]interface{}, len(results))
-
-							for i, result := range results {
-								if resultMap, ok := result.(map[string]interface{}); ok {
-									filteredMap := make(map[string]interface{})
-									for _, col := range columns {
-										if val, exists := resultMap[strings.TrimSpace(col)]; exists {
-											filteredMap[strings.TrimSpace(col)] = val
-										}
-									}
-									filteredResults[i] = filteredMap
-								}
-							}
-							respMap["results"] = filteredResults
-						}
-					}
-
-					printData(respMap, options, serviceName, resourceName, refClient)
-				}
-
-				return respMap, nil
+				return nil, fmt.Errorf("missing required parameter: %s", paramName)
 			}
 		}
 		return nil, err
@@ -509,10 +417,11 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 		return nil, fmt.Errorf("method not found: %s", verb)
 	}
 
+	// Create request and response messages
 	reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
 	respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
 
-	// Parse the input parameters into the request message
+	// Parse and set input parameters
 	inputParams, err := parseParameters(options)
 	if err != nil {
 		return nil, err
@@ -520,32 +429,67 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 
 	for key, value := range inputParams {
 		if err := reqMsg.TrySetFieldByName(key, value); err != nil {
-			// If the error indicates an unknown field, list valid fields
-			if strings.Contains(err.Error(), "unknown field") {
-				validFields := []string{}
-				fieldDescs := reqMsg.GetKnownFields()
-				for _, fd := range fieldDescs {
-					validFields = append(validFields, fd.GetName())
-				}
-				return nil, fmt.Errorf("failed to set field '%s': unknown field name. Valid fields are: %s", key, strings.Join(validFields, ", "))
-			}
 			return nil, fmt.Errorf("failed to set field '%s': %v", key, err)
 		}
 	}
 
 	fullMethod := fmt.Sprintf("/%s/%s", fullServiceName, verb)
 
+	// Handle client streaming
+	if !methodDesc.IsClientStreaming() && methodDesc.IsServerStreaming() {
+		streamDesc := &grpc.StreamDesc{
+			StreamName:    verb,
+			ServerStreams: true,
+			ClientStreams: false,
+		}
+
+		stream, err := conn.NewStream(ctx, streamDesc, fullMethod)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create stream: %v", err)
+		}
+
+		if err := stream.SendMsg(reqMsg); err != nil {
+			return nil, fmt.Errorf("failed to send request message: %v", err)
+		}
+
+		if err := stream.CloseSend(); err != nil {
+			return nil, fmt.Errorf("failed to close send: %v", err)
+		}
+
+		var allResponses []string
+		for {
+			respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
+			err := stream.RecvMsg(respMsg)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, fmt.Errorf("failed to receive response: %v", err)
+			}
+
+			jsonBytes, err := respMsg.MarshalJSON()
+			if err != nil {
+				return nil, fmt.Errorf("failed to marshal response: %v", err)
+			}
+
+			allResponses = append(allResponses, string(jsonBytes))
+		}
+
+		if len(allResponses) == 1 {
+			return []byte(allResponses[0]), nil
+		}
+
+		combinedJSON := fmt.Sprintf("{\"results\": [%s]}", strings.Join(allResponses, ","))
+		return []byte(combinedJSON), nil
+	}
+
+	// Regular unary call
 	err = conn.Invoke(ctx, fullMethod, reqMsg, respMsg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to invoke method %s: %v", fullMethod, err)
 	}
 
-	jsonBytes, err := respMsg.MarshalJSON()
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal response message to JSON: %v", err)
-	}
-
-	return jsonBytes, nil
+	return respMsg.MarshalJSON()
 }
 
 func parseParameters(options *FetchOptions) (map[string]interface{}, error) {
@@ -558,8 +502,28 @@ func parseParameters(options *FetchOptions) (map[string]interface{}, error) {
 			return nil, fmt.Errorf("failed to read file parameter: %v", err)
 		}
 
-		if err := yaml.Unmarshal(data, &parsed); err != nil {
+		var yamlData map[string]interface{}
+		if err := yaml.Unmarshal(data, &yamlData); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal YAML file: %v", err)
+		}
+
+		for key, value := range yamlData {
+			switch v := value.(type) {
+			case map[string]interface{}:
+				structValue, err := structpb.NewStruct(v)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert map to struct: %v", err)
+				}
+				parsed[key] = structValue
+			case []interface{}:
+				listValue, err := structpb.NewList(v)
+				if err != nil {
+					return nil, fmt.Errorf("failed to convert array to list: %v", err)
+				}
+				parsed[key] = listValue
+			default:
+				parsed[key] = value
+			}
 		}
 	}
 
@@ -592,12 +556,20 @@ func parseParameters(options *FetchOptions) (map[string]interface{}, error) {
 }
 
 func discoverService(refClient *grpcreflect.Client, serviceName string, resourceName string) (string, error) {
-	possibleVersions := []string{"v1", "v2"}
+	services, err := refClient.ListServices()
+	if err != nil {
+		return "", fmt.Errorf("failed to list services: %v", err)
+	}
 
-	for _, version := range possibleVersions {
-		fullServiceName := fmt.Sprintf("spaceone.api.%s.%s.%s", serviceName, version, resourceName)
-		if _, err := refClient.ResolveService(fullServiceName); err == nil {
-			return fullServiceName, nil
+	for _, service := range services {
+		if strings.Contains(service, fmt.Sprintf("spaceone.api.%s", serviceName)) &&
+			strings.HasSuffix(service, resourceName) {
+			return service, nil
+		}
+
+		if strings.Contains(service, serviceName) &&
+			strings.HasSuffix(service, resourceName) {
+			return service, nil
 		}
 	}
 
@@ -617,41 +589,30 @@ func printData(data map[string]interface{}, options *FetchOptions, serviceName, 
 		fmt.Println(output)
 
 	case "yaml":
-		var buf bytes.Buffer
-		encoder := yaml.NewEncoder(&buf)
-		encoder.SetIndent(2)
-		err := encoder.Encode(data)
-		if err != nil {
-			log.Fatalf("Failed to marshal response to YAML: %v", err)
+		if results, ok := data["results"].([]interface{}); ok && len(results) > 0 {
+			var sb strings.Builder
+			for i, item := range results {
+				if i > 0 {
+					sb.WriteString("---\n")
+				}
+				sb.WriteString(printYAMLDoc(item))
+			}
+			output = sb.String()
+			fmt.Print(output)
+		} else {
+			output = printYAMLDoc(data)
+			fmt.Print(output)
 		}
-		output = buf.String()
-		fmt.Printf("---\n%s\n", output)
 
 	case "table":
-		// Check if data has 'results' key
-		if _, ok := data["results"].([]interface{}); ok {
-			output = printTable(data, options, serviceName, resourceName, refClient)
-		} else {
-			// If no 'results' key, treat the entire data as results
-			wrappedData := map[string]interface{}{
-				"results": []interface{}{data},
-			}
-			output = printTable(wrappedData, options, serviceName, resourceName, refClient)
-		}
+		output = printTable(data, options, serviceName, resourceName, refClient)
 
 	case "csv":
 		output = printCSV(data)
 
 	default:
-		var buf bytes.Buffer
-		encoder := yaml.NewEncoder(&buf)
-		encoder.SetIndent(2)
-		err := encoder.Encode(data)
-		if err != nil {
-			log.Fatalf("Failed to marshal response to YAML: %v", err)
-		}
-		output = buf.String()
-		fmt.Printf("---\n%s\n", output)
+		output = printYAMLDoc(data)
+		fmt.Print(output)
 	}
 
 	// Copy to clipboard if requested
@@ -661,6 +622,16 @@ func printData(data map[string]interface{}, options *FetchOptions, serviceName, 
 		}
 		pterm.Success.Println("The output has been copied to your clipboard.")
 	}
+}
+
+func printYAMLDoc(v interface{}) string {
+	var buf bytes.Buffer
+	encoder := yaml.NewEncoder(&buf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(v); err != nil {
+		log.Fatalf("Failed to marshal response to YAML: %v", err)
+	}
+	return buf.String()
 }
 
 func getMinimalFields(serviceName, resourceName string, refClient *grpcreflect.Client) []string {

@@ -131,7 +131,7 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 					OutputFormat:    outputFormat,
 					CopyToClipboard: copyToClipboard,
 					SortBy:          sortBy,
-					MinimalColumns:  cmd.Flag("minimal").Changed,
+					MinimalColumns:  currentVerb == "list" && cmd.Flag("minimal") != nil && cmd.Flag("minimal").Changed,
 					Columns:         columns,
 					Limit:           limit,
 				}
