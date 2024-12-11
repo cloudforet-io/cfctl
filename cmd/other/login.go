@@ -1598,7 +1598,7 @@ func validateAndDecodeToken(token string) (map[string]interface{}, error) {
 	}
 
 	// Check required fields
-	requiredFields := []string{"exp", "rol", "did"}
+	requiredFields := []string{"exp", "did"}
 	for _, field := range requiredFields {
 		if _, ok := claims[field]; !ok {
 			return nil, fmt.Errorf("invalid token format: missing required field '%s'", field)
@@ -1668,30 +1668,14 @@ func getValidTokens(currentEnv string) (accessToken, refreshToken, newAccessToke
 
 	envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
 
-	// Try to read and validate grant token first
-	if newAccessToken, err = readTokenFromFile(envCacheDir, "grant_token"); err == nil {
-		claims, err := validateAndDecodeToken(newAccessToken)
+	if refreshToken, err = readTokenFromFile(envCacheDir, "refresh_token"); err == nil {
+		claims, err := validateAndDecodeToken(refreshToken)
 		if err == nil {
-			// Check if token has expired
 			if exp, ok := claims["exp"].(float64); ok {
 				if time.Now().Unix() < int64(exp) {
 					accessToken, _ = readTokenFromFile(envCacheDir, "access_token")
-					refreshToken, _ = readTokenFromFile(envCacheDir, "refresh_token")
+					newAccessToken, _ = readTokenFromFile(envCacheDir, "grant_token")
 					return accessToken, refreshToken, newAccessToken, nil
-				}
-			}
-		}
-	}
-
-	// If grant token is invalid or expired, check refresh token
-	if accessToken, err = readTokenFromFile(envCacheDir, "access_token"); err == nil {
-		if refreshToken, err = readTokenFromFile(envCacheDir, "refresh_token"); err == nil {
-			claims, err := validateAndDecodeToken(refreshToken)
-			if err == nil {
-				if exp, ok := claims["exp"].(float64); ok {
-					if time.Now().Unix() < int64(exp) {
-						return accessToken, refreshToken, "", nil
-					}
 				}
 			}
 		}
