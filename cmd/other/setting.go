@@ -60,7 +60,7 @@ var settingInitURLCmd = &cobra.Command{
 			return
 		}
 		if !appFlag && !userFlag {
-			pterm.Error.Println("You must specify either --app or --user flag.")
+			pterm.Error.Println("You must specify either --app, --user, or --plugin flag.")
 			cmd.Help()
 			return
 		}
@@ -130,14 +130,21 @@ var settingInitLocalCmd = &cobra.Command{
 		userFlag, _ := cmd.Flags().GetBool("user")
 		devFlag, _ := cmd.Flags().GetBool("dev")
 		stgFlag, _ := cmd.Flags().GetBool("stg")
+		pluginFlag, _ := cmd.Flags().GetBool("plugin")
 
 		if localEnv == "" {
 			pterm.Error.Println("The --name flag is required.")
 			cmd.Help()
 			return
 		}
+		// Plugin flag takes precedence over other flags
+		if pluginFlag {
+			// For plugin, we don't need other flags
+			initializePluginSetting(localEnv)
+			return
+		}
 		if !appFlag && !userFlag {
-			pterm.Error.Println("You must specify either --app or --user flag.")
+			pterm.Error.Println("You must specify either --app, --user, or --plugin flag.")
 			cmd.Help()
 			return
 		}
@@ -208,6 +215,44 @@ var settingInitLocalCmd = &cobra.Command{
 	},
 }
 
+func initializePluginSetting(pluginName string) {
+	settingDir := GetSettingDir()
+	if err := os.MkdirAll(settingDir, 0755); err != nil {
+		pterm.Error.Printf("Failed to create setting directory: %v\n", err)
+		return
+	}
+
+	mainSettingPath := filepath.Join(settingDir, "setting.toml")
+	if _, err := os.Stat(mainSettingPath); os.IsNotExist(err) {
+		initialSetting := []byte("environments = {}\n")
+		if err := os.WriteFile(mainSettingPath, initialSetting, 0644); err != nil {
+			pterm.Error.Printf("Failed to create setting file: %v\n", err)
+			return
+		}
+	}
+
+	v := viper.New()
+	v.SetConfigFile(mainSettingPath)
+	v.SetConfigType("toml")
+
+	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
+		pterm.Error.Printf("Error reading setting: %v\n", err)
+		return
+	}
+
+	// Set environment configuration
+	v.Set(fmt.Sprintf("environments.%s.endpoint", pluginName), "grpc://localhost:50051")
+	v.Set(fmt.Sprintf("environments.%s.token", pluginName), "NO TOKEN")
+	v.Set("environment", pluginName)
+
+	if err := v.WriteConfig(); err != nil {
+		pterm.Error.Printf("Failed to write setting: %v\n", err)
+		return
+	}
+
+	pterm.Success.Printf("Plugin environment '%s' successfully initialized.\n", pluginName)
+}
+
 func updateLocalSetting(envName, settingType, settingPath string) {
 	v := viper.New()
 	v.SetConfigFile(settingPath)
@@ -228,9 +273,6 @@ func updateLocalSetting(envName, settingType, settingPath string) {
 	v.Set(fmt.Sprintf("environments.%s.endpoint", envName), "grpc://localhost:50051")
 	if settingType == "app" {
 		v.Set(fmt.Sprintf("environments.%s.token", envName), "")
-		v.Set(fmt.Sprintf("environments.%s.proxy", envName), true)
-	} else if settingType == "user" {
-		v.Set(fmt.Sprintf("environments.%s.proxy", envName), false)
 	}
 
 	// Write configuration
@@ -1163,6 +1205,7 @@ func init() {
 	settingInitLocalCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
 	settingInitLocalCmd.Flags().Bool("dev", false, "Initialize as development environment")
 	settingInitLocalCmd.Flags().Bool("stg", false, "Initialize as staging environment")
+	settingInitLocalCmd.Flags().Bool("plugin", false, "Initialize as plugin configuration")
 
 	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
 	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
