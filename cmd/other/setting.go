@@ -650,6 +650,54 @@ Available Services are fetched dynamically from the backend.`,
 	},
 }
 
+// settingTokenCmd updates the token for the current environment
+var settingTokenCmd = &cobra.Command{
+	Use:   "token [token_value]",
+	Short: "Set the token for the current environment",
+	Long: `Update the token for the current environment.
+This command only works with app environments (-app suffix).`,
+	Args: cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		// Load current environment configuration file
+		settingDir := GetSettingDir()
+		settingPath := filepath.Join(settingDir, "setting.toml")
+
+		v := viper.New()
+		v.SetConfigFile(settingPath)
+		v.SetConfigType("toml")
+
+		if err := v.ReadInConfig(); err != nil {
+			pterm.Error.Printf("Failed to read setting file: %v\n", err)
+			return
+		}
+
+		// Get current environment
+		currentEnv := v.GetString("environment")
+		if currentEnv == "" {
+			pterm.Error.Println("No environment is currently selected.")
+			return
+		}
+
+		// Check if it's an app environment
+		if !strings.HasSuffix(currentEnv, "-app") {
+			pterm.Error.Println("Token can only be set for app environments (-app suffix).")
+			return
+		}
+
+		// Update token
+		tokenKey := fmt.Sprintf("environments.%s.token", currentEnv)
+		v.Set(tokenKey, args[0])
+
+		// Save configuration
+		if err := v.WriteConfig(); err != nil {
+			pterm.Error.Printf("Failed to update token: %v\n", err)
+			return
+		}
+
+		pterm.Success.Printf("Token updated for '%s' environment.\n", currentEnv)
+	},
+}
+
 // fetchAvailableServices retrieves the list of services by calling the List method on the Endpoint service.
 func fetchAvailableServices(endpoint, token string) ([]string, error) {
 	if !strings.Contains(endpoint, "identity.api") {
@@ -1100,6 +1148,7 @@ func init() {
 	SettingCmd.AddCommand(envCmd)
 	SettingCmd.AddCommand(showCmd)
 	SettingCmd.AddCommand(settingEndpointCmd)
+	SettingCmd.AddCommand(settingTokenCmd)
 	settingInitCmd.AddCommand(settingInitURLCmd)
 	settingInitCmd.AddCommand(settingInitLocalCmd)
 
