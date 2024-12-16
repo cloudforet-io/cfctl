@@ -77,10 +77,6 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 				if err != nil {
 					return err
 				}
-				apiVersion, err := cmd.Flags().GetString("api-version")
-				if err != nil {
-					return err
-				}
 				outputFormat, err := cmd.Flags().GetString("output")
 				if err != nil {
 					return err
@@ -103,7 +99,6 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 					Parameters:      parameters,
 					JSONParameter:   jsonParameter,
 					FileParameter:   fileParameter,
-					APIVersion:      apiVersion,
 					OutputFormat:    outputFormat,
 					CopyToClipboard: copyToClipboard,
 					SortBy:          sortBy,
@@ -147,7 +142,6 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 		verbCmd.Flags().StringArrayP("parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")
 		verbCmd.Flags().StringP("json-parameter", "j", "", "JSON type parameter")
 		verbCmd.Flags().StringP("file-parameter", "f", "", "YAML file parameter")
-		verbCmd.Flags().StringP("api-version", "v", "v1", "API Version")
 		verbCmd.Flags().StringP("output", "o", "yaml", "Output format (yaml, json, table, csv)")
 		verbCmd.Flags().BoolP("copy", "y", false, "Copy the output to the clipboard (copies any output format)")
 

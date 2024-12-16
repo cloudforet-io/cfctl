@@ -6,8 +6,12 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"gopkg.in/yaml.v3"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -27,47 +31,87 @@ func convertServiceNameToEndpoint(serviceName string) string {
 	return strings.ReplaceAll(serviceName, "_", "-")
 }
 
-// BuildVerbResourceMap builds a mapping from verbs to resources for a given service
+
 func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
+	// Try to load from cache first
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home directory: %v", err)
+	}
+
 	config, err := loadConfig()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
 
-	var conn *grpc.ClientConn
-	var refClient *grpcreflect.Client
+	cacheDir := filepath.Join(home, ".cfctl", "cache", config.Environment)
+	cacheFile := filepath.Join(cacheDir, fmt.Sprintf("%s_verbs.yaml", serviceName))
 
-	if strings.HasPrefix(config.Environment, "local-") {
-		conn, err = grpc.Dial("localhost:50051", grpc.WithInsecure())
-		if err != nil {
-			return nil, fmt.Errorf("local connection failed: %v", err)
+	// Check if cache exists and is fresh (less than 1 hour old)
+	if info, err := os.Stat(cacheFile); err == nil {
+		if time.Since(info.ModTime()) < time.Hour {
+			data, err := os.ReadFile(cacheFile)
+			if err == nil {
+				verbResourceMap := make(map[string][]string)
+				if err := yaml.Unmarshal(data, &verbResourceMap); err == nil {
+					return verbResourceMap, nil
+				}
+			}
 		}
-	} else {
-		var envPrefix string
-		if strings.HasPrefix(config.Environment, "dev-") {
-			envPrefix = "dev"
-		} else if strings.HasPrefix(config.Environment, "stg-") {
-			envPrefix = "stg"
-		} else {
-			return nil, fmt.Errorf("unsupported environment prefix")
-		}
+	}
 
-		endpointServiceName := convertServiceNameToEndpoint(serviceName)
-		hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", endpointServiceName, envPrefix)
+	// Cache miss or expired, fetch from server
+	verbResourceMap, err := fetchVerbResourceMap(serviceName, config)
+	if err != nil {
+		return nil, err
+	}
 
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: false,
+	// Save to cache
+	if err := os.MkdirAll(cacheDir, 0755); err == nil {
+		data, err := yaml.Marshal(verbResourceMap)
+		if err == nil {
+			os.WriteFile(cacheFile, data, 0644)
 		}
-		creds := credentials.NewTLS(tlsConfig)
-		conn, err = grpc.Dial(hostPort, grpc.WithTransportCredentials(creds))
-		if err != nil {
-			return nil, fmt.Errorf("connection failed: %v", err)
+	}
+
+	return verbResourceMap, nil
+}
+
+func fetchVerbResourceMap(serviceName string, config *Config) (map[string][]string, error) {
+	envConfig := config.Environments[config.Environment]
+	if envConfig.URL == "" {
+		return nil, fmt.Errorf("URL not found in environment config")
+	}
+
+	// Parse URL to get environment
+	urlParts := strings.Split(envConfig.URL, ".")
+	var envPrefix string
+	for i, part := range urlParts {
+		if part == "console" && i+1 < len(urlParts) {
+			envPrefix = urlParts[i+1]
+			break
 		}
+	}
+
+	if envPrefix == "" {
+		return nil, fmt.Errorf("environment prefix not found in URL: %s", envConfig.URL)
+	}
+
+	endpointServiceName := convertServiceNameToEndpoint(serviceName)
+	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", endpointServiceName, envPrefix)
+
+	tlsConfig := &tls.Config{
+		InsecureSkipVerify: false,
+	}
+	creds := credentials.NewTLS(tlsConfig)
+	conn, err := grpc.Dial(hostPort, grpc.WithTransportCredentials(creds))
+	if err != nil {
+		return nil, fmt.Errorf("connection failed: %v", err)
 	}
 	defer conn.Close()
 
-	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", config.Environments[config.Environment].Token)
-	refClient = grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", envConfig.Token)
+	refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
 	defer refClient.Reset()
 
 	services, err := refClient.ListServices()
@@ -75,13 +119,8 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 		return nil, fmt.Errorf("failed to list services: %v", err)
 	}
 
-	verbResourceMap := make(map[string]map[string]struct{})
-
+	verbResourceMap := make(map[string][]string)
 	for _, s := range services {
-		if strings.HasPrefix(s, "grpc.reflection.") {
-			continue
-		}
-
 		if !strings.Contains(s, fmt.Sprintf(".%s.", serviceName)) {
 			continue
 		}
@@ -91,29 +130,18 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 			continue
 		}
 
-		parts := strings.Split(s, ".")
-		resourceName := parts[len(parts)-1]
-
+		resourceName := s[strings.LastIndex(s, ".")+1:]
 		for _, method := range serviceDesc.GetMethods() {
 			verb := method.GetName()
-			if verbResourceMap[verb] == nil {
-				verbResourceMap[verb] = make(map[string]struct{})
+			if resources, ok := verbResourceMap[verb]; ok {
+				verbResourceMap[verb] = append(resources, resourceName)
+			} else {
+				verbResourceMap[verb] = []string{resourceName}
 			}
-			verbResourceMap[verb][resourceName] = struct{}{}
 		}
 	}
 
-	result := make(map[string][]string)
-	for verb, resourcesSet := range verbResourceMap {
-		resources := make([]string, 0, len(resourcesSet))
-		for resource := range resourcesSet {
-			resources = append(resources, resource)
-		}
-		sort.Strings(resources)
-		result[verb] = resources
-	}
-
-	return result, nil
+	return verbResourceMap, nil
 }
 
 // CustomParentHelpFunc customizes the help output for the parent command
