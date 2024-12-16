@@ -188,7 +188,14 @@ func showInitializationGuide(originalErr error) {
 			// Get URL from environment config
 			url := envConfig.GetString("url")
 			if url == "" {
-				url = "https://console.spaceone.dev"
+				// Fallback URL if not specified in config
+				parts := strings.Split(currentEnv, "-")
+				if len(parts) >= 2 {
+					serviceName := parts[0]   // cloudone, spaceone, etc.
+					url = fmt.Sprintf("https://%s.console.dev.spaceone.dev", serviceName)
+				} else {
+					url = "https://console.spaceone.dev"
+				}
 			}
 
 			pterm.DefaultBox.
