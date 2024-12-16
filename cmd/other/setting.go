@@ -67,7 +67,7 @@ var settingInitURLCmd = &cobra.Command{
 
 		envName, err := parseEnvNameFromURL(urlStr)
 		if err != nil {
-			pterm.Error.Println("Invalid URL:", err)
+			pterm.Error.Printf("Failed to parse environment name from URL: %v\n", err)
 			return
 		}
 
@@ -78,7 +78,6 @@ var settingInitURLCmd = &cobra.Command{
 			return
 		}
 
-		// Initialize setting.yaml if it doesn't exist
 		mainSettingPath := filepath.Join(settingDir, "setting.yaml")
 
 		// Check if environment already exists
@@ -86,12 +85,13 @@ var settingInitURLCmd = &cobra.Command{
 		v.SetConfigFile(mainSettingPath)
 		v.SetConfigType("yaml")
 
+		envSuffix := map[bool]string{true: "app", false: "user"}[appFlag]
+		fullEnvName := fmt.Sprintf("%s-%s", envName, envSuffix)
+
 		if err := v.ReadInConfig(); err == nil {
 			// File exists and can be read
-			envSuffix := map[bool]string{true: "app", false: "user"}[appFlag]
-			fullEnvName := fmt.Sprintf("%s-%s", envName, envSuffix)
-
-			if envConfig := v.GetStringMap(fmt.Sprintf("environments.%s", fullEnvName)); envConfig != nil {
+			environments := v.GetStringMap("environments")
+			if _, exists := environments[fullEnvName]; exists {
 				// Environment exists, ask for confirmation
 				confirmBox := pterm.DefaultBox.WithTitle("Environment Already Exists").
 					WithTitleTopCenter().
@@ -113,29 +113,8 @@ var settingInitURLCmd = &cobra.Command{
 			}
 		}
 
-		// Update configuration in main setting file
-		updateSetting(envName, urlStr, map[bool]string{true: "app", false: "user"}[appFlag])
-
-		// Update the current environment
-		mainV := viper.New()
-		mainV.SetConfigFile(mainSettingPath)
-		mainV.SetConfigType("yaml")
-
-		if err := mainV.ReadInConfig(); err != nil && !os.IsNotExist(err) {
-			pterm.Error.Printf("Failed to read setting file: %v\n", err)
-			return
-		}
-
-		// Set the environment name with app/user suffix
-		envName = fmt.Sprintf("%s-%s", envName, map[bool]string{true: "app", false: "user"}[appFlag])
-		mainV.Set("environment", envName)
-
-		if err := mainV.WriteConfig(); err != nil {
-			pterm.Error.Printf("Failed to update current environment: %v\n", err)
-			return
-		}
-
-		pterm.Success.Printf("Switched to '%s' environment.\n", envName)
+		// Update configuration
+		updateSetting(envName, urlStr, envSuffix)
 	},
 }
 
@@ -186,13 +165,12 @@ var settingInitLocalCmd = &cobra.Command{
 		// Create initial configuration
 		envConfig := map[string]interface{}{
 			"endpoint": "grpc://localhost:50051",
+			"url":     "http://localhost:8080",
 		}
 
 		// Add specific fields based on configuration type
 		if appFlag {
 			envConfig["token"] = ""
-		} else if userFlag {
-			envConfig["url"] = "http://localhost:8080"
 		}
 
 		if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
