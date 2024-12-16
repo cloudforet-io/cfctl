@@ -31,7 +31,6 @@ func convertServiceNameToEndpoint(serviceName string) string {
 	return strings.ReplaceAll(serviceName, "_", "-")
 }
 
-
 func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 	// Try to load from cache first
 	home, err := os.UserHomeDir()

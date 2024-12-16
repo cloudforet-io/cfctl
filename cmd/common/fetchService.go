@@ -35,7 +35,7 @@ import (
 
 type Environment struct {
 	Endpoint string `yaml:"endpoint"`
-	Proxy    string   `yaml:"proxy"`
+	Proxy    string `yaml:"proxy"`
 	Token    string `yaml:"token"`
 	URL      string `yaml:"url"`
 }
@@ -339,7 +339,7 @@ func loadConfig() (*Config, error) {
 	envConfig := &Environment{
 		Endpoint: mainV.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv)),
 		Proxy:    mainV.GetString(fmt.Sprintf("environments.%s.proxy", currentEnv)),
-		URL: mainV.GetString(fmt.Sprintf("environments.%s.url", currentEnv)),
+		URL:      mainV.GetString(fmt.Sprintf("environments.%s.url", currentEnv)),
 	}
 
 	// Handle token based on environment type
@@ -925,7 +925,6 @@ func formatTableValue(val interface{}) string {
 }
 
 func printCSV(data map[string]interface{}) string {
-	// CSV writer 생성
 	writer := csv.NewWriter(os.Stdout)
 	defer writer.Flush()
 
