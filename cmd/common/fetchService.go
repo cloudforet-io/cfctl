@@ -33,16 +33,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config structure to parse environment files
+type Environment struct {
+	Endpoint string `yaml:"endpoint"`
+	Proxy    string   `yaml:"proxy"`
+	Token    string `yaml:"token"`
+	URL      string `yaml:"url"`
+}
+
 type Config struct {
 	Environment  string                 `yaml:"environment"`
 	Environments map[string]Environment `yaml:"environments"`
-}
-
-type Environment struct {
-	Endpoint string `yaml:"endpoint"`
-	Proxy    string `yaml:"proxy"`
-	Token    string `yaml:"token"`
 }
 
 // FetchService handles the execution of gRPC commands for all services
@@ -332,6 +332,7 @@ func loadConfig() (*Config, error) {
 	envConfig := &Environment{
 		Endpoint: mainV.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv)),
 		Proxy:    mainV.GetString(fmt.Sprintf("environments.%s.proxy", currentEnv)),
+		URL: mainV.GetString(fmt.Sprintf("environments.%s.url", currentEnv)),
 	}
 
 	// Handle token based on environment type
