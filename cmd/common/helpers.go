@@ -43,47 +43,6 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
 
-	if strings.HasPrefix(config.Environment, "local-") {
-		conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
-		if err != nil {
-			return nil, fmt.Errorf("failed to connect to local server: %v", err)
-		}
-		defer conn.Close()
-
-		ctx := context.Background()
-		refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
-		defer refClient.Reset()
-
-		verbResourceMap := make(map[string][]string)
-		services, err := refClient.ListServices()
-		if err != nil {
-			return nil, fmt.Errorf("failed to list services: %v", err)
-		}
-
-		for _, s := range services {
-			if !strings.Contains(s, fmt.Sprintf(".%s.", serviceName)) {
-				continue
-			}
-
-			serviceDesc, err := refClient.ResolveService(s)
-			if err != nil {
-				continue
-			}
-
-			resourceName := s[strings.LastIndex(s, ".")+1:]
-			for _, method := range serviceDesc.GetMethods() {
-				verb := method.GetName()
-				if resources, ok := verbResourceMap[verb]; ok {
-					verbResourceMap[verb] = append(resources, resourceName)
-				} else {
-					verbResourceMap[verb] = []string{resourceName}
-				}
-			}
-		}
-
-		return verbResourceMap, nil
-	}
-
 	cacheDir := filepath.Join(home, ".cfctl", "cache", config.Environment)
 	cacheFile := filepath.Join(cacheDir, fmt.Sprintf("%s_verbs.yaml", serviceName))
 
