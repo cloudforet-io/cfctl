@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -128,6 +129,14 @@ func init() {
 			cmd.GroupID = "other"
 		}
 	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("Unable to find home directory: %v", err)
+	}
+	viper.AddConfigPath(filepath.Join(home, ".cfctl"))
+	viper.SetConfigName("setting")
+	viper.SetConfigType("yaml")
 }
 
 // showInitializationGuide displays a helpful message when configuration is missing
@@ -146,10 +155,10 @@ func showInitializationGuide(originalErr error) {
 		return
 	}
 
-	settingFile := filepath.Join(home, ".cfctl", "setting.toml")
+	settingFile := filepath.Join(home, ".cfctl", "setting.yaml")
 	mainV := viper.New()
 	mainV.SetConfigFile(settingFile)
-	mainV.SetConfigType("toml")
+	mainV.SetConfigType("yaml")
 
 	if err := mainV.ReadInConfig(); err != nil {
 		pterm.Warning.Printf("No valid configuration found.\n")

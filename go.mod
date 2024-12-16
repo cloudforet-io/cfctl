@@ -8,7 +8,6 @@ require (
 	github.com/atotto/clipboard v0.1.4
 	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
 	github.com/jhump/protoreflect v1.17.0
-	github.com/pelletier/go-toml/v2 v2.2.2
 	github.com/pterm/pterm v0.12.79
 	github.com/spf13/cobra v1.8.1
 	github.com/spf13/viper v1.19.0
@@ -41,6 +40,7 @@ require (
 	github.com/mattn/go-runewidth v0.0.15 // indirect
 	github.com/mgutz/ansi v0.0.0-20170206155736-9520e82c474b // indirect
 	github.com/mitchellh/mapstructure v1.5.0 // indirect
+	github.com/pelletier/go-toml/v2 v2.2.2 // indirect
 	github.com/rivo/uniseg v0.4.4 // indirect
 	github.com/sagikazarmark/locafero v0.4.0 // indirect
 	github.com/sagikazarmark/slog-shim v0.1.0 // indirect

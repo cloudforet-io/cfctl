@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"gopkg.in/yaml.v3"
 	"log"
 	"net/url"
 	"os"
@@ -19,7 +20,6 @@ import (
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 
-	"github.com/pelletier/go-toml/v2"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -78,13 +78,13 @@ var settingInitURLCmd = &cobra.Command{
 			return
 		}
 
-		// Initialize setting.toml if it doesn't exist
-		mainSettingPath := filepath.Join(settingDir, "setting.toml")
+		// Initialize setting.yaml if it doesn't exist
+		mainSettingPath := filepath.Join(settingDir, "setting.yaml")
 
 		// Check if environment already exists
 		v := viper.New()
 		v.SetConfigFile(mainSettingPath)
-		v.SetConfigType("toml")
+		v.SetConfigType("yaml")
 
 		if err := v.ReadInConfig(); err == nil {
 			// File exists and can be read
@@ -119,7 +119,7 @@ var settingInitURLCmd = &cobra.Command{
 		// Update the current environment
 		mainV := viper.New()
 		mainV.SetConfigFile(mainSettingPath)
-		mainV.SetConfigType("toml")
+		mainV.SetConfigType("yaml")
 
 		if err := mainV.ReadInConfig(); err != nil && !os.IsNotExist(err) {
 			pterm.Error.Printf("Failed to read setting file: %v\n", err)
@@ -218,12 +218,20 @@ var settingInitLocalCmd = &cobra.Command{
 			return
 		}
 
-		// Initialize setting.toml if it doesn't exist
-		mainSettingPath := filepath.Join(settingDir, "setting.toml")
+		// Initialize setting.yaml if it doesn't exist
+		mainSettingPath := filepath.Join(settingDir, "setting.yaml")
 		if _, err := os.Stat(mainSettingPath); os.IsNotExist(err) {
-			// Initial TOML structure
-			initialSetting := []byte("environments = {}\n")
-			if err := os.WriteFile(mainSettingPath, initialSetting, 0644); err != nil {
+			// Initial YAML structure
+			initialSetting := map[string]interface{}{
+				"environments": map[string]interface{}{},
+			}
+
+			v := viper.New()
+			v.SetConfigFile(mainSettingPath)
+			v.SetConfigType("yaml")
+			v.Set("environments", initialSetting["environments"])
+
+			if err := v.WriteConfig(); err != nil {
 				pterm.Error.Printf("Failed to create setting file: %v\n", err)
 				return
 			}
@@ -252,7 +260,7 @@ var settingInitLocalCmd = &cobra.Command{
 		// Update the current environment in the main setting
 		mainV := viper.New()
 		mainV.SetConfigFile(mainSettingPath)
-		mainV.SetConfigType("toml")
+		mainV.SetConfigType("yaml")
 
 		// Read the setting file
 		if err := mainV.ReadInConfig(); err != nil {
@@ -282,10 +290,19 @@ func initializePluginSetting(pluginName string) {
 		return
 	}
 
-	mainSettingPath := filepath.Join(settingDir, "setting.toml")
+	mainSettingPath := filepath.Join(settingDir, "setting.yaml")
 	if _, err := os.Stat(mainSettingPath); os.IsNotExist(err) {
-		initialSetting := []byte("environments = {}\n")
-		if err := os.WriteFile(mainSettingPath, initialSetting, 0644); err != nil {
+		// Initial YAML structure
+		initialSetting := map[string]interface{}{
+			"environments": map[string]interface{}{},
+		}
+
+		v := viper.New()
+		v.SetConfigFile(mainSettingPath)
+		v.SetConfigType("yaml")
+		v.Set("environments", initialSetting["environments"])
+
+		if err := v.WriteConfig(); err != nil {
 			pterm.Error.Printf("Failed to create setting file: %v\n", err)
 			return
 		}
@@ -293,7 +310,7 @@ func initializePluginSetting(pluginName string) {
 
 	v := viper.New()
 	v.SetConfigFile(mainSettingPath)
-	v.SetConfigType("toml")
+	v.SetConfigType("yaml")
 
 	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
 		pterm.Error.Printf("Error reading setting: %v\n", err)
@@ -350,7 +367,7 @@ var envCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		// Set paths for app and user configurations
 		settingDir := GetSettingDir()
-		appSettingPath := filepath.Join(settingDir, "setting.toml")
+		appSettingPath := filepath.Join(settingDir, "setting.yaml")
 
 		// Create separate Viper instances
 		appV := viper.New()
@@ -380,7 +397,7 @@ var envCmd = &cobra.Command{
 
 			if _, existsApp := appEnvMap[switchEnv]; !existsApp {
 				home, _ := os.UserHomeDir()
-				pterm.Error.Printf("Environment '%s' not found in %s/.cfctl/setting.toml",
+				pterm.Error.Printf("Environment '%s' not found in %s/.cfctl/setting.yaml",
 					switchEnv, home)
 				return
 			}
@@ -389,7 +406,7 @@ var envCmd = &cobra.Command{
 			appV.Set("environment", switchEnv)
 
 			if err := appV.WriteConfig(); err != nil {
-				pterm.Error.Printf("Failed to update environment in setting.toml: %v", err)
+				pterm.Error.Printf("Failed to update environment in setting.yaml: %v", err)
 				return
 			}
 
@@ -410,7 +427,7 @@ var envCmd = &cobra.Command{
 				targetSettingPath = appSettingPath
 			} else {
 				home, _ := os.UserHomeDir()
-				pterm.Error.Printf("Environment '%s' not found in %s/.cfctl/setting.toml",
+				pterm.Error.Printf("Environment '%s' not found in %s/.cfctl/setting.yaml",
 					switchEnv, home)
 				return
 			}
@@ -437,10 +454,10 @@ var envCmd = &cobra.Command{
 				if currentEnv == removeEnv {
 					appV.Set("environment", "")
 					if err := appV.WriteConfig(); err != nil {
-						pterm.Error.Printf("Failed to update environment in setting.toml: %v", err)
+						pterm.Error.Printf("Failed to update environment in setting.yaml: %v", err)
 						return
 					}
-					pterm.Info.WithShowLineNumber(false).Println("Cleared current environment in setting.toml")
+					pterm.Info.WithShowLineNumber(false).Println("Cleared current environment in setting.yaml")
 				}
 
 				// Display success message
@@ -498,8 +515,8 @@ var showCmd = &cobra.Command{
 	Short: "Display the current cfctl configuration",
 	Run: func(cmd *cobra.Command, args []string) {
 		settingDir := GetSettingDir()
-		appSettingPath := filepath.Join(settingDir, "setting.toml")
-		userSettingPath := filepath.Join(settingDir, "cache", "setting.toml")
+		appSettingPath := filepath.Join(settingDir, "setting.yaml")
+		userSettingPath := filepath.Join(settingDir, "cache", "setting.yaml")
 
 		// Create separate Viper instances
 		appV := viper.New()
@@ -538,10 +555,10 @@ var showCmd = &cobra.Command{
 				log.Fatalf("Error formatting output as JSON: %v", err)
 			}
 			fmt.Println(string(data))
-		case "toml":
-			data, err := toml.Marshal(envSetting)
+		case "yaml":
+			data, err := yaml.Marshal(envSetting)
 			if err != nil {
-				log.Fatalf("Error formatting output as TOML: %v", err)
+				log.Fatalf("Error formatting output as yaml: %v", err)
 			}
 			fmt.Println(string(data))
 		default:
@@ -565,9 +582,9 @@ Available Services are fetched dynamically from the backend.`,
 			appV := viper.New()
 
 			// Load app configuration
-			settingPath := filepath.Join(GetSettingDir(), "setting.toml")
+			settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
 			appV.SetConfigFile(settingPath)
-			appV.SetConfigType("toml")
+			appV.SetConfigType("yaml")
 
 			if err := loadSetting(appV, settingPath); err != nil {
 				pterm.Error.Println(err)
@@ -584,7 +601,7 @@ Available Services are fetched dynamically from the backend.`,
 						envPrefix := parts[0]   // dev, stg
 						serviceName := parts[1] // cloudone, spaceone, etc.
 						url := fmt.Sprintf("https://%s.console.%s.spaceone.dev", serviceName, envPrefix)
-						settingPath := filepath.Join(GetSettingDir(), "setting.toml")
+						settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
 
 						// Create header for the error message
 						//pterm.DefaultHeader.WithBackgroundStyle(pterm.NewStyle(pterm.BgRed)).WithMargin(10).Println("Token Not Found")
@@ -679,14 +696,14 @@ Available Services are fetched dynamically from the backend.`,
 		cacheV := viper.New()
 
 		// Load app configuration (for getting current environment)
-		settingPath := filepath.Join(GetSettingDir(), "setting.toml")
+		settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
 		appV.SetConfigFile(settingPath)
-		appV.SetConfigType("toml")
+		appV.SetConfigType("yaml")
 
 		// Load cache configuration
-		cachePath := filepath.Join(GetSettingDir(), "cache", "setting.toml")
+		cachePath := filepath.Join(GetSettingDir(), "cache", "setting.yaml")
 		cacheV.SetConfigFile(cachePath)
-		cacheV.SetConfigType("toml")
+		cacheV.SetConfigType("yaml")
 
 		if err := loadSetting(appV, settingPath); err != nil {
 			pterm.Error.Println(err)
@@ -724,12 +741,12 @@ Available Services are fetched dynamically from the backend.`,
 			}
 
 			if err := appV.WriteConfig(); err != nil {
-				pterm.Error.Printf("Failed to update setting.toml: %v\n", err)
+				pterm.Error.Printf("Failed to update setting.yaml: %v\n", err)
 				return
 			}
 		} else {
 			// Update endpoint in cache setting for user environments
-			cachePath := filepath.Join(GetSettingDir(), "cache", "setting.toml")
+			cachePath := filepath.Join(GetSettingDir(), "cache", "setting.yaml")
 			if err := loadSetting(cacheV, cachePath); err != nil {
 				pterm.Error.Println(err)
 				return
@@ -743,7 +760,7 @@ Available Services are fetched dynamically from the backend.`,
 			}
 
 			if err := cacheV.WriteConfig(); err != nil {
-				pterm.Error.Printf("Failed to update cache/setting.toml: %v\n", err)
+				pterm.Error.Printf("Failed to update cache/setting.yaml: %v\n", err)
 				return
 			}
 		}
@@ -762,11 +779,11 @@ This command only works with app environments (-app suffix).`,
 	Run: func(cmd *cobra.Command, args []string) {
 		// Load current environment configuration file
 		settingDir := GetSettingDir()
-		settingPath := filepath.Join(settingDir, "setting.toml")
+		settingPath := filepath.Join(settingDir, "setting.yaml")
 
 		v := viper.New()
 		v.SetConfigFile(settingPath)
-		v.SetConfigType("toml")
+		v.SetConfigType("yaml")
 
 		if err := v.ReadInConfig(); err != nil {
 			pterm.Error.Printf("Failed to read setting file: %v\n", err)
@@ -969,7 +986,7 @@ func getBaseURL(v *viper.Viper) (string, error) {
 	baseURL := v.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv))
 
 	if baseURL == "" {
-		return "", fmt.Errorf("no endpoint found for environment '%s' in setting.toml", currentEnv)
+		return "", fmt.Errorf("no endpoint found for environment '%s' in setting.yaml", currentEnv)
 
 	}
 
@@ -1010,7 +1027,7 @@ func loadSetting(v *viper.Viper, settingPath string) error {
 
 	// Set the setting file
 	v.SetConfigFile(settingPath)
-	v.SetConfigType("toml")
+	v.SetConfigType("yaml")
 
 	// Read the setting file
 	if err := v.ReadInConfig(); err != nil {
@@ -1018,17 +1035,15 @@ func loadSetting(v *viper.Viper, settingPath string) error {
 			// Initialize with default values if file doesn't exist
 			defaultSettings := map[string]interface{}{
 				"environments": map[string]interface{}{},
-				"environment":  "",
-			}
-
-			// Convert to TOML
-			data, err := toml.Marshal(defaultSettings)
-			if err != nil {
-				return fmt.Errorf("failed to marshal default settings: %w", err)
+				"environment": "",
 			}
 
 			// Write the default settings to file
-			if err := os.WriteFile(settingPath, data, 0644); err != nil {
+			if err := v.MergeConfigMap(defaultSettings); err != nil {
+				return fmt.Errorf("failed to merge default settings: %w", err)
+			}
+
+			if err := v.WriteConfig(); err != nil {
 				return fmt.Errorf("failed to write default settings: %w", err)
 			}
 
@@ -1051,21 +1066,21 @@ func getCurrentEnvironment(v *viper.Viper) string {
 
 // updateGlobalSetting prints a success message for global setting update
 func updateGlobalSetting() {
-	settingPath := filepath.Join(GetSettingDir(), "setting.toml")
+	settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
 	v := viper.New()
 
 	v.SetConfigFile(settingPath)
 
 	if err := v.ReadInConfig(); err != nil {
 		if os.IsNotExist(err) {
-			pterm.Success.WithShowLineNumber(false).Printfln("Global setting updated with existing environments. (default: %s/setting.toml)", GetSettingDir())
+			pterm.Success.WithShowLineNumber(false).Printfln("Global setting updated with existing environments. (default: %s/setting.yaml)", GetSettingDir())
 			return
 		}
 		pterm.Warning.Printf("Warning: Could not read global setting: %v\n", err)
 		return
 	}
 
-	pterm.Success.WithShowLineNumber(false).Printfln("Global setting updated with existing environments. (default: %s/setting.toml)", GetSettingDir())
+	pterm.Success.WithShowLineNumber(false).Printfln("Global setting updated with existing environments. (default: %s/setting.yaml)", GetSettingDir())
 }
 
 func parseEnvNameFromURL(urlStr string) (string, error) {
@@ -1115,24 +1130,28 @@ func parseEnvNameFromURL(urlStr string) (string, error) {
 // updateSetting updates the configuration files
 func updateSetting(envName, urlStr, settingType string) {
 	settingDir := GetSettingDir()
-	mainSettingPath := filepath.Join(settingDir, "setting.toml")
+	mainSettingPath := filepath.Join(settingDir, "setting.yaml")
 
-	// Initialize main viper instance
-	mainV := viper.New()
-	mainV.SetConfigFile(mainSettingPath)
-	mainV.SetConfigType("toml")
+	// Initialize viper instance
+	v := viper.New()
+	v.SetConfigFile(mainSettingPath)
+	v.SetConfigType("yaml")
 
-	// Read existing configuration file
-	if err := mainV.ReadInConfig(); err != nil {
-		if !os.IsNotExist(err) {
+	// Create directory if it doesn't exist
+	if err := os.MkdirAll(settingDir, 0755); err != nil {
+		pterm.Error.Printf("Failed to create setting directory: %v\n", err)
+		return
+	}
+
+	// Read existing configuration or create new one
+	if err := v.ReadInConfig(); err != nil {
+		if os.IsNotExist(err) {
+			// Initialize with empty environments map
+			v.Set("environments", map[string]interface{}{})
+		} else {
 			pterm.Error.Printf("Error reading setting file: %v\n", err)
 			return
 		}
-	}
-
-	// Initialize environments if not exists
-	if !mainV.IsSet("environments") {
-		mainV.Set("environments", make(map[string]interface{}))
 	}
 
 	if urlStr != "" {
@@ -1145,13 +1164,6 @@ func updateSetting(envName, urlStr, settingType string) {
 		// Append -app or -user to the environment name
 		envName = fmt.Sprintf("%s-%s", envName, settingType)
 
-		// Get environments map
-		environments := mainV.GetStringMap("environments")
-		if environments == nil {
-			environments = make(map[string]interface{})
-		}
-
-		// Add new environment configuration
 		// Add new environment configuration
 		envConfig := map[string]interface{}{
 			"endpoint": endpoint,
@@ -1164,16 +1176,22 @@ func updateSetting(envName, urlStr, settingType string) {
 			envConfig["token"] = ""
 		}
 
-		environments[envName] = envConfig
+		// Update configuration
+		v.Set(fmt.Sprintf("environments.%s", envName), envConfig)
+		v.Set("environment", envName)
 
-		// Update entire configuration
-		mainV.Set("environments", environments)
-		mainV.Set("environment", envName)
-
-		// Save configuration file
-		if err := mainV.WriteConfig(); err != nil {
-			pterm.Error.Printf("Failed to write setting: %v\n", err)
-			return
+		// Save configuration
+		if err := v.WriteConfig(); err != nil {
+			if os.IsNotExist(err) {
+				// Try to create the file if it doesn't exist
+				if err := v.SafeWriteConfig(); err != nil {
+					pterm.Error.Printf("Failed to create setting file: %v\n", err)
+					return
+				}
+			} else {
+				pterm.Error.Printf("Failed to write setting: %v\n", err)
+				return
+			}
 		}
 	}
 
@@ -1272,7 +1290,7 @@ func init() {
 	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
 	envCmd.Flags().BoolP("list", "l", false, "List available environments")
 
-	showCmd.Flags().StringP("output", "o", "toml", "Output format (toml/json)")
+	showCmd.Flags().StringP("output", "o", "yaml", "Output format (yaml/json)")
 
 	settingEndpointCmd.Flags().StringP("service", "s", "", "Service to set the endpoint for")
 
