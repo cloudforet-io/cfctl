@@ -191,7 +191,7 @@ func showInitializationGuide(originalErr error) {
 				// Fallback URL if not specified in config
 				parts := strings.Split(currentEnv, "-")
 				if len(parts) >= 2 {
-					serviceName := parts[0]   // cloudone, spaceone, etc.
+					serviceName := parts[0] // cloudone, spaceone, etc.
 					url = fmt.Sprintf("https://%s.console.dev.spaceone.dev", serviceName)
 				} else {
 					url = "https://console.spaceone.dev"
@@ -336,7 +336,6 @@ func addDynamicServiceCommands() error {
 	return nil
 }
 
-
 func loadCachedEndpoints() (map[string]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -479,9 +478,9 @@ func loadConfig() (*Config, error) {
 
 func createServiceCommand(serviceName string) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   serviceName,
-		Short: fmt.Sprintf("Interact with the %s service", serviceName),
-		Long: fmt.Sprintf("Use this command to interact with the %s service.", serviceName),
+		Use:     serviceName,
+		Short:   fmt.Sprintf("Interact with the %s service", serviceName),
+		Long:    fmt.Sprintf("Use this command to interact with the %s service.", serviceName),
 		GroupID: "available",
 	}
 
