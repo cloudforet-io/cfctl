@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"gopkg.in/yaml.v3"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,7 +16,6 @@ import (
 	"github.com/cloudforet-io/cfctl/cmd/common"
 	"github.com/cloudforet-io/cfctl/cmd/other"
 
-	"github.com/BurntSushi/toml"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -54,9 +55,9 @@ func Execute() {
 		// Check if the first argument is a service name and second is a short name
 		v := viper.New()
 		if home, err := os.UserHomeDir(); err == nil {
-			settingPath := filepath.Join(home, ".cfctl", "setting.toml")
+			settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
 			v.SetConfigFile(settingPath)
-			v.SetConfigType("toml")
+			v.SetConfigType("yaml")
 
 			if err := v.ReadInConfig(); err == nil {
 				serviceName := args[0]
@@ -84,11 +85,19 @@ func init() {
 	}
 	rootCmd.AddGroup(AvailableCommands)
 
+	done := make(chan bool)
 	go func() {
-		if _, err := loadCachedEndpoints(); err == nil {
-			return
+		if endpoints, err := loadCachedEndpoints(); err == nil {
+			cachedEndpointsMap = endpoints
 		}
+		done <- true
 	}()
+
+	select {
+	case <-done:
+	case <-time.After(50 * time.Millisecond):
+		fmt.Fprintf(os.Stderr, "Warning: Cache loading timed out\n")
+	}
 
 	if len(os.Args) > 1 && os.Args[1] == "__complete" {
 		pterm.DisableColor()
@@ -128,6 +137,14 @@ func init() {
 			cmd.GroupID = "other"
 		}
 	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("Unable to find home directory: %v", err)
+	}
+	viper.AddConfigPath(filepath.Join(home, ".cfctl"))
+	viper.SetConfigName("setting")
+	viper.SetConfigType("yaml")
 }
 
 // showInitializationGuide displays a helpful message when configuration is missing
@@ -146,10 +163,10 @@ func showInitializationGuide(originalErr error) {
 		return
 	}
 
-	settingFile := filepath.Join(home, ".cfctl", "setting.toml")
+	settingFile := filepath.Join(home, ".cfctl", "setting.yaml")
 	mainV := viper.New()
 	mainV.SetConfigFile(settingFile)
-	mainV.SetConfigType("toml")
+	mainV.SetConfigType("yaml")
 
 	if err := mainV.ReadInConfig(); err != nil {
 		pterm.Warning.Printf("No valid configuration found.\n")
@@ -164,32 +181,23 @@ func showInitializationGuide(originalErr error) {
 		return
 	}
 
-	// Check if token exists for the current environment
-	envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
-	if envConfig != nil && envConfig.GetString("token") != "" {
-		// Token exists, no need to show guide
-		return
-	}
-
-	// Parse environment name to extract service name and environment
-	parts := strings.Split(currentEnv, "-")
-	if len(parts) >= 3 {
-		var url string
-		if parts[0] == "local" {
-			if len(parts) >= 4 {
-				envPrefix := parts[1]   // dev
-				serviceName := parts[2] // cloudone
-				url = fmt.Sprintf("https://%s.console.%s.spaceone.dev\n"+
-					"     Note: If you're running a local console server,\n"+
-					"     you can also access it at http://localhost:8080", serviceName, envPrefix)
+	// Check if current environment is app type and token is empty
+	if strings.HasSuffix(currentEnv, "-app") {
+		envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
+		if envConfig == nil || envConfig.GetString("token") == "" {
+			// Get URL from environment config
+			url := envConfig.GetString("url")
+			if url == "" {
+				// Fallback URL if not specified in config
+				parts := strings.Split(currentEnv, "-")
+				if len(parts) >= 2 {
+					serviceName := parts[0]   // cloudone, spaceone, etc.
+					url = fmt.Sprintf("https://%s.console.dev.spaceone.dev", serviceName)
+				} else {
+					url = "https://console.spaceone.dev"
+				}
 			}
-		} else {
-			envPrefix := parts[0]   // dev
-			serviceName := parts[1] // cloudone
-			url = fmt.Sprintf("https://%s.console.%s.spaceone.dev", serviceName, envPrefix)
-		}
 
-		if strings.HasSuffix(currentEnv, "-app") {
 			pterm.DefaultBox.
 				WithTitle("Token Not Found").
 				WithTitleTopCenter().
@@ -222,11 +230,11 @@ func showInitializationGuide(originalErr error) {
 				Println(boxContent)
 
 			pterm.Info.Println("After updating the token, please try your command again.")
-		} else {
-			pterm.Warning.Printf("Authentication required.\n")
-			pterm.Info.Println("To see Available Commands, please authenticate first:")
-			pterm.Info.Println("$ cfctl login")
 		}
+	} else if strings.HasSuffix(currentEnv, "-user") {
+		pterm.Warning.Printf("Authentication required.\n")
+		pterm.Info.Println("To see Available Commands, please authenticate first:")
+		pterm.Info.Println("$ cfctl login")
 	}
 }
 
@@ -328,29 +336,6 @@ func addDynamicServiceCommands() error {
 	return nil
 }
 
-func clearEndpointsCache() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-
-	mainV := viper.New()
-	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.toml"))
-	mainV.SetConfigType("toml")
-	if err := mainV.ReadInConfig(); err != nil {
-		return
-	}
-
-	currentEnv := mainV.GetString("environment")
-	if currentEnv == "" {
-		return
-	}
-
-	// Remove environment-specific cache directory
-	envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
-	os.RemoveAll(envCacheDir)
-	cachedEndpointsMap = nil
-}
 
 func loadCachedEndpoints() (map[string]string, error) {
 	home, err := os.UserHomeDir()
@@ -358,23 +343,25 @@ func loadCachedEndpoints() (map[string]string, error) {
 		return nil, err
 	}
 
-	// Get current environment from main setting file
-	mainV := viper.New()
-	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.toml"))
-	mainV.SetConfigType("toml")
-	if err := mainV.ReadInConfig(); err != nil {
+	settingFile := filepath.Join(home, ".cfctl", "setting.yaml")
+	settingData, err := os.ReadFile(settingFile)
+	if err != nil {
 		return nil, err
 	}
 
-	currentEnv := mainV.GetString("environment")
-	if currentEnv == "" {
+	var settings struct {
+		Environment string `yaml:"environment"`
+	}
+
+	if err := yaml.Unmarshal(settingData, &settings); err != nil {
+		return nil, err
+	}
+
+	if settings.Environment == "" {
 		return nil, fmt.Errorf("no environment set")
 	}
 
-	// Create environment-specific cache directory
-	envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
-
-	cacheFile := filepath.Join(envCacheDir, "endpoints.toml")
+	cacheFile := filepath.Join(home, ".cfctl", "cache", settings.Environment, "endpoints.yaml")
 	data, err := os.ReadFile(cacheFile)
 	if err != nil {
 		return nil, err
@@ -390,7 +377,7 @@ func loadCachedEndpoints() (map[string]string, error) {
 	}
 
 	var endpoints map[string]string
-	if err := toml.Unmarshal(data, &endpoints); err != nil {
+	if err := yaml.Unmarshal(data, &endpoints); err != nil {
 		return nil, err
 	}
 
@@ -405,8 +392,8 @@ func saveEndpointsCache(endpoints map[string]string) error {
 
 	// Get current environment from main setting file
 	mainV := viper.New()
-	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.toml"))
-	mainV.SetConfigType("toml")
+	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.yaml"))
+	mainV.SetConfigType("yaml")
 	if err := mainV.ReadInConfig(); err != nil {
 		return err
 	}
@@ -422,12 +409,12 @@ func saveEndpointsCache(endpoints map[string]string) error {
 		return err
 	}
 
-	data, err := toml.Marshal(endpoints)
+	data, err := yaml.Marshal(endpoints)
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(envCacheDir, "endpoints.toml"), data, 0644)
+	return os.WriteFile(filepath.Join(envCacheDir, "endpoints.yaml"), data, 0644)
 }
 
 // loadConfig loads configuration from both main and cache setting files
@@ -437,12 +424,12 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("unable to find home directory: %v", err)
 	}
 
-	settingFile := filepath.Join(home, ".cfctl", "setting.toml")
+	settingFile := filepath.Join(home, ".cfctl", "setting.yaml")
 
 	// Read main setting file
 	mainV := viper.New()
 	mainV.SetConfigFile(settingFile)
-	mainV.SetConfigType("toml")
+	mainV.SetConfigType("yaml")
 	if err := mainV.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read setting file")
 	}
@@ -475,7 +462,6 @@ func loadConfig() (*Config, error) {
 		}
 		token = string(data)
 	} else if strings.HasSuffix(currentEnv, "-app") {
-		// For app environments, read from setting.toml
 		token = envConfig.GetString("token")
 		if token == "" {
 			return nil, fmt.Errorf("no token found in configuration")
@@ -495,74 +481,8 @@ func createServiceCommand(serviceName string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   serviceName,
 		Short: fmt.Sprintf("Interact with the %s service", serviceName),
-		Long: fmt.Sprintf(`Use this command to interact with the %s service.
-
-%s
-
-%s`,
-			serviceName,
-			pterm.DefaultBox.WithTitle("Interactive Mode").WithTitleTopCenter().Sprint(
-				func() string {
-					str, _ := pterm.DefaultBulletList.WithItems([]pterm.BulletListItem{
-						{Level: 0, Text: "Required parameters will be prompted if not provided"},
-						{Level: 0, Text: "Missing parameters will be requested interactively"},
-						{Level: 0, Text: "Just follow the prompts to fill in the required fields"},
-					}).Srender()
-					return str
-				}()),
-			pterm.DefaultBox.WithTitle("Example").WithTitleTopCenter().Sprint(
-				fmt.Sprintf("Instead of:\n"+
-					"  $ cfctl %s <Verb> <Resource> -p key=value\n\n"+
-					"You can simply run:\n"+
-					"  $ cfctl %s <Verb> <Resource>\n\n"+
-					"The tool will interactively prompt for the required parameters.",
-					serviceName, serviceName))),
+		Long: fmt.Sprintf("Use this command to interact with the %s service.", serviceName),
 		GroupID: "available",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// If no args provided, show available verbs
-			if len(args) == 0 {
-				common.PrintAvailableVerbs(cmd)
-				return nil
-			}
-
-			// Process command arguments
-			if len(args) < 2 {
-				return cmd.Help()
-			}
-
-			verb := args[0]
-			resource := args[1]
-
-			// Create options from remaining args
-			options := &common.FetchOptions{
-				Parameters: make([]string, 0),
-			}
-
-			// Process remaining args as parameters
-			for i := 2; i < len(args); i++ {
-				if strings.HasPrefix(args[i], "--") {
-					paramName := strings.TrimPrefix(args[i], "--")
-					if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
-						options.Parameters = append(options.Parameters, fmt.Sprintf("%s=%s", paramName, args[i+1]))
-						i++
-					}
-				}
-			}
-
-			// Call FetchService with the processed arguments
-			result, err := common.FetchService(serviceName, verb, resource, options)
-			if err != nil {
-				pterm.Error.Printf("Failed to execute command: %v\n", err)
-				return err
-			}
-
-			if result != nil {
-				// The result will be printed by FetchService if needed
-				return nil
-			}
-
-			return nil
-		},
 	}
 
 	cmd.AddGroup(&cobra.Group{

@@ -75,14 +75,29 @@ func ListAPIResources(serviceName string) error {
 }
 
 func getServiceEndpoint(config *Config, serviceName string) (string, error) {
-	var envPrefix string
-	if strings.HasPrefix(config.Environment, "dev-") {
-		envPrefix = "dev"
-	} else if strings.HasPrefix(config.Environment, "stg-") {
-		envPrefix = "stg"
-	} else {
-		return "", fmt.Errorf("unsupported environment prefix")
+	envConfig := config.Environments[config.Environment]
+	if envConfig.URL == "" {
+		return "", fmt.Errorf("URL not found in environment config")
 	}
+
+	// Parse URL to get environment
+	urlParts := strings.Split(envConfig.URL, ".")
+	if len(urlParts) < 4 {
+		return "", fmt.Errorf("invalid URL format: %s", envConfig.URL)
+	}
+
+	var envPrefix string
+	for i, part := range urlParts {
+		if part == "console" && i+1 < len(urlParts) {
+			envPrefix = urlParts[i+1] // Get the part after "console" (dev or stg)
+			break
+		}
+	}
+
+	if envPrefix == "" {
+		return "", fmt.Errorf("environment prefix not found in URL: %s", envConfig.URL)
+	}
+
 	endpoint := fmt.Sprintf("grpc+ssl://%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
 	return endpoint, nil
 }
@@ -122,16 +137,16 @@ func fetchServiceResources(serviceName, endpoint string, shortNamesMap map[strin
 		return nil, fmt.Errorf("failed to list services: %v", err)
 	}
 
-	// Load short names from setting.toml
+	// Load short names from setting.yaml
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get home directory: %v", err)
 	}
 
-	settingPath := filepath.Join(home, ".cfctl", "setting.toml")
+	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
 	v := viper.New()
 	v.SetConfigFile(settingPath)
-	v.SetConfigType("toml")
+	v.SetConfigType("yaml")
 
 	serviceShortNames := make(map[string]string)
 	if err := v.ReadInConfig(); err == nil {

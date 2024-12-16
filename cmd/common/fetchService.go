@@ -33,16 +33,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config structure to parse environment files
+type Environment struct {
+	Endpoint string `yaml:"endpoint"`
+	Proxy    string   `yaml:"proxy"`
+	Token    string `yaml:"token"`
+	URL      string `yaml:"url"`
+}
+
 type Config struct {
 	Environment  string                 `yaml:"environment"`
 	Environments map[string]Environment `yaml:"environments"`
-}
-
-type Environment struct {
-	Endpoint string `yaml:"endpoint"`
-	Proxy    string `yaml:"proxy"`
-	Token    string `yaml:"token"`
 }
 
 // FetchService handles the execution of gRPC commands for all services
@@ -54,8 +54,8 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 	// Read configuration file
 	mainViper := viper.New()
-	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "setting.toml"))
-	mainViper.SetConfigType("toml")
+	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "setting.yaml"))
+	mainViper.SetConfigType("yaml")
 	if err := mainViper.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read configuration file. Please run 'cfctl login' first")
 	}
@@ -158,12 +158,19 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 	// Get hostPort based on environment prefix
 	var envPrefix string
-	if strings.HasPrefix(config.Environment, "dev-") {
-		envPrefix = "dev"
-	} else if strings.HasPrefix(config.Environment, "stg-") {
-		envPrefix = "stg"
+	urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
+	for i, part := range urlParts {
+		if part == "console" && i+1 < len(urlParts) {
+			envPrefix = urlParts[i+1] // Get the part after "console" (dev or stg)
+			break
+		}
 	}
-	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
+
+	if envPrefix == "" {
+		return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
+	}
+
+	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
 
 	// Configure gRPC connection
 	var conn *grpc.ClientConn
@@ -316,9 +323,9 @@ func loadConfig() (*Config, error) {
 
 	// Load main configuration file
 	mainV := viper.New()
-	mainConfigPath := filepath.Join(home, ".cfctl", "setting.toml")
+	mainConfigPath := filepath.Join(home, ".cfctl", "setting.yaml")
 	mainV.SetConfigFile(mainConfigPath)
-	mainV.SetConfigType("toml")
+	mainV.SetConfigType("yaml")
 	if err := mainV.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read config file: %v", err)
 	}
@@ -332,6 +339,7 @@ func loadConfig() (*Config, error) {
 	envConfig := &Environment{
 		Endpoint: mainV.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv)),
 		Proxy:    mainV.GetString(fmt.Sprintf("environments.%s.proxy", currentEnv)),
+		URL: mainV.GetString(fmt.Sprintf("environments.%s.url", currentEnv)),
 	}
 
 	// Handle token based on environment type
@@ -374,12 +382,20 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 		}
 	} else {
 		var envPrefix string
-		if strings.HasPrefix(config.Environment, "dev-") {
-			envPrefix = "dev"
-		} else if strings.HasPrefix(config.Environment, "stg-") {
-			envPrefix = "stg"
+		urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
+		for i, part := range urlParts {
+			if part == "console" && i+1 < len(urlParts) {
+				envPrefix = urlParts[i+1]
+				break
+			}
 		}
-		hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
+
+		if envPrefix == "" {
+			return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
+		}
+
+		hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
+
 		tlsConfig := &tls.Config{
 			InsecureSkipVerify: false,
 		}
