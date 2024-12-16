@@ -71,7 +71,6 @@ var settingInitURLCmd = &cobra.Command{
 			return
 		}
 
-		// Create setting directory if it doesn't exist
 		settingDir := GetSettingDir()
 		if err := os.MkdirAll(settingDir, 0755); err != nil {
 			pterm.Error.Printf("Failed to create setting directory: %v\n", err)
@@ -79,8 +78,6 @@ var settingInitURLCmd = &cobra.Command{
 		}
 
 		mainSettingPath := filepath.Join(settingDir, "setting.yaml")
-
-		// Check if environment already exists
 		v := viper.New()
 		v.SetConfigFile(mainSettingPath)
 		v.SetConfigType("yaml")
@@ -89,10 +86,15 @@ var settingInitURLCmd = &cobra.Command{
 		fullEnvName := fmt.Sprintf("%s-%s", envName, envSuffix)
 
 		if err := v.ReadInConfig(); err == nil {
-			// File exists and can be read
 			environments := v.GetStringMap("environments")
-			if _, exists := environments[fullEnvName]; exists {
-				// Environment exists, ask for confirmation
+			if existingEnv, exists := environments[fullEnvName]; exists {
+				currentConfig, _ := yaml.Marshal(map[string]interface{}{
+					"environment": fullEnvName,
+					"environments": map[string]interface{}{
+						fullEnvName: existingEnv,
+					},
+				})
+
 				confirmBox := pterm.DefaultBox.WithTitle("Environment Already Exists").
 					WithTitleTopCenter().
 					WithRightPadding(4).
@@ -100,6 +102,9 @@ var settingInitURLCmd = &cobra.Command{
 					WithBoxStyle(pterm.NewStyle(pterm.FgYellow))
 
 				confirmBox.Println(fmt.Sprintf("Environment '%s' already exists.\nDo you want to overwrite it?", fullEnvName))
+
+				pterm.Info.Println("Current configuration:")
+				fmt.Println(string(currentConfig))
 
 				fmt.Print("\nEnter (y/N): ")
 				var response string
@@ -127,57 +132,72 @@ var settingInitLocalCmd = &cobra.Command{
 		appFlag, _ := cmd.Flags().GetBool("app")
 		userFlag, _ := cmd.Flags().GetBool("user")
 
-		// Validate that either app or user flag is provided
 		if !appFlag && !userFlag {
 			pterm.Error.Println("You must specify either --app or --user flag.")
 			return fmt.Errorf("missing required flag")
 		}
 
-		// Validate that not both flags are provided
 		if appFlag && userFlag {
 			pterm.Error.Println("Cannot use both --app and --user flags together.")
 			return fmt.Errorf("conflicting flags")
 		}
 
-		// Rest of the existing implementation...
 		settingDir := GetSettingDir()
-		if err := os.MkdirAll(settingDir, 0755); err != nil {
-			return fmt.Errorf("failed to create setting directory: %v", err)
-		}
-
 		mainSettingPath := filepath.Join(settingDir, "setting.yaml")
 
-		// Basic local environment
 		envName := "local"
-
-		// Add app/user suffix based on flag
 		if appFlag {
 			envName = fmt.Sprintf("%s-app", envName)
 		} else {
 			envName = fmt.Sprintf("%s-user", envName)
 		}
 
-		// Initialize or update the settings
 		v := viper.New()
 		v.SetConfigFile(mainSettingPath)
 		v.SetConfigType("yaml")
 
-		// Create initial configuration
+		if err := v.ReadInConfig(); err == nil {
+			environments := v.GetStringMap("environments")
+			if existingEnv, exists := environments[envName]; exists {
+				currentConfig, _ := yaml.Marshal(map[string]interface{}{
+					"environment": envName,
+					"environments": map[string]interface{}{
+						envName: existingEnv,
+					},
+				})
+
+				confirmBox := pterm.DefaultBox.WithTitle("Environment Already Exists").
+					WithTitleTopCenter().
+					WithRightPadding(4).
+					WithLeftPadding(4).
+					WithBoxStyle(pterm.NewStyle(pterm.FgYellow))
+
+				confirmBox.Println(fmt.Sprintf("Environment '%s' already exists.\nDo you want to overwrite it?", envName))
+
+				pterm.Info.Println("Current configuration:")
+				fmt.Println(string(currentConfig))
+
+				fmt.Print("\nEnter (y/N): ")
+				var response string
+				fmt.Scanln(&response)
+				response = strings.ToLower(strings.TrimSpace(response))
+
+				if response != "y" {
+					pterm.Info.Printf("Operation cancelled. Environment '%s' remains unchanged.\n", envName)
+					return nil
+				}
+			}
+		}
+
 		envConfig := map[string]interface{}{
 			"endpoint": "grpc://localhost:50051",
 			"url":      "http://localhost:8080",
 		}
 
-		// Add specific fields based on configuration type
 		if appFlag {
-			envConfig["token"] = ""
+			envConfig["token"] = "no_token"
 		}
 
-		if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("error reading setting: %v", err)
-		}
-
-		// Set environment configuration
 		v.Set(fmt.Sprintf("environments.%s", envName), envConfig)
 		v.Set("environment", envName)
 
