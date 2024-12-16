@@ -139,7 +139,13 @@ var settingInitLocalCmd = &cobra.Command{
 			return fmt.Errorf("conflicting flags")
 		}
 
-		// Create setting directory if it doesn't exist
+		// Plugin flag takes precedence
+		if pluginFlag {
+			initializePluginSetting(localEnv)
+			return
+		}
+
+		// Rest of the existing implementation...
 		settingDir := GetSettingDir()
 		if err := os.MkdirAll(settingDir, 0755); err != nil {
 			return fmt.Errorf("failed to create setting directory: %v", err)
@@ -227,6 +233,47 @@ func initializePluginSetting(pluginName string) {
 	v := viper.New()
 	v.SetConfigFile(mainSettingPath)
 	v.SetConfigType("yaml")
+
+	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
+		pterm.Error.Printf("Error reading setting: %v\n", err)
+		return
+	}
+
+	// Set environment configuration using the prefixed name
+	v.Set(fmt.Sprintf("environments.%s.endpoint", envName), "grpc://localhost:50051")
+	v.Set(fmt.Sprintf("environments.%s.token", envName), "NO TOKEN")
+	v.Set("environment", envName)
+
+	if err := v.WriteConfig(); err != nil {
+		pterm.Error.Printf("Failed to write setting: %v\n", err)
+		return
+	}
+
+	pterm.Success.Printf("Plugin environment '%s' successfully initialized.\n", envName)
+}
+
+func initializePluginSetting(pluginName string) {
+	// Add 'local-' prefix to plugin name
+	envName := fmt.Sprintf("local-%s", pluginName)
+
+	settingDir := GetSettingDir()
+	if err := os.MkdirAll(settingDir, 0755); err != nil {
+		pterm.Error.Printf("Failed to create setting directory: %v\n", err)
+		return
+	}
+
+	mainSettingPath := filepath.Join(settingDir, "setting.toml")
+	if _, err := os.Stat(mainSettingPath); os.IsNotExist(err) {
+		initialSetting := []byte("environments = {}\n")
+		if err := os.WriteFile(mainSettingPath, initialSetting, 0644); err != nil {
+			pterm.Error.Printf("Failed to create setting file: %v\n", err)
+			return
+		}
+	}
+
+	v := viper.New()
+	v.SetConfigFile(mainSettingPath)
+	v.SetConfigType("toml")
 
 	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
 		pterm.Error.Printf("Error reading setting: %v\n", err)
