@@ -122,16 +122,16 @@ func fetchServiceResources(serviceName, endpoint string, shortNamesMap map[strin
 		return nil, fmt.Errorf("failed to list services: %v", err)
 	}
 
-	// Load short names from setting.toml
+	// Load short names from setting.yaml
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get home directory: %v", err)
 	}
 
-	settingPath := filepath.Join(home, ".cfctl", "setting.toml")
+	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
 	v := viper.New()
 	v.SetConfigFile(settingPath)
-	v.SetConfigType("toml")
+	v.SetConfigType("yaml")
 
 	serviceShortNames := make(map[string]string)
 	if err := v.ReadInConfig(); err == nil {

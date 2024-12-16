@@ -481,74 +481,8 @@ func createServiceCommand(serviceName string) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   serviceName,
 		Short: fmt.Sprintf("Interact with the %s service", serviceName),
-		Long: fmt.Sprintf(`Use this command to interact with the %s service.
-
-%s
-
-%s`,
-			serviceName,
-			pterm.DefaultBox.WithTitle("Interactive Mode").WithTitleTopCenter().Sprint(
-				func() string {
-					str, _ := pterm.DefaultBulletList.WithItems([]pterm.BulletListItem{
-						{Level: 0, Text: "Required parameters will be prompted if not provided"},
-						{Level: 0, Text: "Missing parameters will be requested interactively"},
-						{Level: 0, Text: "Just follow the prompts to fill in the required fields"},
-					}).Srender()
-					return str
-				}()),
-			pterm.DefaultBox.WithTitle("Example").WithTitleTopCenter().Sprint(
-				fmt.Sprintf("Instead of:\n"+
-					"  $ cfctl %s <Verb> <Resource> -p key=value\n\n"+
-					"You can simply run:\n"+
-					"  $ cfctl %s <Verb> <Resource>\n\n"+
-					"The tool will interactively prompt for the required parameters.",
-					serviceName, serviceName))),
+		Long: fmt.Sprintf("Use this command to interact with the %s service.", serviceName),
 		GroupID: "available",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			// If no args provided, show available verbs
-			if len(args) == 0 {
-				common.PrintAvailableVerbs(cmd)
-				return nil
-			}
-
-			// Process command arguments
-			if len(args) < 2 {
-				return cmd.Help()
-			}
-
-			verb := args[0]
-			resource := args[1]
-
-			// Create options from remaining args
-			options := &common.FetchOptions{
-				Parameters: make([]string, 0),
-			}
-
-			// Process remaining args as parameters
-			for i := 2; i < len(args); i++ {
-				if strings.HasPrefix(args[i], "--") {
-					paramName := strings.TrimPrefix(args[i], "--")
-					if i+1 < len(args) && !strings.HasPrefix(args[i+1], "--") {
-						options.Parameters = append(options.Parameters, fmt.Sprintf("%s=%s", paramName, args[i+1]))
-						i++
-					}
-				}
-			}
-
-			// Call FetchService with the processed arguments
-			result, err := common.FetchService(serviceName, verb, resource, options)
-			if err != nil {
-				pterm.Error.Printf("Failed to execute command: %v\n", err)
-				return err
-			}
-
-			if result != nil {
-				// The result will be printed by FetchService if needed
-				return nil
-			}
-
-			return nil
-		},
 	}
 
 	cmd.AddGroup(&cobra.Group{

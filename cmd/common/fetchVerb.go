@@ -54,31 +54,7 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 		verbCmd := &cobra.Command{
 			Use:   currentVerb + " <resource>",
 			Short: shortDesc,
-			Long: fmt.Sprintf(`Supported %d resources for %s command.
-
-%s
-
-%s`,
-				len(resources),
-				currentVerb,
-				pterm.DefaultBox.WithTitle("Interactive Mode").WithTitleTopCenter().Sprint(
-					func() string {
-						str, _ := pterm.DefaultBulletList.WithItems([]pterm.BulletListItem{
-							{Level: 0, Text: "Required parameters will be prompted if not provided"},
-							{Level: 0, Text: "Missing parameters will be requested interactively"},
-							{Level: 0, Text: "Just follow the prompts to fill in the required fields"},
-						}).Srender()
-						return str
-					}()),
-				pterm.DefaultBox.WithTitle("Example").WithTitleTopCenter().Sprint(
-					fmt.Sprintf("List resources:\n"+
-						"  $ cfctl %s list <Resource>\n\n"+
-						"List and sort by field:\n"+
-						"  $ cfctl %s list <Resource> -s name\n"+
-						"  $ cfctl %s list <Resource> -s created_at\n\n"+
-						"Watch for changes:\n"+
-						"  $ cfctl %s list <Resource> -w",
-						serviceName, serviceName, serviceName, serviceName))),
+			Long: fmt.Sprintf("Supported %d resources for %s command.", len(resources), currentVerb),
 			Args: cobra.ArbitraryArgs, // Allow any number of arguments
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if len(args) != 1 {
@@ -180,31 +156,7 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 
 		// Update example for list command
 		if currentVerb == "list" {
-			verbCmd.Long = fmt.Sprintf(`Supported %d resources for %s command.
-
-%s
-
-%s`,
-				len(resources),
-				currentVerb,
-				pterm.DefaultBox.WithTitle("Interactive Mode").WithTitleTopCenter().Sprint(
-					func() string {
-						str, _ := pterm.DefaultBulletList.WithItems([]pterm.BulletListItem{
-							{Level: 0, Text: "Required parameters will be prompted if not provided"},
-							{Level: 0, Text: "Missing parameters will be requested interactively"},
-							{Level: 0, Text: "Just follow the prompts to fill in the required fields"},
-						}).Srender()
-						return str
-					}()),
-				pterm.DefaultBox.WithTitle("Example").WithTitleTopCenter().Sprint(
-					fmt.Sprintf("List resources:\n"+
-						"  $ cfctl %s list <Resource>\n\n"+
-						"List and sort by field:\n"+
-						"  $ cfctl %s list <Resource> -s name\n"+
-						"  $ cfctl %s list <Resource> -s created_at\n\n"+
-						"Watch for changes:\n"+
-						"  $ cfctl %s list <Resource> -w",
-						serviceName, serviceName, serviceName, serviceName)))
+			verbCmd.Long = fmt.Sprintf("Supported %d resources for %s command.", len(resources), currentVerb)
 		}
 
 		parentCmd.AddCommand(verbCmd)
