@@ -142,141 +142,79 @@ var settingInitURLCmd = &cobra.Command{
 // settingInitLocalCmd initializes configuration with a local environment
 var settingInitLocalCmd = &cobra.Command{
 	Use:   "local",
-	Short: "Initialize configuration with a local environment",
-	Long:  `Specify a local environment name to initialize the configuration.`,
-	Args:  cobra.NoArgs,
-	Example: `  cfctl setting init local -n [domain] --app --dev
-                            or
-  cfctl setting init local -n [domain] --user --stg,
-                      or
-  cfctl setting init local -n [plugin_name] --plugin`,
-	Run: func(cmd *cobra.Command, args []string) {
-		localEnv, _ := cmd.Flags().GetString("name")
+	Short: "Initialize local environment setting",
+	Long:  `Initialize a local environment setting for cfctl.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
 		appFlag, _ := cmd.Flags().GetBool("app")
 		userFlag, _ := cmd.Flags().GetBool("user")
-		devFlag, _ := cmd.Flags().GetBool("dev")
-		stgFlag, _ := cmd.Flags().GetBool("stg")
-		pluginFlag, _ := cmd.Flags().GetBool("plugin")
 
-		// Step 1: Check name flag
-		if localEnv == "" {
-			pterm.Error.Println("The --name flag is required.")
-			// Show only name flag in help
-			cmd.SetUsageFunc(func(cmd *cobra.Command) error {
-				fmt.Printf("\nUsage:\n  cfctl setting init local [flags]\n\n")
-				fmt.Printf("Flags:\n")
-				fmt.Printf("  -n, --name string   Local environment name for the environment\n")
-				fmt.Printf("  -h, --help         help for local\n")
-				return nil
-			})
-			cmd.Help()
-			return
+		// Validate that either app or user flag is provided
+		if !appFlag && !userFlag {
+			pterm.Error.Println("You must specify either --app or --user flag.")
+			return fmt.Errorf("missing required flag")
 		}
 
-		// Step 2: Check type flags (app/user/plugin)
-		if !appFlag && !userFlag && !pluginFlag {
-			pterm.Error.Println("You must specify either --app, --user, or --plugin flag.")
-			// Show only type flags in help
-			cmd.SetUsageFunc(func(cmd *cobra.Command) error {
-				fmt.Printf("\nUsage:\n  cfctl setting init local --name %s [flags]\n\n", localEnv)
-				fmt.Printf("Flags:\n")
-				fmt.Printf("      --app      Initialize as application configuration\n")
-				fmt.Printf("      --user     Initialize as user-specific configuration\n")
-				fmt.Printf("      --plugin   Initialize as plugin configuration\n")
-				return nil
-			})
-			cmd.Help()
-			return
+		// Validate that not both flags are provided
+		if appFlag && userFlag {
+			pterm.Error.Println("Cannot use both --app and --user flags together.")
+			return fmt.Errorf("conflicting flags")
 		}
 
-		// Step 3: For app/user configs, check environment type
-		if (appFlag || userFlag) && !devFlag && !stgFlag {
-			pterm.Error.Println("You must specify either --dev or --stg flag.")
-			// Show only environment flags in help
-			cmd.SetUsageFunc(func(cmd *cobra.Command) error {
-				fmt.Printf("\nUsage:\n  cfctl setting init local --name %s --%s [flags]\n\n",
-					localEnv, map[bool]string{true: "app", false: "user"}[appFlag])
-				fmt.Printf("Flags:\n")
-				fmt.Printf("      --dev    Initialize as development environment\n")
-				fmt.Printf("      --stg    Initialize as staging environment\n")
-				return nil
-			})
-			cmd.Help()
-			return
-		}
-
-		// Plugin flag takes precedence
-		if pluginFlag {
-			initializePluginSetting(localEnv)
-			return
-		}
-
-		// Rest of the existing implementation...
+		// Create setting directory if it doesn't exist
 		settingDir := GetSettingDir()
 		if err := os.MkdirAll(settingDir, 0755); err != nil {
-			pterm.Error.Printf("Failed to create setting directory: %v\n", err)
-			return
+			return fmt.Errorf("failed to create setting directory: %v", err)
 		}
 
-		// Initialize setting.yaml if it doesn't exist
 		mainSettingPath := filepath.Join(settingDir, "setting.yaml")
-		if _, err := os.Stat(mainSettingPath); os.IsNotExist(err) {
-			// Initial YAML structure
-			initialSetting := map[string]interface{}{
-				"environments": map[string]interface{}{},
-			}
 
-			v := viper.New()
-			v.SetConfigFile(mainSettingPath)
-			v.SetConfigType("yaml")
-			v.Set("environments", initialSetting["environments"])
+		// Basic local environment
+		envName := "local"
 
-			if err := v.WriteConfig(); err != nil {
-				pterm.Error.Printf("Failed to create setting file: %v\n", err)
-				return
-			}
-		}
-
-		envPrefix := ""
-		if devFlag {
-			envPrefix = "dev"
-		} else if stgFlag {
-			envPrefix = "stg"
-		}
-
-		var envName string
+		// Add app/user suffix based on flag
 		if appFlag {
-			envName = fmt.Sprintf("local-%s-%s-app", envPrefix, localEnv)
+			envName = fmt.Sprintf("%s-app", envName)
 		} else {
-			envName = fmt.Sprintf("local-%s-%s-user", envPrefix, localEnv)
+			envName = fmt.Sprintf("%s-user", envName)
 		}
 
+		// Initialize or update the settings
+		v := viper.New()
+		v.SetConfigFile(mainSettingPath)
+		v.SetConfigType("yaml")
+
+		// Create initial configuration
+		envConfig := map[string]interface{}{
+			"endpoint": "grpc://localhost:50051",
+		}
+
+		// Add specific fields based on configuration type
 		if appFlag {
-			updateLocalSetting(envName, "app", mainSettingPath)
-		} else {
-			updateLocalSetting(envName, "user", mainSettingPath)
+			envConfig["token"] = ""
+		} else if userFlag {
+			envConfig["url"] = "http://localhost:8080"
 		}
 
-		// Update the current environment in the main setting
-		mainV := viper.New()
-		mainV.SetConfigFile(mainSettingPath)
-		mainV.SetConfigType("yaml")
-
-		// Read the setting file
-		if err := mainV.ReadInConfig(); err != nil {
-			pterm.Error.Printf("Failed to read setting file: %v\n", err)
-			return
+		if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("error reading setting: %v", err)
 		}
 
-		// Set the new environment as current
-		mainV.Set("environment", envName)
+		// Set environment configuration
+		v.Set(fmt.Sprintf("environments.%s", envName), envConfig)
+		v.Set("environment", envName)
 
-		if err := mainV.WriteConfig(); err != nil {
-			pterm.Error.Printf("Failed to update current environment: %v\n", err)
-			return
+		if err := v.WriteConfig(); err != nil {
+			if os.IsNotExist(err) {
+				if err := v.SafeWriteConfig(); err != nil {
+					return fmt.Errorf("failed to create setting file: %v", err)
+				}
+			} else {
+				return fmt.Errorf("failed to write setting: %v", err)
+			}
 		}
 
-		pterm.Success.Printf("Switched to '%s' environment.\n", envName)
+		pterm.Success.Printf("Environment '%s' successfully initialized.\n", envName)
+		return nil
 	},
 }
 
@@ -1035,7 +973,7 @@ func loadSetting(v *viper.Viper, settingPath string) error {
 			// Initialize with default values if file doesn't exist
 			defaultSettings := map[string]interface{}{
 				"environments": map[string]interface{}{},
-				"environment": "",
+				"environment":  "",
 			}
 
 			// Write the default settings to file
@@ -1279,12 +1217,8 @@ func init() {
 	settingInitURLCmd.Flags().Bool("app", false, "Initialize as application configuration")
 	settingInitURLCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
 
-	settingInitLocalCmd.Flags().StringP("name", "n", "", "Local environment name for the environment")
 	settingInitLocalCmd.Flags().Bool("app", false, "Initialize as application configuration")
 	settingInitLocalCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
-	settingInitLocalCmd.Flags().Bool("dev", false, "Initialize as development environment")
-	settingInitLocalCmd.Flags().Bool("stg", false, "Initialize as staging environment")
-	settingInitLocalCmd.Flags().Bool("plugin", false, "Initialize as plugin configuration")
 
 	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
 	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
