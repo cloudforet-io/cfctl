@@ -14,7 +14,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/BurntSushi/toml"
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
 
@@ -40,14 +39,14 @@ func loadEndpointsFromCache(currentEnv string) (map[string]string, error) {
 	}
 
 	// Read from environment-specific cache file
-	cacheFile := filepath.Join(home, ".cfctl", "cache", currentEnv, "endpoints.toml")
+	cacheFile := filepath.Join(home, ".cfctl", "cache", currentEnv, "endpoints.yaml")
 	data, err := os.ReadFile(cacheFile)
 	if err != nil {
 		return nil, err
 	}
 
 	var endpoints map[string]string
-	if err := toml.Unmarshal(data, &endpoints); err != nil {
+	if err := yaml.Unmarshal(data, &endpoints); err != nil {
 		return nil, err
 	}
 
@@ -63,12 +62,12 @@ var ApiResourcesCmd = &cobra.Command{
 			log.Fatalf("Unable to find home directory: %v", err)
 		}
 
-		settingPath := filepath.Join(home, ".cfctl", "setting.toml")
+		settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
 
 		// Read main setting file
 		mainV := viper.New()
 		mainV.SetConfigFile(settingPath)
-		mainV.SetConfigType("toml")
+		mainV.SetConfigType("yaml")
 		mainConfigErr := mainV.ReadInConfig()
 
 		var currentEnv string

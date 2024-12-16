@@ -4,7 +4,6 @@ go 1.23.1
 
 require (
 	github.com/AlecAivazis/survey/v2 v2.3.7
-	github.com/BurntSushi/toml v1.4.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/eiannone/keyboard v0.0.0-20220611211555-0d226195f203
 	github.com/jhump/protoreflect v1.17.0

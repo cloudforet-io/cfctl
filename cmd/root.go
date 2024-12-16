@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"gopkg.in/yaml.v3"
 	"log"
 	"os"
 	"path/filepath"
@@ -15,7 +16,6 @@ import (
 	"github.com/cloudforet-io/cfctl/cmd/common"
 	"github.com/cloudforet-io/cfctl/cmd/other"
 
-	"github.com/BurntSushi/toml"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -55,9 +55,9 @@ func Execute() {
 		// Check if the first argument is a service name and second is a short name
 		v := viper.New()
 		if home, err := os.UserHomeDir(); err == nil {
-			settingPath := filepath.Join(home, ".cfctl", "setting.toml")
+			settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
 			v.SetConfigFile(settingPath)
-			v.SetConfigType("toml")
+			v.SetConfigType("yaml")
 
 			if err := v.ReadInConfig(); err == nil {
 				serviceName := args[0]
@@ -85,11 +85,19 @@ func init() {
 	}
 	rootCmd.AddGroup(AvailableCommands)
 
+	done := make(chan bool)
 	go func() {
-		if _, err := loadCachedEndpoints(); err == nil {
-			return
+		if endpoints, err := loadCachedEndpoints(); err == nil {
+			cachedEndpointsMap = endpoints
 		}
+		done <- true
 	}()
+
+	select {
+	case <-done:
+	case <-time.After(50 * time.Millisecond):
+		fmt.Fprintf(os.Stderr, "Warning: Cache loading timed out\n")
+	}
 
 	if len(os.Args) > 1 && os.Args[1] == "__complete" {
 		pterm.DisableColor()
@@ -321,29 +329,6 @@ func addDynamicServiceCommands() error {
 	return nil
 }
 
-func clearEndpointsCache() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return
-	}
-
-	mainV := viper.New()
-	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.toml"))
-	mainV.SetConfigType("toml")
-	if err := mainV.ReadInConfig(); err != nil {
-		return
-	}
-
-	currentEnv := mainV.GetString("environment")
-	if currentEnv == "" {
-		return
-	}
-
-	// Remove environment-specific cache directory
-	envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
-	os.RemoveAll(envCacheDir)
-	cachedEndpointsMap = nil
-}
 
 func loadCachedEndpoints() (map[string]string, error) {
 	home, err := os.UserHomeDir()
@@ -351,23 +336,25 @@ func loadCachedEndpoints() (map[string]string, error) {
 		return nil, err
 	}
 
-	// Get current environment from main setting file
-	mainV := viper.New()
-	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.toml"))
-	mainV.SetConfigType("toml")
-	if err := mainV.ReadInConfig(); err != nil {
+	settingFile := filepath.Join(home, ".cfctl", "setting.yaml")
+	settingData, err := os.ReadFile(settingFile)
+	if err != nil {
 		return nil, err
 	}
 
-	currentEnv := mainV.GetString("environment")
-	if currentEnv == "" {
+	var settings struct {
+		Environment string `yaml:"environment"`
+	}
+
+	if err := yaml.Unmarshal(settingData, &settings); err != nil {
+		return nil, err
+	}
+
+	if settings.Environment == "" {
 		return nil, fmt.Errorf("no environment set")
 	}
 
-	// Create environment-specific cache directory
-	envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
-
-	cacheFile := filepath.Join(envCacheDir, "endpoints.toml")
+	cacheFile := filepath.Join(home, ".cfctl", "cache", settings.Environment, "endpoints.yaml")
 	data, err := os.ReadFile(cacheFile)
 	if err != nil {
 		return nil, err
@@ -383,7 +370,7 @@ func loadCachedEndpoints() (map[string]string, error) {
 	}
 
 	var endpoints map[string]string
-	if err := toml.Unmarshal(data, &endpoints); err != nil {
+	if err := yaml.Unmarshal(data, &endpoints); err != nil {
 		return nil, err
 	}
 
@@ -398,8 +385,8 @@ func saveEndpointsCache(endpoints map[string]string) error {
 
 	// Get current environment from main setting file
 	mainV := viper.New()
-	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.toml"))
-	mainV.SetConfigType("toml")
+	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.yaml"))
+	mainV.SetConfigType("yaml")
 	if err := mainV.ReadInConfig(); err != nil {
 		return err
 	}
@@ -415,12 +402,12 @@ func saveEndpointsCache(endpoints map[string]string) error {
 		return err
 	}
 
-	data, err := toml.Marshal(endpoints)
+	data, err := yaml.Marshal(endpoints)
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(filepath.Join(envCacheDir, "endpoints.toml"), data, 0644)
+	return os.WriteFile(filepath.Join(envCacheDir, "endpoints.yaml"), data, 0644)
 }
 
 // loadConfig loads configuration from both main and cache setting files
@@ -430,12 +417,12 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("unable to find home directory: %v", err)
 	}
 
-	settingFile := filepath.Join(home, ".cfctl", "setting.toml")
+	settingFile := filepath.Join(home, ".cfctl", "setting.yaml")
 
 	// Read main setting file
 	mainV := viper.New()
 	mainV.SetConfigFile(settingFile)
-	mainV.SetConfigType("toml")
+	mainV.SetConfigType("yaml")
 	if err := mainV.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read setting file")
 	}
@@ -468,7 +455,6 @@ func loadConfig() (*Config, error) {
 		}
 		token = string(data)
 	} else if strings.HasSuffix(currentEnv, "-app") {
-		// For app environments, read from setting.toml
 		token = envConfig.GetString("token")
 		if token == "" {
 			return nil, fmt.Errorf("no token found in configuration")
