@@ -1152,9 +1152,11 @@ func updateSetting(envName, urlStr, settingType string) {
 		}
 
 		// Add new environment configuration
+		// Add new environment configuration
 		envConfig := map[string]interface{}{
 			"endpoint": endpoint,
 			"proxy":    true,
+			"url":      fmt.Sprintf("https://%s", urlStr),
 		}
 
 		// Only add token field for app configuration
