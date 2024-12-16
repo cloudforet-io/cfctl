@@ -54,8 +54,8 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 	// Read configuration file
 	mainViper := viper.New()
-	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "setting.toml"))
-	mainViper.SetConfigType("toml")
+	mainViper.SetConfigFile(filepath.Join(homeDir, ".cfctl", "setting.yaml"))
+	mainViper.SetConfigType("yaml")
 	if err := mainViper.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read configuration file. Please run 'cfctl login' first")
 	}
@@ -316,9 +316,9 @@ func loadConfig() (*Config, error) {
 
 	// Load main configuration file
 	mainV := viper.New()
-	mainConfigPath := filepath.Join(home, ".cfctl", "setting.toml")
+	mainConfigPath := filepath.Join(home, ".cfctl", "setting.yaml")
 	mainV.SetConfigFile(mainConfigPath)
-	mainV.SetConfigType("toml")
+	mainV.SetConfigType("yaml")
 	if err := mainV.ReadInConfig(); err != nil {
 		return nil, fmt.Errorf("failed to read config file: %v", err)
 	}
