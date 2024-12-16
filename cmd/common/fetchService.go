@@ -158,12 +158,19 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 	// Get hostPort based on environment prefix
 	var envPrefix string
-	if strings.HasPrefix(config.Environment, "dev-") {
-		envPrefix = "dev"
-	} else if strings.HasPrefix(config.Environment, "stg-") {
-		envPrefix = "stg"
+	urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
+	for i, part := range urlParts {
+		if part == "console" && i+1 < len(urlParts) {
+			envPrefix = urlParts[i+1] // Get the part after "console" (dev or stg)
+			break
+		}
 	}
-	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
+
+	if envPrefix == "" {
+		return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
+	}
+
+	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
 
 	// Configure gRPC connection
 	var conn *grpc.ClientConn
@@ -375,12 +382,20 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 		}
 	} else {
 		var envPrefix string
-		if strings.HasPrefix(config.Environment, "dev-") {
-			envPrefix = "dev"
-		} else if strings.HasPrefix(config.Environment, "stg-") {
-			envPrefix = "stg"
+		urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
+		for i, part := range urlParts {
+			if part == "console" && i+1 < len(urlParts) {
+				envPrefix = urlParts[i+1]
+				break
+			}
 		}
-		hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
+
+		if envPrefix == "" {
+			return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
+		}
+
+		hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
+
 		tlsConfig := &tls.Config{
 			InsecureSkipVerify: false,
 		}
