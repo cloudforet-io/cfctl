@@ -173,32 +173,16 @@ func showInitializationGuide(originalErr error) {
 		return
 	}
 
-	// Check if token exists for the current environment
-	envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
-	if envConfig != nil && envConfig.GetString("token") != "" {
-		// Token exists, no need to show guide
-		return
-	}
-
-	// Parse environment name to extract service name and environment
-	parts := strings.Split(currentEnv, "-")
-	if len(parts) >= 3 {
-		var url string
-		if parts[0] == "local" {
-			if len(parts) >= 4 {
-				envPrefix := parts[1]   // dev
-				serviceName := parts[2] // cloudone
-				url = fmt.Sprintf("https://%s.console.%s.spaceone.dev\n"+
-					"     Note: If you're running a local console server,\n"+
-					"     you can also access it at http://localhost:8080", serviceName, envPrefix)
+	// Check if current environment is app type and token is empty
+	if strings.HasSuffix(currentEnv, "-app") {
+		envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
+		if envConfig == nil || envConfig.GetString("token") == "" {
+			// Get URL from environment config
+			url := envConfig.GetString("url")
+			if url == "" {
+				url = "https://console.spaceone.dev"
 			}
-		} else {
-			envPrefix := parts[0]   // dev
-			serviceName := parts[1] // cloudone
-			url = fmt.Sprintf("https://%s.console.%s.spaceone.dev", serviceName, envPrefix)
-		}
 
-		if strings.HasSuffix(currentEnv, "-app") {
 			pterm.DefaultBox.
 				WithTitle("Token Not Found").
 				WithTitleTopCenter().
@@ -231,11 +215,11 @@ func showInitializationGuide(originalErr error) {
 				Println(boxContent)
 
 			pterm.Info.Println("After updating the token, please try your command again.")
-		} else {
-			pterm.Warning.Printf("Authentication required.\n")
-			pterm.Info.Println("To see Available Commands, please authenticate first:")
-			pterm.Info.Println("$ cfctl login")
 		}
+	} else if strings.HasSuffix(currentEnv, "-user") {
+		pterm.Warning.Printf("Authentication required.\n")
+		pterm.Info.Println("To see Available Commands, please authenticate first:")
+		pterm.Info.Println("$ cfctl login")
 	}
 }
 
