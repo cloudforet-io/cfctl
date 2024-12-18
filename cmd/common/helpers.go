@@ -32,7 +32,6 @@ func convertServiceNameToEndpoint(serviceName string) string {
 }
 
 func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
-	// Try to load from cache first
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get home directory: %v", err)
@@ -44,73 +43,91 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 	}
 
 	if strings.HasPrefix(config.Environment, "local-") {
-		conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
-		if err != nil {
-			return nil, fmt.Errorf("local gRPC server connection failed: %v", err)
-		}
-		defer conn.Close()
-
-		ctx := context.Background()
-		refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
-		defer refClient.Reset()
-
-		services, err := refClient.ListServices()
-		if err != nil {
-			return nil, fmt.Errorf("failed to list local services: %v", err)
-		}
-
-		verbResourceMap := make(map[string][]string)
-		for _, s := range services {
-			if !strings.Contains(s, fmt.Sprintf(".%s.", serviceName)) {
-				continue
-			}
-
-			serviceDesc, err := refClient.ResolveService(s)
-			if err != nil {
-				continue
-			}
-
-			resourceName := s[strings.LastIndex(s, ".")+1:]
-			for _, method := range serviceDesc.GetMethods() {
-				verb := method.GetName()
-				if resources, ok := verbResourceMap[verb]; ok {
-					verbResourceMap[verb] = append(resources, resourceName)
-				} else {
-					verbResourceMap[verb] = []string{resourceName}
-				}
-			}
-		}
-
-		return verbResourceMap, nil
+		return handleLocalEnvironment(serviceName)
 	}
 
 	cacheDir := filepath.Join(home, ".cfctl", "cache", config.Environment)
-	cacheFile := filepath.Join(cacheDir, fmt.Sprintf("%s_verbs.yaml", serviceName))
+	cacheFile := filepath.Join(cacheDir, "verb_resources.yaml")
 
-	// Check if cache exists and is fresh (less than 1 hour old)
 	if info, err := os.Stat(cacheFile); err == nil {
 		if time.Since(info.ModTime()) < time.Hour {
 			data, err := os.ReadFile(cacheFile)
 			if err == nil {
-				verbResourceMap := make(map[string][]string)
-				if err := yaml.Unmarshal(data, &verbResourceMap); err == nil {
-					return verbResourceMap, nil
+				var allServices map[string]map[string][]string
+				if err := yaml.Unmarshal(data, &allServices); err == nil {
+					if verbMap, exists := allServices[serviceName]; exists {
+						return verbMap, nil
+					}
 				}
 			}
 		}
 	}
 
-	// Cache miss or expired, fetch from server
 	verbResourceMap, err := fetchVerbResourceMap(serviceName, config)
 	if err != nil {
 		return nil, err
 	}
 
-	// Save to cache
+	var allServices map[string]map[string][]string
+	if data, err := os.ReadFile(cacheFile); err == nil {
+		yaml.Unmarshal(data, &allServices)
+	}
+	if allServices == nil {
+		allServices = make(map[string]map[string][]string)
+	}
+
+	allServices[serviceName] = verbResourceMap
+
 	if err := os.MkdirAll(cacheDir, 0755); err == nil {
-		data, err := yaml.Marshal(verbResourceMap)
+		data, err := yaml.Marshal(allServices)
 		if err == nil {
 			os.WriteFile(cacheFile, data, 0644)
+		}
+	}
+
+	return verbResourceMap, nil
+}
+
+func handleLocalEnvironment(serviceName string) (map[string][]string, error) {
+	if serviceName != "plugin" {
+		return nil, fmt.Errorf("only plugin service is supported in local environment")
+	}
+
+	// local 환경의 plugin 서비스 endpoint 설정
+	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to local plugin service: %v", err)
+	}
+	defer conn.Close()
+
+	ctx := context.Background()
+	refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	defer refClient.Reset()
+
+	services, err := refClient.ListServices()
+	if err != nil {
+		return nil, fmt.Errorf("failed to list local services: %v", err)
+	}
+
+	verbResourceMap := make(map[string][]string)
+	for _, s := range services {
+		if !strings.Contains(s, ".plugin.") {
+			continue
+		}
+
+		serviceDesc, err := refClient.ResolveService(s)
+		if err != nil {
+			continue
+		}
+
+		resourceName := s[strings.LastIndex(s, ".")+1:]
+		for _, method := range serviceDesc.GetMethods() {
+			verb := method.GetName()
+			if resources, ok := verbResourceMap[verb]; ok {
+				verbResourceMap[verb] = append(resources, resourceName)
+			} else {
+				verbResourceMap[verb] = []string{resourceName}
+			}
 		}
 	}
 
