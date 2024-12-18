@@ -95,7 +95,7 @@ func init() {
 		fmt.Fprintf(os.Stderr, "Warning: Cache loading timed out\n")
 	}
 
-	if len(os.Args) > 1 && os.Args[1] == "__complete" {
+	if len(os.Args) > 1 && (os.Args[1] == "__complete" || os.Args[1] == "completion") {
 		pterm.DisableColor()
 	}
 
