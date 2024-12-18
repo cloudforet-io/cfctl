@@ -76,7 +76,7 @@ func executeLogin(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	configPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
+	configPath := filepath.Join(homeDir, ".cfctl", "setting.yaml")
 
 	// Check if config file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -87,7 +87,7 @@ func executeLogin(cmd *cobra.Command, args []string) {
 	}
 
 	viper.SetConfigFile(configPath)
-	viper.SetConfigType("toml")
+	viper.SetConfigType("yaml")
 	if err := viper.ReadInConfig(); err != nil {
 		pterm.Error.Printf("Failed to read config file: %v\n", err)
 		return
@@ -414,9 +414,9 @@ func executeUserLogin(currentEnv string) {
 	homeDir, _ := os.UserHomeDir()
 	// Get user_id from current environment
 	mainViper := viper.New()
-	settingPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
+	settingPath := filepath.Join(homeDir, ".cfctl", "setting.yaml")
 	mainViper.SetConfigFile(settingPath)
-	mainViper.SetConfigType("toml")
+	mainViper.SetConfigType("yaml")
 
 	if err := mainViper.ReadInConfig(); err != nil {
 		pterm.Error.Printf("Failed to read config file: %v\n", err)
@@ -425,11 +425,11 @@ func executeUserLogin(currentEnv string) {
 
 	// Extract domain name from environment
 	nameParts := strings.Split(currentEnv, "-")
-	if len(nameParts) < 3 {
+	if len(nameParts) < 2 {
 		pterm.Error.Println("Environment name format is invalid.")
 		exitWithError()
 	}
-	name := nameParts[1]
+	name := nameParts[0]
 
 	// Fetch Domain ID
 	domainID, err := fetchDomainID(baseUrl, name)
@@ -640,10 +640,10 @@ func saveCredentials(currentEnv, userID, encryptedPassword, accessToken, refresh
 	}
 
 	// Update main settings file
-	settingPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
+	settingPath := filepath.Join(homeDir, ".cfctl", "setting.yaml")
 	mainViper := viper.New()
 	mainViper.SetConfigFile(settingPath)
-	mainViper.SetConfigType("toml")
+	mainViper.SetConfigType("yaml")
 
 	if err := mainViper.ReadInConfig(); err != nil {
 		pterm.Error.Printf("Failed to read config file: %v\n", err)
@@ -749,9 +749,9 @@ func loadEnvironmentConfig() {
 		exitWithError()
 	}
 
-	settingPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
+	settingPath := filepath.Join(homeDir, ".cfctl", "setting.yaml")
 	viper.SetConfigFile(settingPath)
-	viper.SetConfigType("toml")
+	viper.SetConfigType("yaml")
 
 	if err := viper.ReadInConfig(); err != nil {
 		pterm.Error.Printf("Failed to read setting file: %v\n", err)
