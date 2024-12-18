@@ -93,7 +93,6 @@ func handleLocalEnvironment(serviceName string) (map[string][]string, error) {
 		return nil, fmt.Errorf("only plugin service is supported in local environment")
 	}
 
-	// local 환경의 plugin 서비스 endpoint 설정
 	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to local plugin service: %v", err)
@@ -143,19 +142,26 @@ func fetchVerbResourceMap(serviceName string, config *Config) (map[string][]stri
 	// Parse URL to get environment
 	urlParts := strings.Split(envConfig.URL, ".")
 	var envPrefix string
-	for i, part := range urlParts {
-		if part == "console" && i+1 < len(urlParts) {
-			envPrefix = urlParts[i+1]
-			break
+	var hostPort string
+
+	if strings.Contains(envConfig.URL, "megazone.io") {
+		endpointServiceName := convertServiceNameToEndpoint(serviceName)
+		hostPort = fmt.Sprintf("%s.kr1.api.spaceone.megazone.io:443", endpointServiceName)
+	} else {
+		for i, part := range urlParts {
+			if part == "console" && i+1 < len(urlParts) {
+				envPrefix = urlParts[i+1]
+				break
+			}
 		}
-	}
 
-	if envPrefix == "" {
-		return nil, fmt.Errorf("environment prefix not found in URL: %s", envConfig.URL)
-	}
+		if envPrefix == "" {
+			return nil, fmt.Errorf("environment prefix not found in URL: %s", envConfig.URL)
+		}
 
-	endpointServiceName := convertServiceNameToEndpoint(serviceName)
-	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", endpointServiceName, envPrefix)
+		endpointServiceName := convertServiceNameToEndpoint(serviceName)
+		hostPort = fmt.Sprintf("%s.api.%s.spaceone.dev:443", endpointServiceName, envPrefix)
+	}
 
 	tlsConfig := &tls.Config{
 		InsecureSkipVerify: false,

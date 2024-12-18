@@ -161,20 +161,24 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	if strings.HasPrefix(config.Environment, "local-") {
 		hostPort = "localhost:50051"
 	} else {
-		var envPrefix string
-		urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
-		for i, part := range urlParts {
-			if part == "console" && i+1 < len(urlParts) {
-				envPrefix = urlParts[i+1] // Get the part after "console" (dev or stg)
-				break
+		if strings.Contains(config.Environments[config.Environment].URL, "megazone.io") {
+			hostPort = fmt.Sprintf("%s.kr1.api.spaceone.megazone.io:443", convertServiceNameToEndpoint(serviceName))
+		} else {
+			var envPrefix string
+			urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
+			for i, part := range urlParts {
+				if part == "console" && i+1 < len(urlParts) {
+					envPrefix = urlParts[i+1]
+					break
+				}
 			}
-		}
 
-		if envPrefix == "" {
-			return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
-		}
+			if envPrefix == "" {
+				return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
+			}
 
-		hostPort = fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
+			hostPort = fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
+		}
 	}
 
 	// Configure gRPC connection
@@ -375,6 +379,7 @@ func loadConfig() (*Config, error) {
 func fetchJSONResponse(config *Config, serviceName string, verb string, resourceName string, options *FetchOptions) ([]byte, error) {
 	var conn *grpc.ClientConn
 	var err error
+	var hostPort string
 
 	if strings.HasPrefix(config.Environment, "local-") {
 		conn, err = grpc.Dial("localhost:50051", grpc.WithInsecure(),
@@ -386,20 +391,24 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 			return nil, fmt.Errorf("connection failed: unable to connect to local server: %v", err)
 		}
 	} else {
-		var envPrefix string
-		urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
-		for i, part := range urlParts {
-			if part == "console" && i+1 < len(urlParts) {
-				envPrefix = urlParts[i+1]
-				break
+		if strings.Contains(config.Environments[config.Environment].URL, "megazone.io") {
+			hostPort = fmt.Sprintf("%s.kr1.api.spaceone.megazone.io:443", convertServiceNameToEndpoint(serviceName))
+		} else {
+			var envPrefix string
+			urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
+			for i, part := range urlParts {
+				if part == "console" && i+1 < len(urlParts) {
+					envPrefix = urlParts[i+1]
+					break
+				}
 			}
-		}
 
-		if envPrefix == "" {
-			return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
-		}
+			if envPrefix == "" {
+				return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
+			}
 
-		hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
+			hostPort = fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
+		}
 
 		tlsConfig := &tls.Config{
 			InsecureSkipVerify: false,
