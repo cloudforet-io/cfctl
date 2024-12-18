@@ -29,8 +29,8 @@ func validateServiceCommand(service, verb, resource string) error {
 	}
 
 	mainV := viper.New()
-	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.toml"))
-	mainV.SetConfigType("toml")
+	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.yaml"))
+	mainV.SetConfigType("yaml")
 	if err := mainV.ReadInConfig(); err != nil {
 		return fmt.Errorf("failed to read config: %v", err)
 	}
@@ -208,10 +208,10 @@ func addShortName(service, shortName, command string) error {
 		return fmt.Errorf("failed to get home directory: %v", err)
 	}
 
-	settingPath := filepath.Join(home, ".cfctl", "setting.toml")
+	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
 	v := viper.New()
 	v.SetConfigFile(settingPath)
-	v.SetConfigType("toml")
+	v.SetConfigType("yaml")
 
 	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to read config: %v", err)
@@ -232,10 +232,10 @@ func removeShortName(service, shortName string) error {
 		return fmt.Errorf("failed to get home directory: %v", err)
 	}
 
-	settingPath := filepath.Join(home, ".cfctl", "setting.toml")
+	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
 	v := viper.New()
 	v.SetConfigFile(settingPath)
-	v.SetConfigType("toml")
+	v.SetConfigType("yaml")
 
 	if err := v.ReadInConfig(); err != nil {
 		return fmt.Errorf("failed to read config: %v", err)
@@ -266,10 +266,10 @@ func listShortNames() (map[string]interface{}, error) {
 		return nil, fmt.Errorf("failed to get home directory: %v", err)
 	}
 
-	settingPath := filepath.Join(home, ".cfctl", "setting.toml")
+	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
 	v := viper.New()
 	v.SetConfigFile(settingPath)
-	v.SetConfigType("toml")
+	v.SetConfigType("yaml")
 
 	if err := v.ReadInConfig(); err != nil {
 		if os.IsNotExist(err) {
