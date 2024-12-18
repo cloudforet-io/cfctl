@@ -157,20 +157,25 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	}
 
 	// Get hostPort based on environment prefix
-	var envPrefix string
-	urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
-	for i, part := range urlParts {
-		if part == "console" && i+1 < len(urlParts) {
-			envPrefix = urlParts[i+1] // Get the part after "console" (dev or stg)
-			break
+	var hostPort string
+	if strings.HasPrefix(config.Environment, "local-") {
+		hostPort = "localhost:50051"
+	} else {
+		var envPrefix string
+		urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
+		for i, part := range urlParts {
+			if part == "console" && i+1 < len(urlParts) {
+				envPrefix = urlParts[i+1] // Get the part after "console" (dev or stg)
+				break
+			}
 		}
-	}
 
-	if envPrefix == "" {
-		return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
-	}
+		if envPrefix == "" {
+			return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
+		}
 
-	hostPort := fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
+		hostPort = fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
+	}
 
 	// Configure gRPC connection
 	var conn *grpc.ClientConn
