@@ -1173,6 +1173,61 @@ func issueToken(baseUrl, userID, password, domainID string) (string, string, err
 }
 
 func fetchWorkspaces(baseUrl string, accessToken string) ([]map[string]interface{}, error) {
+	if strings.Contains(baseUrl, "megazone.io") {
+		payload := map[string]string{}
+		jsonPayload, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+
+		getWorkspacesUrl := baseUrl + "/user-profile/get-workspaces"
+		req, err := http.NewRequest("POST", getWorkspacesUrl, bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		responseBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response body: %v", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("failed to fetch workspaces, status code: %d", resp.StatusCode)
+		}
+
+		var result map[string]interface{}
+		if err := json.Unmarshal(responseBody, &result); err != nil {
+			return nil, err
+		}
+
+		workspaces, ok := result["results"].([]interface{})
+		if !ok || len(workspaces) == 0 {
+			pterm.Warning.Println("There are no accessible workspaces. Ask your administrators or workspace owners for access.")
+			exitWithError()
+		}
+
+		var workspaceList []map[string]interface{}
+		for _, workspace := range workspaces {
+			workspaceMap, ok := workspace.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("failed to parse workspace data")
+			}
+			workspaceList = append(workspaceList, workspaceMap)
+		}
+
+		return workspaceList, nil
+	}
+
 	// Parse the endpoint
 	parts := strings.Split(baseUrl, "://")
 	if len(parts) != 2 {
@@ -1276,6 +1331,52 @@ func fetchWorkspaces(baseUrl string, accessToken string) ([]map[string]interface
 }
 
 func fetchDomainIDAndRole(baseUrl string, accessToken string) (string, string, error) {
+	if strings.Contains(baseUrl, "megazone.io") {
+		payload := map[string]string{}
+		jsonPayload, err := json.Marshal(payload)
+		if err != nil {
+			return "", "", err
+		}
+
+		getUserProfileUrl := baseUrl + "/user-profile/get"
+		req, err := http.NewRequest("POST", getUserProfileUrl, bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			return "", "", err
+		}
+
+		req.Header.Set("accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", "", err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return "", "", fmt.Errorf("failed to fetch user profile, status code: %d", resp.StatusCode)
+		}
+
+		var result map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", "", err
+		}
+
+		domainID, ok := result["domain_id"].(string)
+		if !ok {
+			return "", "", fmt.Errorf("domain_id not found in response")
+		}
+
+		roleType, ok := result["role_type"].(string)
+		if !ok {
+			return "", "", fmt.Errorf("role_type not found in response")
+		}
+
+		return domainID, roleType, nil
+	}
+
 	// Parse the endpoint
 	parts := strings.Split(baseUrl, "://")
 	if len(parts) != 2 {
@@ -1370,6 +1471,50 @@ func fetchDomainIDAndRole(baseUrl string, accessToken string) (string, string, e
 }
 
 func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (string, error) {
+	if strings.Contains(baseUrl, "megazone.io") {
+		payload := map[string]interface{}{
+			"grant_type":   "REFRESH_TOKEN",
+			"token":        refreshToken,
+			"scope":        scope,
+			"timeout":      10800,
+			"domain_id":    domainID,
+			"workspace_id": workspaceID,
+		}
+		jsonPayload, err := json.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+
+		req, err := http.NewRequest("POST", baseUrl+"/token/grant", bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("status code: %d", resp.StatusCode)
+		}
+
+		var result map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", err
+		}
+
+		accessToken, ok := result["access_token"].(string)
+		if !ok {
+			return "", fmt.Errorf("access token not found in response")
+		}
+
+		return accessToken, nil
+	}
+
 	// Parse the endpoint
 	parts := strings.Split(baseUrl, "://")
 	if len(parts) != 2 {
@@ -1433,7 +1578,7 @@ func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (str
 
 	reqMsg.SetFieldByName("scope", scopeEnum)
 	reqMsg.SetFieldByName("token", refreshToken)
-	reqMsg.SetFieldByName("timeout", int32(21600))
+	reqMsg.SetFieldByName("timeout", int32(10800))
 	reqMsg.SetFieldByName("domain_id", domainID)
 	if workspaceID != "" {
 		reqMsg.SetFieldByName("workspace_id", workspaceID)
