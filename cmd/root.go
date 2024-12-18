@@ -253,7 +253,11 @@ func addDynamicServiceCommands() error {
 	}
 
 	// Only show progress bar when actually fetching services
-	if len(os.Args) == 1 || (len(os.Args) > 1 && os.Args[1] != "setting") {
+	if len(os.Args) == 1 || (len(os.Args) > 1 &&
+		os.Args[1] != "setting" &&
+		os.Args[1] != "login" &&
+		os.Args[1] != "api_resources" &&
+		os.Args[1] != "short_name") {
 		// Create progress bar
 		progressbar, _ := pterm.DefaultProgressbar.
 			WithTotal(4).
@@ -421,7 +425,7 @@ func loadConfig() (*Config, error) {
 	if strings.HasSuffix(currentEnv, "-user") {
 		// For user environments, read from cache directory
 		envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
-		grantTokenPath := filepath.Join(envCacheDir, "grant_token")
+		grantTokenPath := filepath.Join(envCacheDir, "access_token")
 		data, err := os.ReadFile(grantTokenPath)
 		if err != nil {
 			return nil, fmt.Errorf("no valid token found in cache")

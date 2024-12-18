@@ -1,6 +1,7 @@
 package other
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -11,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -76,7 +78,7 @@ func executeLogin(cmd *cobra.Command, args []string) {
 		return
 	}
 
-	configPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
+	configPath := filepath.Join(homeDir, ".cfctl", "setting.yaml")
 
 	// Check if config file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
@@ -87,7 +89,7 @@ func executeLogin(cmd *cobra.Command, args []string) {
 	}
 
 	viper.SetConfigFile(configPath)
-	viper.SetConfigType("toml")
+	viper.SetConfigType("yaml")
 	if err := viper.ReadInConfig(); err != nil {
 		pterm.Error.Printf("Failed to read config file: %v\n", err)
 		return
@@ -414,29 +416,203 @@ func executeUserLogin(currentEnv string) {
 	homeDir, _ := os.UserHomeDir()
 	// Get user_id from current environment
 	mainViper := viper.New()
-	settingPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
+	settingPath := filepath.Join(homeDir, ".cfctl", "setting.yaml")
 	mainViper.SetConfigFile(settingPath)
-	mainViper.SetConfigType("toml")
+	mainViper.SetConfigType("yaml")
 
 	if err := mainViper.ReadInConfig(); err != nil {
 		pterm.Error.Printf("Failed to read config file: %v\n", err)
 		exitWithError()
 	}
 
+	if strings.Contains(baseUrl, "megazone.io") {
+		client := &http.Client{}
+
+		// Check for existing user_id in config
+		userID := mainViper.GetString(fmt.Sprintf("environments.%s.user_id", currentEnv))
+		var tempUserID string
+		if userID == "" {
+			userIDInput := pterm.DefaultInteractiveTextInput
+			tempUserID, _ = userIDInput.Show("Enter your User ID")
+		} else {
+			tempUserID = userID
+			pterm.Info.Printf("Logging in as: %s\n", userID)
+		}
+
+		passwordInput := pterm.DefaultInteractiveTextInput.WithMask("*")
+		password, _ := passwordInput.Show("Enter your password")
+
+		url := mainViper.GetString(fmt.Sprintf("environments.%s.url", currentEnv))
+		if url == "" {
+			pterm.Error.Println("URL not found in configuration")
+			exitWithError()
+		}
+
+		url = strings.TrimPrefix(url, "https://")
+		url = strings.TrimPrefix(url, "http://")
+
+		parts := strings.Split(url, ".")
+		if len(parts) < 3 {
+			pterm.Error.Printf("Invalid URL format: %s\n", url)
+			exitWithError()
+		}
+		domainName := parts[0]
+
+		domainPayload := map[string]string{"name": domainName}
+		jsonPayload, _ := json.Marshal(domainPayload)
+
+		req, err := http.NewRequest("POST", baseUrl+"/domain/get-auth-info", bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			pterm.Error.Printf("Failed to create request: %v\n", err)
+			exitWithError()
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			pterm.Error.Printf("Failed to fetch domain info: %v\n", err)
+			exitWithError()
+		}
+		defer resp.Body.Close()
+
+		var result map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			pterm.Error.Printf("Failed to decode response: %v\n", err)
+			exitWithError()
+		}
+
+		domainID, ok := result["domain_id"].(string)
+		if !ok {
+			pterm.Error.Println("Domain ID not found in response")
+			exitWithError()
+		}
+
+		tokenPayload := map[string]interface{}{
+			"credentials": map[string]string{
+				"user_id":  tempUserID,
+				"password": password,
+			},
+			"auth_type": "LOCAL",
+			"domain_id": domainID,
+		}
+
+		jsonPayload, _ = json.Marshal(tokenPayload)
+		req, _ = http.NewRequest("POST", baseUrl+"/token/issue", bytes.NewBuffer(jsonPayload))
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err = client.Do(req)
+		if err != nil {
+			pterm.Error.Printf("Failed to issue token: %v\n", err)
+			exitWithError()
+		}
+		defer resp.Body.Close()
+
+		var tokenResult map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&tokenResult); err != nil {
+			pterm.Error.Printf("Failed to decode token response: %v\n", err)
+			exitWithError()
+		}
+
+		accessToken, ok := tokenResult["access_token"].(string)
+		if !ok {
+			pterm.Error.Println("Access token not found in response")
+			exitWithError()
+		}
+
+		refreshToken, ok := tokenResult["refresh_token"].(string)
+		if !ok {
+			pterm.Error.Println("Refresh token not found in response")
+			exitWithError()
+		}
+
+		existingAccessToken, existingRefreshToken, err := getValidTokens(currentEnv)
+		if err == nil && existingRefreshToken != "" && !isTokenExpired(existingRefreshToken) {
+			accessToken = existingAccessToken
+			refreshToken = existingRefreshToken
+		} else {
+			if userID == "" {
+				mainViper.Set(fmt.Sprintf("environments.%s.user_id", currentEnv), tempUserID)
+				if err := mainViper.WriteConfig(); err != nil {
+					pterm.Error.Printf("Failed to save user ID to config: %v\n", err)
+					exitWithError()
+				}
+			}
+		}
+
+		// Extract domain name from environment
+		nameParts := strings.Split(currentEnv, "-")
+		if len(nameParts) < 2 {
+			pterm.Error.Println("Environment name format is invalid.")
+			exitWithError()
+		}
+
+		// Create cache directory and save tokens
+		envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
+		if err := os.MkdirAll(envCacheDir, 0700); err != nil {
+			pterm.Error.Printf("Failed to create cache directory: %v\n", err)
+			exitWithError()
+		}
+
+		pterm.Info.Printf("Logged in as %s\n", tempUserID)
+
+		// Use the tokens to fetch workspaces and role
+		workspaces, err := fetchWorkspaces(baseUrl, accessToken)
+		if err != nil {
+			pterm.Error.Println("Failed to fetch workspaces:", err)
+			exitWithError()
+		}
+
+		domainID, roleType, err := fetchDomainIDAndRole(baseUrl, accessToken)
+		if err != nil {
+			pterm.Error.Println("Failed to fetch Domain ID and Role Type:", err)
+			exitWithError()
+		}
+
+		// Determine scope and select workspace
+		scope := determineScope(roleType, len(workspaces))
+		var workspaceID string
+		if roleType == "DOMAIN_ADMIN" {
+			workspaceID = selectScopeOrWorkspace(workspaces, roleType)
+			if workspaceID == "0" {
+				scope = "DOMAIN"
+				workspaceID = ""
+			} else {
+				scope = "WORKSPACE"
+			}
+		} else {
+			workspaceID = selectWorkspaceOnly(workspaces)
+			scope = "WORKSPACE"
+		}
+
+		// Grant new token using the refresh token
+		newAccessToken, err := grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
+		if err != nil {
+			pterm.Error.Println("Failed to retrieve new access token:", err)
+			exitWithError()
+		}
+
+		// Save all tokens
+		if err := os.WriteFile(filepath.Join(envCacheDir, "refresh_token"), []byte(refreshToken), 0600); err != nil {
+			pterm.Error.Printf("Failed to save refresh token: %v\n", err)
+			exitWithError()
+		}
+
+		if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(newAccessToken), 0600); err != nil {
+			pterm.Error.Printf("Failed to save access token: %v\n", err)
+			exitWithError()
+		}
+
+		pterm.Success.Println("Successfully logged in and saved token.")
+		return
+	}
+
 	// Extract domain name from environment
 	nameParts := strings.Split(currentEnv, "-")
-	if len(nameParts) < 3 {
+	if len(nameParts) < 2 {
 		pterm.Error.Println("Environment name format is invalid.")
 		exitWithError()
 	}
-	name := nameParts[1]
-
-	// Fetch Domain ID
-	domainID, err := fetchDomainID(baseUrl, name)
-	if err != nil {
-		pterm.Error.Println("Failed to fetch Domain ID:", err)
-		exitWithError()
-	}
+	name := nameParts[0]
 
 	// Check for existing user_id in config
 	userID := mainViper.GetString(fmt.Sprintf("environments.%s.user_id", currentEnv))
@@ -450,7 +626,14 @@ func executeUserLogin(currentEnv string) {
 		pterm.Info.Printf("Logging in as: %s\n", userID)
 	}
 
-	accessToken, refreshToken, newAccessToken, err := getValidTokens(currentEnv)
+	// Fetch Domain ID
+	domainID, err := fetchDomainID(baseUrl, name)
+	if err != nil {
+		pterm.Error.Println("Failed to fetch Domain ID:", err)
+		exitWithError()
+	}
+
+	accessToken, refreshToken, err := getValidTokens(currentEnv)
 	if err != nil || refreshToken == "" || isTokenExpired(refreshToken) {
 		// Get new tokens with password
 		password := promptPassword()
@@ -509,25 +692,20 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	// Grant new token using the refresh token
-	newAccessToken, err = grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
+	newAccessToken, err := grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
 	if err != nil {
 		pterm.Error.Println("Failed to retrieve new access token:", err)
 		exitWithError()
 	}
 
 	// Save all tokens
-	if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(accessToken), 0600); err != nil {
-		pterm.Error.Printf("Failed to save access token: %v\n", err)
-		exitWithError()
-	}
-
 	if err := os.WriteFile(filepath.Join(envCacheDir, "refresh_token"), []byte(refreshToken), 0600); err != nil {
 		pterm.Error.Printf("Failed to save refresh token: %v\n", err)
 		exitWithError()
 	}
 
-	if err := os.WriteFile(filepath.Join(envCacheDir, "grant_token"), []byte(newAccessToken), 0600); err != nil {
-		pterm.Error.Printf("Failed to save grant token: %v\n", err)
+	if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(newAccessToken), 0600); err != nil {
+		pterm.Error.Printf("Failed to save access token: %v\n", err)
 		exitWithError()
 	}
 
@@ -640,10 +818,10 @@ func saveCredentials(currentEnv, userID, encryptedPassword, accessToken, refresh
 	}
 
 	// Update main settings file
-	settingPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
+	settingPath := filepath.Join(homeDir, ".cfctl", "setting.yaml")
 	mainViper := viper.New()
 	mainViper.SetConfigFile(settingPath)
-	mainViper.SetConfigType("toml")
+	mainViper.SetConfigType("yaml")
 
 	if err := mainViper.ReadInConfig(); err != nil {
 		pterm.Error.Printf("Failed to read config file: %v\n", err)
@@ -749,9 +927,9 @@ func loadEnvironmentConfig() {
 		exitWithError()
 	}
 
-	settingPath := filepath.Join(homeDir, ".cfctl", "setting.toml")
+	settingPath := filepath.Join(homeDir, ".cfctl", "setting.yaml")
 	viper.SetConfigFile(settingPath)
-	viper.SetConfigType("toml")
+	viper.SetConfigType("yaml")
 
 	if err := viper.ReadInConfig(); err != nil {
 		pterm.Error.Printf("Failed to read setting file: %v\n", err)
@@ -820,7 +998,7 @@ func isTokenExpired(token string) bool {
 	if exp, ok := claims["exp"].(float64); ok {
 		return time.Now().Unix() > int64(exp)
 	}
-	return true // exp 필드가 없거나 잘못된 형식이면 만료된 것으로 간주
+	return true
 }
 
 func verifyToken(token string) bool {
@@ -995,6 +1173,61 @@ func issueToken(baseUrl, userID, password, domainID string) (string, string, err
 }
 
 func fetchWorkspaces(baseUrl string, accessToken string) ([]map[string]interface{}, error) {
+	if strings.Contains(baseUrl, "megazone.io") {
+		payload := map[string]string{}
+		jsonPayload, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+
+		getWorkspacesUrl := baseUrl + "/user-profile/get-workspaces"
+		req, err := http.NewRequest("POST", getWorkspacesUrl, bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		responseBody, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read response body: %v", err)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("failed to fetch workspaces, status code: %d", resp.StatusCode)
+		}
+
+		var result map[string]interface{}
+		if err := json.Unmarshal(responseBody, &result); err != nil {
+			return nil, err
+		}
+
+		workspaces, ok := result["results"].([]interface{})
+		if !ok || len(workspaces) == 0 {
+			pterm.Warning.Println("There are no accessible workspaces. Ask your administrators or workspace owners for access.")
+			exitWithError()
+		}
+
+		var workspaceList []map[string]interface{}
+		for _, workspace := range workspaces {
+			workspaceMap, ok := workspace.(map[string]interface{})
+			if !ok {
+				return nil, fmt.Errorf("failed to parse workspace data")
+			}
+			workspaceList = append(workspaceList, workspaceMap)
+		}
+
+		return workspaceList, nil
+	}
+
 	// Parse the endpoint
 	parts := strings.Split(baseUrl, "://")
 	if len(parts) != 2 {
@@ -1098,6 +1331,52 @@ func fetchWorkspaces(baseUrl string, accessToken string) ([]map[string]interface
 }
 
 func fetchDomainIDAndRole(baseUrl string, accessToken string) (string, string, error) {
+	if strings.Contains(baseUrl, "megazone.io") {
+		payload := map[string]string{}
+		jsonPayload, err := json.Marshal(payload)
+		if err != nil {
+			return "", "", err
+		}
+
+		getUserProfileUrl := baseUrl + "/user-profile/get"
+		req, err := http.NewRequest("POST", getUserProfileUrl, bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			return "", "", err
+		}
+
+		req.Header.Set("accept", "application/json")
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", "", err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return "", "", fmt.Errorf("failed to fetch user profile, status code: %d", resp.StatusCode)
+		}
+
+		var result map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", "", err
+		}
+
+		domainID, ok := result["domain_id"].(string)
+		if !ok {
+			return "", "", fmt.Errorf("domain_id not found in response")
+		}
+
+		roleType, ok := result["role_type"].(string)
+		if !ok {
+			return "", "", fmt.Errorf("role_type not found in response")
+		}
+
+		return domainID, roleType, nil
+	}
+
 	// Parse the endpoint
 	parts := strings.Split(baseUrl, "://")
 	if len(parts) != 2 {
@@ -1192,6 +1471,50 @@ func fetchDomainIDAndRole(baseUrl string, accessToken string) (string, string, e
 }
 
 func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (string, error) {
+	if strings.Contains(baseUrl, "megazone.io") {
+		payload := map[string]interface{}{
+			"grant_type":   "REFRESH_TOKEN",
+			"token":        refreshToken,
+			"scope":        scope,
+			"timeout":      10800,
+			"domain_id":    domainID,
+			"workspace_id": workspaceID,
+		}
+		jsonPayload, err := json.Marshal(payload)
+		if err != nil {
+			return "", err
+		}
+
+		req, err := http.NewRequest("POST", baseUrl+"/token/grant", bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("status code: %d", resp.StatusCode)
+		}
+
+		var result map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", err
+		}
+
+		accessToken, ok := result["access_token"].(string)
+		if !ok {
+			return "", fmt.Errorf("access token not found in response")
+		}
+
+		return accessToken, nil
+	}
+
 	// Parse the endpoint
 	parts := strings.Split(baseUrl, "://")
 	if len(parts) != 2 {
@@ -1255,7 +1578,7 @@ func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (str
 
 	reqMsg.SetFieldByName("scope", scopeEnum)
 	reqMsg.SetFieldByName("token", refreshToken)
-	reqMsg.SetFieldByName("timeout", int32(21600))
+	reqMsg.SetFieldByName("timeout", int32(10800))
 	reqMsg.SetFieldByName("domain_id", domainID)
 	if workspaceID != "" {
 		reqMsg.SetFieldByName("workspace_id", workspaceID)
@@ -1657,10 +1980,10 @@ func readTokenFromFile(envDir, tokenType string) (string, error) {
 }
 
 // getValidTokens checks for existing valid tokens in the environment cache directory
-func getValidTokens(currentEnv string) (accessToken, refreshToken, newAccessToken string, err error) {
+func getValidTokens(currentEnv string) (accessToken, refreshToken string, err error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return "", "", "", err
+		return "", "", err
 	}
 
 	envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
@@ -1670,13 +1993,14 @@ func getValidTokens(currentEnv string) (accessToken, refreshToken, newAccessToke
 		if err == nil {
 			if exp, ok := claims["exp"].(float64); ok {
 				if time.Now().Unix() < int64(exp) {
-					accessToken, _ = readTokenFromFile(envCacheDir, "access_token")
-					newAccessToken, _ = readTokenFromFile(envCacheDir, "grant_token")
-					return accessToken, refreshToken, newAccessToken, nil
+					if accessToken, err = readTokenFromFile(envCacheDir, "access_token"); err == nil {
+						return accessToken, refreshToken, nil
+					}
+					return accessToken, refreshToken, nil
 				}
 			}
 		}
 	}
 
-	return "", "", "", fmt.Errorf("no valid tokens found")
+	return "", "", fmt.Errorf("no valid tokens found")
 }

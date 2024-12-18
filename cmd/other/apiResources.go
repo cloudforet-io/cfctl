@@ -3,11 +3,13 @@
 package other
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
@@ -189,6 +191,53 @@ var ApiResourcesCmd = &cobra.Command{
 }
 
 func FetchEndpointsMap(endpoint string) (map[string]string, error) {
+	if strings.Contains(endpoint, "megazone.io") {
+		payload := map[string]string{}
+		jsonPayload, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+
+		listEndpointsUrl := endpoint + "/endpoint/list"
+		req, err := http.NewRequest("POST", listEndpointsUrl, bytes.NewBuffer(jsonPayload))
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("accept", "application/json")
+		req.Header.Set("Content-Type", "application/json")
+
+		client := &http.Client{}
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			return nil, fmt.Errorf("failed to fetch endpoints, status code: %d", resp.StatusCode)
+		}
+
+		var result struct {
+			Results []struct {
+				Service  string `json:"service"`
+				Endpoint string `json:"endpoint"`
+			} `json:"results"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return nil, err
+		}
+
+		// Convert to endpointsMap format
+		endpointsMap := make(map[string]string)
+		for _, service := range result.Results {
+			endpointsMap[service.Service] = service.Endpoint
+		}
+
+		return endpointsMap, nil
+	}
+
 	// Parse the endpoint
 	parts := strings.Split(endpoint, "://")
 	if len(parts) != 2 {
@@ -366,54 +415,54 @@ func fetchServiceResources(service, endpoint string, shortNamesMap map[string]st
 
 	services := resp.GetListServicesResponse().Service
 	registeredShortNames, err := listShortNames()
-    if err != nil {
-        return nil, fmt.Errorf("failed to load short names: %v", err)
-    }
+	if err != nil {
+		return nil, fmt.Errorf("failed to load short names: %v", err)
+	}
 
-    data := [][]string{}
-    for _, s := range services {
-        if strings.HasPrefix(s.Name, "grpc.reflection.v1alpha.") {
-            continue
-        }
-        resourceName := s.Name[strings.LastIndex(s.Name, ".")+1:]
-        verbs := getServiceMethods(client, s.Name)
-        
-        // Find all matching short names for this resource
-        verbsWithShortNames := make(map[string]string)
-        remainingVerbs := make([]string, 0)
+	data := [][]string{}
+	for _, s := range services {
+		if strings.HasPrefix(s.Name, "grpc.reflection.v1alpha.") {
+			continue
+		}
+		resourceName := s.Name[strings.LastIndex(s.Name, ".")+1:]
+		verbs := getServiceMethods(client, s.Name)
 
-        // Get service-specific short names
-        serviceShortNames := registeredShortNames[service]
-        if serviceMap, ok := serviceShortNames.(map[string]interface{}); ok {
-            for _, verb := range verbs {
-                hasShortName := false
-                for sn, cmd := range serviceMap {
-                    if strings.Contains(cmd.(string), fmt.Sprintf("%s %s", verb, resourceName)) {
-                        verbsWithShortNames[verb] = sn
-                        hasShortName = true
-                        break
-                    }
-                }
-                if !hasShortName {
-                    remainingVerbs = append(remainingVerbs, verb)
-                }
-            }
-        } else {
-            remainingVerbs = verbs
-        }
-        
-        // Add row for verbs without short names
-        if len(remainingVerbs) > 0 {
-            data = append(data, []string{service, resourceName, "", strings.Join(remainingVerbs, ", ")})
-        }
-        
-        // Add separate rows for each verb with a short name
-        for verb, shortName := range verbsWithShortNames {
-            data = append(data, []string{service, resourceName, shortName, verb})
-        }
-    }
+		// Find all matching short names for this resource
+		verbsWithShortNames := make(map[string]string)
+		remainingVerbs := make([]string, 0)
 
-    return data, nil
+		// Get service-specific short names
+		serviceShortNames := registeredShortNames[service]
+		if serviceMap, ok := serviceShortNames.(map[string]interface{}); ok {
+			for _, verb := range verbs {
+				hasShortName := false
+				for sn, cmd := range serviceMap {
+					if strings.Contains(cmd.(string), fmt.Sprintf("%s %s", verb, resourceName)) {
+						verbsWithShortNames[verb] = sn
+						hasShortName = true
+						break
+					}
+				}
+				if !hasShortName {
+					remainingVerbs = append(remainingVerbs, verb)
+				}
+			}
+		} else {
+			remainingVerbs = verbs
+		}
+
+		// Add row for verbs without short names
+		if len(remainingVerbs) > 0 {
+			data = append(data, []string{service, resourceName, "", strings.Join(remainingVerbs, ", ")})
+		}
+
+		// Add separate rows for each verb with a short name
+		for verb, shortName := range verbsWithShortNames {
+			data = append(data, []string{service, resourceName, shortName, verb})
+		}
+	}
+
+	return data, nil
 }
 
 func getServiceMethods(client grpc_reflection_v1alpha.ServerReflectionClient, serviceName string) []string {
