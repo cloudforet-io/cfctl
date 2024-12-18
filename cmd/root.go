@@ -144,7 +144,8 @@ func showInitializationGuide(originalErr error) {
 	// Skip showing guide for certain commands
 	if len(os.Args) >= 2 && (os.Args[1] == "setting" ||
 		os.Args[1] == "login" ||
-		os.Args[1] == "api-resources") {
+		os.Args[1] == "api-resources" ||
+		os.Args[1] == "completion") {
 		return
 	}
 
