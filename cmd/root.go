@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"gopkg.in/yaml.v3"
 	"log"
@@ -10,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/spf13/viper"
 
 	"github.com/cloudforet-io/cfctl/cmd/common"
@@ -18,8 +16,6 @@ import (
 
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 )
 
 var cfgFile string
@@ -105,13 +101,9 @@ func init() {
 
 	// Determine if the current command is 'setting environment -l'
 	skipDynamicCommands := false
-	if len(os.Args) >= 3 && os.Args[1] == "setting" && os.Args[2] == "environment" {
-		for _, arg := range os.Args[3:] {
-			if arg == "-l" || arg == "--list" {
-				skipDynamicCommands = true
-				break
-			}
-		}
+	if len(os.Args) >= 2 && os.Args[1] == "setting" {
+		// Skip dynamic commands for all setting related operations
+		skipDynamicCommands = true
 	}
 
 	if !skipDynamicCommands {
@@ -239,7 +231,19 @@ func showInitializationGuide(originalErr error) {
 }
 
 func addDynamicServiceCommands() error {
-	// If we already have in-memory cache, use it
+	config, err := loadConfig()
+	if err != nil {
+		return err
+	}
+
+	// For local environment, only add plugin command
+	if strings.HasPrefix(config.Environment, "local-") {
+		cmd := createServiceCommand("plugin")
+		rootCmd.AddCommand(cmd)
+		return nil
+	}
+
+	// For non-local environments, continue with existing logic...
 	if cachedEndpointsMap != nil {
 		for serviceName := range cachedEndpointsMap {
 			cmd := createServiceCommand(serviceName)
@@ -248,89 +252,52 @@ func addDynamicServiceCommands() error {
 		return nil
 	}
 
-	// Load configuration
-	setting, err := loadConfig()
-	if err != nil {
-		return fmt.Errorf("failed to load setting: %v", err)
-	}
+	// Only show progress bar when actually fetching services
+	if len(os.Args) == 1 || (len(os.Args) > 1 && os.Args[1] != "setting") {
+		// Create progress bar
+		progressbar, _ := pterm.DefaultProgressbar.
+			WithTotal(4).
+			WithTitle("Initializing services").
+			Start()
 
-	// Handle local environment
-	if strings.HasPrefix(setting.Environment, "local-") {
-		// Try connecting to local gRPC server
-		conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure(), grpc.WithBlock(), grpc.WithTimeout(2*time.Second))
-		if err != nil {
-			pterm.Error.Printf("Cannot connect to local gRPC server (grpc://localhost:50051)\n")
-			pterm.Info.Println("Please check if your gRPC server is running")
-			return fmt.Errorf("local gRPC server connection failed: %v", err)
-		}
-		defer conn.Close()
-
-		// Create reflection client
-		ctx := context.Background()
-		refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
-		defer refClient.Reset()
-
-		// List all services
-		services, err := refClient.ListServices()
-		if err != nil {
-			return fmt.Errorf("failed to list local services: %v", err)
-		}
-
-		endpointsMap := make(map[string]string)
-		for _, svc := range services {
-			if strings.HasPrefix(svc, "spaceone.api.") {
-				parts := strings.Split(svc, ".")
-				if len(parts) >= 4 {
-					serviceName := parts[2]
-					// Skip core service
-					if serviceName != "core" {
-						endpointsMap[serviceName] = "grpc://localhost:50051"
-					}
+		progressbar.UpdateTitle("Preparing endpoint configuration")
+		endpoint := config.Endpoint
+		if !strings.Contains(endpoint, "identity") {
+			parts := strings.Split(endpoint, "://")
+			if len(parts) == 2 {
+				hostParts := strings.Split(parts[1], ".")
+				if len(hostParts) >= 4 {
+					env := hostParts[2]
+					endpoint = fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", env)
 				}
 			}
 		}
+		progressbar.Increment()
+		time.Sleep(time.Millisecond * 300)
 
-		// Store in both memory and file cache
+		progressbar.UpdateTitle("Fetching available services")
+		endpointsMap, err := other.FetchEndpointsMap(endpoint)
+		if err != nil {
+			return fmt.Errorf("failed to fetch services: %v", err)
+		}
+		progressbar.Increment()
+		time.Sleep(time.Millisecond * 300)
+
+		progressbar.UpdateTitle("Creating cache for faster subsequent runs")
 		cachedEndpointsMap = endpointsMap
 		if err := saveEndpointsCache(endpointsMap); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
 		}
+		progressbar.Increment()
+		time.Sleep(time.Millisecond * 300)
 
-		// Create commands for each service
+		progressbar.UpdateTitle("Registering verbs and resources commands to the cache")
 		for serviceName := range endpointsMap {
 			cmd := createServiceCommand(serviceName)
 			rootCmd.AddCommand(cmd)
 		}
-
-		return nil
-	}
-
-	// Continue with existing logic for non-local environments
-	endpoint := setting.Endpoint
-	if !strings.Contains(endpoint, "identity") {
-		parts := strings.Split(endpoint, "://")
-		if len(parts) == 2 {
-			hostParts := strings.Split(parts[1], ".")
-			if len(hostParts) >= 4 {
-				env := hostParts[2]
-				endpoint = fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", env)
-			}
-		}
-	}
-
-	endpointsMap, err := other.FetchEndpointsMap(endpoint)
-	if err != nil {
-		return fmt.Errorf("failed to fetch services: %v", err)
-	}
-
-	cachedEndpointsMap = endpointsMap
-	if err := saveEndpointsCache(endpointsMap); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
-	}
-
-	for serviceName := range endpointsMap {
-		cmd := createServiceCommand(serviceName)
-		rootCmd.AddCommand(cmd)
+		progressbar.Increment()
+		time.Sleep(time.Millisecond * 300)
 	}
 
 	return nil
