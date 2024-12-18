@@ -1180,27 +1180,25 @@ func constructEndpoint(baseURL string) (string, error) {
 	}
 	hostname := parsedURL.Hostname()
 
-	prefix := ""
-	// Determine the prefix based on the hostname
 	switch {
 	case strings.Contains(hostname, ".dev.spaceone.dev"):
-		prefix = "dev"
+		return fmt.Sprintf("grpc+ssl://identity.api.dev.spaceone.dev:443"), nil
 	case strings.Contains(hostname, ".stg.spaceone.dev"):
-		prefix = "stg"
-	// TODO: After set up production
-	default:
-		return "", fmt.Errorf("unknown environment prefix in URL: %s", hostname)
+		return fmt.Sprintf("grpc+ssl://identity.api.stg.spaceone.dev:443"), nil
 	}
 
-	// Extract the service from the hostname
-	service := strings.Split(hostname, ".")[0]
-	if service == "" {
-		return "", fmt.Errorf("unable to determine service from URL: %s", hostname)
+	if strings.Contains(hostname, "spaceone.megazone.io") {
+		region := "kr1"
+		if strings.Contains(hostname, "jp1.") {
+			region = "jp1"
+		} else if strings.Contains(hostname, "us1.") {
+			region = "us1"
+		}
+
+		return fmt.Sprintf("https://console-v2.%s.api.spaceone.megazone.io/identity", region), nil
 	}
 
-	// Construct the endpoint dynamically based on the service
-	newEndpoint := fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", prefix)
-	return newEndpoint, nil
+	return "", fmt.Errorf("unknown environment in URL: %s", hostname)
 }
 
 func init() {
