@@ -425,7 +425,7 @@ func loadConfig() (*Config, error) {
 	if strings.HasSuffix(currentEnv, "-user") {
 		// For user environments, read from cache directory
 		envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
-		grantTokenPath := filepath.Join(envCacheDir, "grant_token")
+		grantTokenPath := filepath.Join(envCacheDir, "access_token")
 		data, err := os.ReadFile(grantTokenPath)
 		if err != nil {
 			return nil, fmt.Errorf("no valid token found in cache")

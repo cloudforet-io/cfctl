@@ -349,8 +349,8 @@ func loadConfig() (*Config, error) {
 
 	// Handle token based on environment type
 	if strings.HasSuffix(currentEnv, "-user") {
-		// For user environments, read from grant_token file
-		grantTokenPath := filepath.Join(home, ".cfctl", "cache", currentEnv, "grant_token")
+		// For user environments, read from access_token file (Actual token is grant_token)
+		grantTokenPath := filepath.Join(home, ".cfctl", "cache", currentEnv, "access_token")
 		tokenBytes, err := os.ReadFile(grantTokenPath)
 		if err == nil {
 			envConfig.Token = strings.TrimSpace(string(tokenBytes))

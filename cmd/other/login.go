@@ -450,7 +450,7 @@ func executeUserLogin(currentEnv string) {
 		pterm.Info.Printf("Logging in as: %s\n", userID)
 	}
 
-	accessToken, refreshToken, newAccessToken, err := getValidTokens(currentEnv)
+	accessToken, refreshToken, err := getValidTokens(currentEnv)
 	if err != nil || refreshToken == "" || isTokenExpired(refreshToken) {
 		// Get new tokens with password
 		password := promptPassword()
@@ -509,25 +509,20 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	// Grant new token using the refresh token
-	newAccessToken, err = grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
+	newAccessToken, err := grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
 	if err != nil {
 		pterm.Error.Println("Failed to retrieve new access token:", err)
 		exitWithError()
 	}
 
 	// Save all tokens
-	if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(accessToken), 0600); err != nil {
-		pterm.Error.Printf("Failed to save access token: %v\n", err)
-		exitWithError()
-	}
-
 	if err := os.WriteFile(filepath.Join(envCacheDir, "refresh_token"), []byte(refreshToken), 0600); err != nil {
 		pterm.Error.Printf("Failed to save refresh token: %v\n", err)
 		exitWithError()
 	}
 
-	if err := os.WriteFile(filepath.Join(envCacheDir, "grant_token"), []byte(newAccessToken), 0600); err != nil {
-		pterm.Error.Printf("Failed to save grant token: %v\n", err)
+	if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(newAccessToken), 0600); err != nil {
+		pterm.Error.Printf("Failed to save access token: %v\n", err)
 		exitWithError()
 	}
 
@@ -1657,10 +1652,10 @@ func readTokenFromFile(envDir, tokenType string) (string, error) {
 }
 
 // getValidTokens checks for existing valid tokens in the environment cache directory
-func getValidTokens(currentEnv string) (accessToken, refreshToken, newAccessToken string, err error) {
+func getValidTokens(currentEnv string) (accessToken, refreshToken string, err error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		return "", "", "", err
+		return "", "", err
 	}
 
 	envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
@@ -1670,13 +1665,14 @@ func getValidTokens(currentEnv string) (accessToken, refreshToken, newAccessToke
 		if err == nil {
 			if exp, ok := claims["exp"].(float64); ok {
 				if time.Now().Unix() < int64(exp) {
-					accessToken, _ = readTokenFromFile(envCacheDir, "access_token")
-					newAccessToken, _ = readTokenFromFile(envCacheDir, "grant_token")
-					return accessToken, refreshToken, newAccessToken, nil
+					if accessToken, err = readTokenFromFile(envCacheDir, "access_token"); err == nil {
+						return accessToken, refreshToken, nil
+					}
+					return accessToken, refreshToken, nil
 				}
 			}
 		}
 	}
 
-	return "", "", "", fmt.Errorf("no valid tokens found")
+	return "", "", fmt.Errorf("no valid tokens found")
 }
