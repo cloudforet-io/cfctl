@@ -379,6 +379,12 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 	var err error
 	var hostPort string
 
+	if verb == "list" && options.Page > 0 {
+		options.Parameters = append(options.Parameters,
+			fmt.Sprintf("page=%d", options.Page),
+			fmt.Sprintf("page_size=%d", options.PageSize))
+	}
+
 	if strings.HasPrefix(config.Environment, "local-") {
 		conn, err = grpc.Dial("localhost:50051", grpc.WithInsecure(),
 			grpc.WithDefaultCallOptions(
@@ -741,10 +747,10 @@ func getMinimalFields(serviceName, resourceName string, refClient *grpcreflect.C
 
 func printTable(data map[string]interface{}, options *FetchOptions, serviceName, resourceName string, refClient *grpcreflect.Client) string {
 	if results, ok := data["results"].([]interface{}); ok {
-		pageSize := 10
-		currentPage := 0
-		searchTerm := ""
-		filteredResults := results
+		// Set default page size if not specified
+		if options.PageSize == 0 {
+			options.PageSize = 100
+		}
 
 		// Initialize keyboard
 		if err := keyboard.Open(); err != nil {
@@ -753,9 +759,13 @@ func printTable(data map[string]interface{}, options *FetchOptions, serviceName,
 		}
 		defer keyboard.Close()
 
-		// Extract headers from all results to ensure we get all possible fields
+		currentPage := 0
+		searchTerm := ""
+		filteredResults := results
+
+		// Extract headers
 		headers := make(map[string]bool)
-		for _, result := range results {
+		for _, result := range results[:min(1000, len(results))] {
 			if row, ok := result.(map[string]interface{}); ok {
 				for key := range row {
 					headers[key] = true
@@ -763,14 +773,14 @@ func printTable(data map[string]interface{}, options *FetchOptions, serviceName,
 			}
 		}
 
-		// Convert headers map to sorted slice
+		// Convert headers to sorted slice
 		headerSlice := make([]string, 0, len(headers))
 		for key := range headers {
 			headerSlice = append(headerSlice, key)
 		}
 		sort.Strings(headerSlice)
 
-		// If minimal columns are requested, only show essential fields
+		// Handle minimal columns
 		if options.MinimalColumns {
 			minimalFields := getMinimalFields(serviceName, resourceName, refClient)
 			var minimalHeaderSlice []string
@@ -792,13 +802,13 @@ func printTable(data map[string]interface{}, options *FetchOptions, serviceName,
 			}
 
 			totalItems := len(filteredResults)
-			totalPages := (totalItems + pageSize - 1) / pageSize
+			totalPages := (totalItems + options.PageSize - 1) / options.PageSize
 
 			tableData := pterm.TableData{headerSlice}
 
-			// Calculate current page items
-			startIdx := currentPage * pageSize
-			endIdx := startIdx + pageSize
+			// Calculate page items
+			startIdx := currentPage * options.PageSize
+			endIdx := startIdx + options.PageSize
 			if endIdx > totalItems {
 				endIdx = totalItems
 			}
@@ -810,8 +820,9 @@ func printTable(data map[string]interface{}, options *FetchOptions, serviceName,
 				fmt.Printf("Search: %s (Found: %d items)\n", searchTerm, totalItems)
 			}
 
-			// Add rows for current page using filteredResults
-			for _, result := range filteredResults[startIdx:endIdx] {
+			// Add rows for current page
+			pageResults := filteredResults[startIdx:endIdx]
+			for _, result := range pageResults {
 				if row, ok := result.(map[string]interface{}); ok {
 					rowData := make([]string, len(headerSlice))
 					for i, key := range headerSlice {
@@ -821,16 +832,13 @@ func printTable(data map[string]interface{}, options *FetchOptions, serviceName,
 				}
 			}
 
-			// Clear screen
-			fmt.Print("\033[H\033[2J")
-
 			// Print table
 			pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
 
 			fmt.Printf("\nPage %d of %d (Total items: %d)\n", currentPage+1, totalPages, totalItems)
 			fmt.Println("Navigation: [h]previous page, [l]next page, [/]search, [c]lear search, [q]uit")
 
-			// Get keyboard input
+			// Handle keyboard input
 			char, _, err := keyboard.GetKey()
 			if err != nil {
 				fmt.Println("Error reading keyboard input:", err)
@@ -841,14 +849,10 @@ func printTable(data map[string]interface{}, options *FetchOptions, serviceName,
 			case 'l', 'L':
 				if currentPage < totalPages-1 {
 					currentPage++
-				} else {
-					currentPage = 0
 				}
 			case 'h', 'H':
 				if currentPage > 0 {
 					currentPage--
-				} else {
-					currentPage = totalPages - 1
 				}
 			case 'q', 'Q':
 				return ""
@@ -865,24 +869,25 @@ func printTable(data map[string]interface{}, options *FetchOptions, serviceName,
 				keyboard.Open()
 			}
 		}
-	} else {
-		headers := make([]string, 0)
-		for key := range data {
-			headers = append(headers, key)
-		}
-		sort.Strings(headers)
-
-		tableData := pterm.TableData{
-			{"Field", "Value"},
-		}
-
-		for _, header := range headers {
-			value := formatTableValue(data[header])
-			tableData = append(tableData, []string{header, value})
-		}
-
-		pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
 	}
+
+	// Handle non-list results
+	headers := make([]string, 0)
+	for key := range data {
+		headers = append(headers, key)
+	}
+	sort.Strings(headers)
+
+	tableData := pterm.TableData{
+		{"Field", "Value"},
+	}
+
+	for _, header := range headers {
+		value := formatTableValue(data[header])
+		tableData = append(tableData, []string{header, value})
+	}
+
+	pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
 	return ""
 }
 
