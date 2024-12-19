@@ -1,10 +1,12 @@
 enabled: true
 name: cfctl
-namespace: spaceone
+namespace: cloudforet
+
 image:
-  name: spaceone/cfctl
+  name: cloudforet/cfctl
   version: latest
-imagePullPolicy: IfNotPresent
+  pullPolicy: IfNotPresent
+
 replicas: 1
 
 resources: {}
