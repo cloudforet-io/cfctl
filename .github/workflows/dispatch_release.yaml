@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "enter version(x.y.z)"
+        description: "enter version (1.0.0 format, without 'v' prefix)"
         required: true
         default: "0.0.0"
       container_arch:
@@ -22,7 +22,21 @@ env:
   SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
 jobs:
+  set-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.set-version.outputs.version }}
+    steps:
+      - name: Set version
+        id: set-version
+        run: |
+          VERSION="${{ github.event.inputs.version }}"
+          # Remove 'v' prefix if present
+          VERSION="${VERSION#v}"
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
   tagging:
+    needs: set-version
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -34,8 +48,8 @@ jobs:
         run: |
           git config user.email admin@cloudforet.io
           git config user.name cloudforet-admin
-          git tag ${{ env.VERSION }}
-          git push origin ${{ env.VERSION }}
+          git tag v${{ needs.set-version.outputs.version }}
+          git push origin v${{ needs.set-version.outputs.version }}
 
       - name: Notice when job fails
         if: failure()
@@ -103,25 +117,9 @@ jobs:
           context: .
           platforms: ${{ env.ARCH }}
           push: true
-          tags: cloudforet/${{ github.event.repository.name }}:${{ env.VERSION }}
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v2
-        with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
-
-      - name: Login to Amazon ECR
-        run: aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin ${{ secrets.ECR_REPO }}
-
-      - name: Build and push to ECR
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          platforms: ${{ env.ARCH }}
-          push: true
-          tags: ${{ secrets.ECR_REPO }}/${{ github.event.repository.name }}:${{ env.VERSION }}
+          tags: |
+            cloudforet/${{ github.event.repository.name }}:latest
+            cloudforet/${{ github.event.repository.name }}:v${{ env.VERSION }}
 
       - name: Notice when job fails
         if: failure()
