@@ -14,8 +14,6 @@ import (
 	"sort"
 	"strings"
 
-	"google.golang.org/protobuf/types/known/structpb"
-
 	"github.com/eiannone/keyboard"
 	"github.com/spf13/viper"
 
@@ -457,11 +455,17 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 		return nil, err
 	}
 
-	for key, value := range inputParams {
-		if err := reqMsg.TrySetFieldByName(key, value); err != nil {
-			return nil, fmt.Errorf("failed to set field '%s': %v", key, err)
-		}
+	// Marshal the inputParams map to JSON
+	jsonBytes, err := json.Marshal(inputParams)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal input parameters to JSON: %v", err)
 	}
+
+	// Unmarshal the JSON into the dynamic.Message
+	if err := reqMsg.UnmarshalJSON(jsonBytes); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal JSON into request message: %v", err)
+	}
+
 
 	fullMethod := fmt.Sprintf("/%s/%s", fullServiceName, verb)
 
@@ -540,17 +544,11 @@ func parseParameters(options *FetchOptions) (map[string]interface{}, error) {
 		for key, value := range yamlData {
 			switch v := value.(type) {
 			case map[string]interface{}:
-				structValue, err := structpb.NewStruct(v)
-				if err != nil {
-					return nil, fmt.Errorf("failed to convert map to struct: %v", err)
-				}
-				parsed[key] = structValue
+				// Retain as map instead of converting to Struct
+				parsed[key] = v
 			case []interface{}:
-				listValue, err := structpb.NewList(v)
-				if err != nil {
-					return nil, fmt.Errorf("failed to convert array to list: %v", err)
-				}
-				parsed[key] = listValue
+				// Retain lists as is
+				parsed[key] = v
 			default:
 				parsed[key] = value
 			}
@@ -584,6 +582,7 @@ func parseParameters(options *FetchOptions) (map[string]interface{}, error) {
 
 	return parsed, nil
 }
+
 
 func discoverService(refClient *grpcreflect.Client, serviceName string, resourceName string) (string, error) {
 	services, err := refClient.ListServices()
