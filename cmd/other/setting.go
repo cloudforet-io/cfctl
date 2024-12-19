@@ -60,7 +60,7 @@ var settingInitURLCmd = &cobra.Command{
 			return
 		}
 		if !appFlag && !userFlag {
-			pterm.Error.Println("You must specify either --app, --user, or --plugin flag.")
+			pterm.Error.Println("You must specify either --app or --user flag.")
 			cmd.Help()
 			return
 		}
@@ -214,85 +214,6 @@ var settingInitLocalCmd = &cobra.Command{
 		pterm.Success.Printf("Environment '%s' successfully initialized.\n", envName)
 		return nil
 	},
-}
-
-func initializePluginSetting(pluginName string) {
-	// Add 'local-' prefix to plugin name
-	envName := fmt.Sprintf("local-%s", pluginName)
-
-	settingDir := GetSettingDir()
-	if err := os.MkdirAll(settingDir, 0755); err != nil {
-		pterm.Error.Printf("Failed to create setting directory: %v\n", err)
-		return
-	}
-
-	mainSettingPath := filepath.Join(settingDir, "setting.yaml")
-	if _, err := os.Stat(mainSettingPath); os.IsNotExist(err) {
-		// Initial YAML structure
-		initialSetting := map[string]interface{}{
-			"environments": map[string]interface{}{},
-		}
-
-		v := viper.New()
-		v.SetConfigFile(mainSettingPath)
-		v.SetConfigType("yaml")
-		v.Set("environments", initialSetting["environments"])
-
-		if err := v.WriteConfig(); err != nil {
-			pterm.Error.Printf("Failed to create setting file: %v\n", err)
-			return
-		}
-	}
-
-	v := viper.New()
-	v.SetConfigFile(mainSettingPath)
-	v.SetConfigType("yaml")
-
-	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
-		pterm.Error.Printf("Error reading setting: %v\n", err)
-		return
-	}
-
-	// Set environment configuration using the prefixed name
-	v.Set(fmt.Sprintf("environments.%s.endpoint", envName), "grpc://localhost:50051")
-	v.Set(fmt.Sprintf("environments.%s.token", envName), "NO TOKEN")
-	v.Set("environment", envName)
-
-	if err := v.WriteConfig(); err != nil {
-		pterm.Error.Printf("Failed to write setting: %v\n", err)
-		return
-	}
-
-	pterm.Success.Printf("Plugin environment '%s' successfully initialized.\n", envName)
-}
-
-func updateLocalSetting(envName, settingType, settingPath string) {
-	v := viper.New()
-	v.SetConfigFile(settingPath)
-
-	// Ensure directory exists
-	if err := os.MkdirAll(filepath.Dir(settingPath), 0755); err != nil {
-		pterm.Error.Printf("Failed to create directory: %v\n", err)
-		return
-	}
-
-	// Read existing setting or create new
-	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
-		pterm.Error.Printf("Error reading setting: %v\n", err)
-		return
-	}
-
-	// Set environment configuration
-	v.Set(fmt.Sprintf("environments.%s.endpoint", envName), "grpc://localhost:50051")
-	if settingType == "app" {
-		v.Set(fmt.Sprintf("environments.%s.token", envName), "")
-	}
-
-	// Write configuration
-	if err := v.WriteConfig(); err != nil {
-		pterm.Error.Printf("Failed to write setting: %v\n", err)
-		return
-	}
 }
 
 // envCmd manages environment switching and listing
