@@ -27,6 +27,8 @@ type FetchOptions struct {
 	MinimalColumns  bool
 	Columns         string
 	Limit           int
+	Page 			int
+	PageSize 		int
 }
 
 // AddVerbCommands adds subcommands for each verb to the parent command
@@ -89,10 +91,13 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 				sortBy := ""
 				columns := ""
 				limit := 0
+				pageSize := 100 // Default page size
+
 				if currentVerb == "list" {
 					sortBy, _ = cmd.Flags().GetString("sort")
 					columns, _ = cmd.Flags().GetString("columns")
 					limit, _ = cmd.Flags().GetInt("limit")
+					pageSize, _ = cmd.Flags().GetInt("page-size")
 				}
 
 				options := &FetchOptions{
@@ -105,6 +110,7 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 					MinimalColumns:  currentVerb == "list" && cmd.Flag("minimal") != nil && cmd.Flag("minimal").Changed,
 					Columns:         columns,
 					Limit:           limit,
+					PageSize:        pageSize,
 				}
 
 				if currentVerb == "list" && !cmd.Flags().Changed("output") {
@@ -136,6 +142,7 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 			verbCmd.Flags().BoolP("minimal", "m", false, "Show minimal columns")
 			verbCmd.Flags().StringP("columns", "c", "", "Specific columns (-c id,name)")
 			verbCmd.Flags().IntP("limit", "l", 0, "Number of rows")
+			verbCmd.Flags().IntP("page-size", "n", 15, "Number of items per page")
 		}
 
 		// Define flags for verbCmd
