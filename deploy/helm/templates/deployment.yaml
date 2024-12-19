@@ -3,55 +3,64 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ .Values.name }}
-  namespace: {{ .Values.namespace | default .Release.Namespace }}
   labels:
-    {{- include "cfctl.labels" . | nindent 4 }}
+    spaceone.service: {{ .Values.name }}
+  name: {{ .Values.name }}
+  namespace: {{ .Values.global.namespace | default .Release.Namespace }}
 spec:
   replicas: {{ .Values.replicas }}
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
-      {{- include "cfctl.selectorLabels" . | nindent 6 }}
+      spaceone.service: {{ .Values.name }}
   template:
     metadata:
+      annotations:
+        spaceone.deployment.tool: helm
       labels:
-        {{- include "cfctl.selectorLabels" . | nindent 8 }}
+{{ include "spaceone.labels" . | indent 8 }}
+        spaceone.service: {{ .Values.name }}
     spec:
+{{- if .Values.serviceAccountName }}
+      serviceAccountName: {{ .Values.serviceAccountName }}
+{{- end }}
+      terminationGracePeriodSeconds: {{ .Values.gracePeriod }}
+{{- if .Values.imagePullSecrets}}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      securityContext:
-        {{- toYaml .Values.securityContext | nindent 8 }}
+{{- end}}
       containers:
         - name: {{ .Values.name }}
-          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
-          ports:
-            - name: http
-              containerPort: 8080
-              protocol: TCP
-          volumeMounts:
-            - name: config
-              mountPath: {{ .Values.configPath }}
-            - name: data
-              mountPath: /data
+          image: {{ .Values.image.name }}:{{ .Values.image.version }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+{{- if .Values.resources }}
           resources:
-            {{- toYaml .Values.resources | nindent 12 }}
-          {{- with .Values.env }}
+          {{- toYaml .Values.resources | nindent 12 }}
+{{- end }}
+{{- if .Values.env }}
           env:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
+{{- toYaml .Values.env | nindent 12 }}
+{{- end }}
+          volumeMounts:
+            - name: cfctl-data
+              mountPath: /root/.spaceone/
+            - name: environment-conf
+              mountPath: /root/default.yaml
+              subPath: default.yaml
+              readOnly: true
       volumes:
-        - name: config
+        - name: environment-conf
           configMap:
-            name: {{ .Values.name }}-config
-        - name: data
-          {{- if .Values.persistence.enabled }}
+            name: {{ .Values.name }}-environment-conf
+{{ if .Values.pvc.storageClassName }}
+        - name: cfctl-data
           persistentVolumeClaim:
-            claimName: {{ .Values.name }}-data
-          {{- else }}
+            claimName: {{ .Release.Namespace }}-cfctl-pvc
+{{ else }}
+        - name: cfctl-data
           emptyDir: {}
-          {{- end }}
+{{- end }}
 
 {{- end }}

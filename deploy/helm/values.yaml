@@ -5,8 +5,7 @@ namespace: cloudforet
 image:
   name: cloudforet/cfctl
   version: latest
-  pullPolicy: IfNotPresent
-
+imagePullPolicy: IfNotPresent
 replicas: 1
 
 resources: {}
@@ -25,6 +24,9 @@ resources: {}
 #env:
 # - name: key
 #   value: value
+
+pod:
+  spec: {}
 
 pvc:
   storageClassName: null # You must specify a storage class name. Otherwise, the cfctl pod will use empty volume.
