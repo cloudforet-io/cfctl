@@ -223,9 +223,9 @@ var settingInitEndpointCmd = &cobra.Command{
 	Short: "Initialize configuration with an endpoint",
 	Long:  `Specify an endpoint to initialize the environment configuration.`,
 	Args:  cobra.NoArgs,
-	Example: `  cfctl setting init --endpoint https://www.example.com --app
+	Example: `  cfctl setting init --endpoint https://example.com --app
                           or
-  cfctl setting init --endpoint https://www.example.com --user`,
+  cfctl setting init --endpoint https://example.com --user`,
 	Run: func(cmd *cobra.Command, args []string) {
 		endpointStr, _ := cmd.Flags().GetString("endpoint")
 		appFlag, _ := cmd.Flags().GetBool("app")

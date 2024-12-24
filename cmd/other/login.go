@@ -414,7 +414,6 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	homeDir, _ := os.UserHomeDir()
-	// Get user_id from current environment
 	mainViper := viper.New()
 	settingPath := filepath.Join(homeDir, ".cfctl", "setting.yaml")
 	mainViper.SetConfigFile(settingPath)
@@ -425,7 +424,22 @@ func executeUserLogin(currentEnv string) {
 		exitWithError()
 	}
 
-	if strings.Contains(baseUrl, "megazone.io") {
+	// Get console API endpoint
+	apiEndpoint, err := getAPIEndpoint(baseUrl)
+	if err != nil {
+		pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
+		exitWithError()
+	}
+	restIdentityEndpoint := apiEndpoint + "/identity"
+
+	// Get identity service endpoint
+	identityEndpoint, hasIdentityService, err := getIdentityEndpoint(apiEndpoint)
+	if err != nil {
+		pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
+		exitWithError()
+	}
+
+	if !hasIdentityService {
 		client := &http.Client{}
 
 		// Check for existing user_id in config
@@ -439,103 +453,104 @@ func executeUserLogin(currentEnv string) {
 			pterm.Info.Printf("Logging in as: %s\n", userID)
 		}
 
-		passwordInput := pterm.DefaultInteractiveTextInput.WithMask("*")
-		password, _ := passwordInput.Show("Enter your password")
-
-		url := mainViper.GetString(fmt.Sprintf("environments.%s.url", currentEnv))
-		if url == "" {
-			pterm.Error.Println("URL not found in configuration")
-			exitWithError()
-		}
-
-		url = strings.TrimPrefix(url, "https://")
-		url = strings.TrimPrefix(url, "http://")
-
-		parts := strings.Split(url, ".")
-		if len(parts) < 3 {
-			pterm.Error.Printf("Invalid URL format: %s\n", url)
-			exitWithError()
-		}
-		domainName := parts[0]
-
-		domainPayload := map[string]string{"name": domainName}
-		jsonPayload, _ := json.Marshal(domainPayload)
-
-		req, err := http.NewRequest("POST", baseUrl+"/domain/get-auth-info", bytes.NewBuffer(jsonPayload))
-		if err != nil {
-			pterm.Error.Printf("Failed to create request: %v\n", err)
-			exitWithError()
-		}
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err := client.Do(req)
-		if err != nil {
-			pterm.Error.Printf("Failed to fetch domain info: %v\n", err)
-			exitWithError()
-		}
-		defer resp.Body.Close()
-
-		var result map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			pterm.Error.Printf("Failed to decode response: %v\n", err)
-			exitWithError()
-		}
-
-		domainID, ok := result["domain_id"].(string)
-		if !ok {
-			pterm.Error.Println("Domain ID not found in response")
-			exitWithError()
-		}
-
-		tokenPayload := map[string]interface{}{
-			"credentials": map[string]string{
-				"user_id":  tempUserID,
-				"password": password,
-			},
-			"auth_type": "LOCAL",
-			"domain_id": domainID,
-		}
-
-		jsonPayload, _ = json.Marshal(tokenPayload)
-		req, _ = http.NewRequest("POST", baseUrl+"/token/issue", bytes.NewBuffer(jsonPayload))
-		req.Header.Set("Content-Type", "application/json")
-
-		resp, err = client.Do(req)
-		if err != nil {
-			pterm.Error.Printf("Failed to issue token: %v\n", err)
-			exitWithError()
-		}
-		defer resp.Body.Close()
-
-		var tokenResult map[string]interface{}
-		if err := json.NewDecoder(resp.Body).Decode(&tokenResult); err != nil {
-			pterm.Error.Printf("Failed to decode token response: %v\n", err)
-			exitWithError()
-		}
-
-		accessToken, ok := tokenResult["access_token"].(string)
-		if !ok {
-			pterm.Error.Println("Access token not found in response")
-			exitWithError()
-		}
-
-		refreshToken, ok := tokenResult["refresh_token"].(string)
-		if !ok {
-			pterm.Error.Println("Refresh token not found in response")
-			exitWithError()
-		}
-
+		var accessToken, refreshToken string
 		existingAccessToken, existingRefreshToken, err := getValidTokens(currentEnv)
 		if err == nil && existingRefreshToken != "" && !isTokenExpired(existingRefreshToken) {
 			accessToken = existingAccessToken
 			refreshToken = existingRefreshToken
 		} else {
-			if userID == "" {
-				mainViper.Set(fmt.Sprintf("environments.%s.user_id", currentEnv), tempUserID)
-				if err := mainViper.WriteConfig(); err != nil {
-					pterm.Error.Printf("Failed to save user ID to config: %v\n", err)
-					exitWithError()
-				}
+			passwordInput := pterm.DefaultInteractiveTextInput.WithMask("*")
+			password, _ := passwordInput.Show("Enter your password")
+
+			endpoint := mainViper.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv))
+			if endpoint == "" {
+				pterm.Error.Println("endpoint not found in configuration")
+				exitWithError()
+			}
+
+			endpoint = strings.TrimPrefix(endpoint, "https://")
+			endpoint = strings.TrimPrefix(endpoint, "http://")
+
+			parts := strings.Split(endpoint, ".")
+			if len(parts) < 3 {
+				pterm.Error.Printf("Invalid endpoint format: %s\n", endpoint)
+				exitWithError()
+			}
+			domainName := parts[0]
+
+			domainPayload := map[string]string{"name": domainName}
+			jsonPayload, _ := json.Marshal(domainPayload)
+
+			req, err := http.NewRequest("POST", restIdentityEndpoint+"/domain/get-auth-info", bytes.NewBuffer(jsonPayload))
+			if err != nil {
+				pterm.Error.Printf("Failed to create request: %v\n", err)
+				exitWithError()
+			}
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err := client.Do(req)
+			if err != nil {
+				pterm.Error.Printf("Failed to fetch domain info: %v\n", err)
+				exitWithError()
+			}
+			defer resp.Body.Close()
+
+			var result map[string]interface{}
+			if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+				pterm.Error.Printf("Failed to decode response: %v\n", err)
+				exitWithError()
+			}
+
+			domainID, ok := result["domain_id"].(string)
+			if !ok {
+				pterm.Error.Println("Domain ID not found in response")
+				exitWithError()
+			}
+
+			tokenPayload := map[string]interface{}{
+				"credentials": map[string]string{
+					"user_id":  tempUserID,
+					"password": password,
+				},
+				"auth_type": "LOCAL",
+				"domain_id": domainID,
+			}
+
+			jsonPayload, _ = json.Marshal(tokenPayload)
+			req, _ = http.NewRequest("POST", restIdentityEndpoint+"/token/issue", bytes.NewBuffer(jsonPayload))
+			req.Header.Set("Content-Type", "application/json")
+
+			resp, err = client.Do(req)
+			if err != nil {
+				pterm.Error.Printf("Failed to issue token: %v\n", err)
+				exitWithError()
+			}
+			defer resp.Body.Close()
+
+			var tokenResult map[string]interface{}
+			if err := json.NewDecoder(resp.Body).Decode(&tokenResult); err != nil {
+				pterm.Error.Printf("Failed to decode token response: %v\n", err)
+				exitWithError()
+			}
+
+			accessToken, ok = tokenResult["access_token"].(string)
+			if !ok {
+				pterm.Error.Println("Access token not found in response")
+				exitWithError()
+			}
+
+			refreshToken, ok = tokenResult["refresh_token"].(string)
+			if !ok {
+				pterm.Error.Println("Refresh token not found in response")
+				exitWithError()
+			}
+		}
+
+		if userID == "" {
+			mainViper.Set(fmt.Sprintf("environments.%s.user_id", currentEnv), tempUserID)
+			if err := mainViper.WriteConfig(); err != nil {
+				pterm.Error.Printf("Failed to save user ID to config: %v\n", err)
+				exitWithError()
 			}
 		}
 
@@ -556,13 +571,13 @@ func executeUserLogin(currentEnv string) {
 		pterm.Info.Printf("Logged in as %s\n", tempUserID)
 
 		// Use the tokens to fetch workspaces and role
-		workspaces, err := fetchWorkspaces(baseUrl, accessToken)
+		workspaces, err := fetchWorkspaces(restIdentityEndpoint, accessToken)
 		if err != nil {
 			pterm.Error.Println("Failed to fetch workspaces:", err)
 			exitWithError()
 		}
 
-		domainID, roleType, err := fetchDomainIDAndRole(baseUrl, accessToken)
+		domainID, roleType, err := fetchDomainIDAndRole(restIdentityEndpoint, accessToken)
 		if err != nil {
 			pterm.Error.Println("Failed to fetch Domain ID and Role Type:", err)
 			exitWithError()
@@ -585,7 +600,7 @@ func executeUserLogin(currentEnv string) {
 		}
 
 		// Grant new token using the refresh token
-		newAccessToken, err := grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
+		newAccessToken, err := grantToken(restIdentityEndpoint, refreshToken, scope, domainID, workspaceID)
 		if err != nil {
 			pterm.Error.Println("Failed to retrieve new access token:", err)
 			exitWithError()
@@ -604,112 +619,157 @@ func executeUserLogin(currentEnv string) {
 
 		pterm.Success.Println("Successfully logged in and saved token.")
 		return
-	}
-
-	// Extract domain name from environment
-	nameParts := strings.Split(currentEnv, "-")
-	if len(nameParts) < 2 {
-		pterm.Error.Println("Environment name format is invalid.")
-		exitWithError()
-	}
-	name := nameParts[0]
-
-	// Check for existing user_id in config
-	userID := mainViper.GetString(fmt.Sprintf("environments.%s.user_id", currentEnv))
-	var tempUserID string
-
-	if userID == "" {
-		userIDInput := pterm.DefaultInteractiveTextInput
-		tempUserID, _ = userIDInput.Show("Enter your User ID")
 	} else {
-		tempUserID = userID
-		pterm.Info.Printf("Logging in as: %s\n", userID)
-	}
+		// Extract domain name from environment
+		nameParts := strings.Split(currentEnv, "-")
+		if len(nameParts) < 2 {
+			pterm.Error.Println("Environment name format is invalid.")
+			exitWithError()
+		}
+		name := nameParts[0]
 
-	// Fetch Domain ID
-	domainID, err := fetchDomainID(baseUrl, name)
-	if err != nil {
-		pterm.Error.Println("Failed to fetch Domain ID:", err)
-		exitWithError()
-	}
+		// Check for existing user_id in config
+		userID := mainViper.GetString(fmt.Sprintf("environments.%s.user_id", currentEnv))
+		var tempUserID string
 
-	accessToken, refreshToken, err := getValidTokens(currentEnv)
-	if err != nil || refreshToken == "" || isTokenExpired(refreshToken) {
-		// Get new tokens with password
-		password := promptPassword()
-		accessToken, refreshToken, err = issueToken(baseUrl, tempUserID, password, domainID)
+		if userID == "" {
+			userIDInput := pterm.DefaultInteractiveTextInput
+			tempUserID, _ = userIDInput.Show("Enter your User ID")
+		} else {
+			tempUserID = userID
+			pterm.Info.Printf("Logging in as: %s\n", userID)
+		}
+
+		// Fetch Domain ID
+		domainID, err := fetchDomainID(identityEndpoint, name)
 		if err != nil {
-			pterm.Error.Printf("Failed to issue token: %v\n", err)
+			pterm.Error.Println("Failed to fetch Domain ID:", err)
 			exitWithError()
 		}
 
-		// Only save user_id after successful token issue
-		if userID == "" {
-			mainViper.Set(fmt.Sprintf("environments.%s.user_id", currentEnv), tempUserID)
-			if err := mainViper.WriteConfig(); err != nil {
-				pterm.Error.Printf("Failed to save user ID to config: %v\n", err)
+		accessToken, refreshToken, err := getValidTokens(currentEnv)
+		if err != nil || refreshToken == "" || isTokenExpired(refreshToken) {
+			// Get new tokens with password
+			password := promptPassword()
+			accessToken, refreshToken, err = issueToken(identityEndpoint, tempUserID, password, domainID)
+			if err != nil {
+				pterm.Error.Printf("Failed to issue token: %v\n", err)
 				exitWithError()
 			}
+
+			// Only save user_id after successful token issue
+			if userID == "" {
+				mainViper.Set(fmt.Sprintf("environments.%s.user_id", currentEnv), tempUserID)
+				if err := mainViper.WriteConfig(); err != nil {
+					pterm.Error.Printf("Failed to save user ID to config: %v\n", err)
+					exitWithError()
+				}
+			}
+		}
+
+		// Create cache directory
+		envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
+		if err := os.MkdirAll(envCacheDir, 0700); err != nil {
+			pterm.Error.Printf("Failed to create cache directory: %v\n", err)
+			exitWithError()
+		}
+
+		// Save tokens
+		if err := os.WriteFile(filepath.Join(envCacheDir, "refresh_token"), []byte(refreshToken), 0600); err != nil {
+			pterm.Error.Printf("Failed to save refresh token: %v\n", err)
+			exitWithError()
+		}
+
+		if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(accessToken), 0600); err != nil {
+			pterm.Error.Printf("Failed to save access token: %v\n", err)
+			exitWithError()
+		}
+
+		pterm.Success.Println("Successfully logged in and saved token.")
+	}
+}
+
+// getAPIEndpoint fetches the actual API endpoint from the config endpoint
+func getAPIEndpoint(endpoint string) (string, error) {
+	// Remove protocol prefix if exists
+	endpoint = strings.TrimPrefix(endpoint, "https://")
+	endpoint = strings.TrimPrefix(endpoint, "http://")
+
+	// Construct config endpoint
+	configURL := fmt.Sprintf("https://%s/config/production.json", endpoint)
+
+	// Make HTTP request
+	resp, err := http.Get(configURL)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch config: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("failed to fetch config, status code: %d", resp.StatusCode)
+	}
+
+	// Parse JSON response
+	var config struct {
+		ConsoleAPIV2 struct {
+			Endpoint string `json:"ENDPOINT"`
+		} `json:"CONSOLE_API_V2"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
+		return "", fmt.Errorf("failed to parse config: %v", err)
+	}
+
+	if config.ConsoleAPIV2.Endpoint == "" {
+		return "", fmt.Errorf("no API endpoint found in config")
+	}
+
+	return strings.TrimSuffix(config.ConsoleAPIV2.Endpoint, "/"), nil
+}
+
+// getIdentityEndpoint fetches the identity service endpoint from the API endpoint
+func getIdentityEndpoint(apiEndpoint string) (string, bool, error) {
+	endpointListURL := fmt.Sprintf("%s/identity/endpoint/list", apiEndpoint)
+
+	payload := map[string]string{}
+	jsonPayload, err := json.Marshal(payload)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to create payload: %v", err)
+	}
+
+	req, err := http.NewRequest("POST", endpointListURL, bytes.NewBuffer(jsonPayload))
+	if err != nil {
+		return "", false, fmt.Errorf("failed to create request: %v", err)
+	}
+
+	req.Header.Set("accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", false, fmt.Errorf("failed to fetch endpoints: %v", err)
+	}
+	defer resp.Body.Close()
+
+	var result struct {
+		Results []struct {
+			Service  string `json:"service"`
+			Endpoint string `json:"endpoint"`
+		} `json:"results"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", false, fmt.Errorf("failed to parse response: %v", err)
+	}
+
+	for _, service := range result.Results {
+		if service.Service == "identity" {
+			return service.Endpoint, true, nil
 		}
 	}
 
-	// Create cache directory and save tokens
-	envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
-	if err := os.MkdirAll(envCacheDir, 0700); err != nil {
-		pterm.Error.Printf("Failed to create cache directory: %v\n", err)
-		exitWithError()
-	}
-
-	pterm.Info.Printf("Logged in as %s\n", tempUserID)
-
-	// Use the tokens to fetch workspaces and role
-	workspaces, err := fetchWorkspaces(baseUrl, accessToken)
-	if err != nil {
-		pterm.Error.Println("Failed to fetch workspaces:", err)
-		exitWithError()
-	}
-
-	domainID, roleType, err := fetchDomainIDAndRole(baseUrl, accessToken)
-	if err != nil {
-		pterm.Error.Println("Failed to fetch Domain ID and Role Type:", err)
-		exitWithError()
-	}
-
-	// Determine scope and select workspace
-	scope := determineScope(roleType, len(workspaces))
-	var workspaceID string
-	if roleType == "DOMAIN_ADMIN" {
-		workspaceID = selectScopeOrWorkspace(workspaces, roleType)
-		if workspaceID == "0" {
-			scope = "DOMAIN"
-			workspaceID = ""
-		} else {
-			scope = "WORKSPACE"
-		}
-	} else {
-		workspaceID = selectWorkspaceOnly(workspaces)
-		scope = "WORKSPACE"
-	}
-
-	// Grant new token using the refresh token
-	newAccessToken, err := grantToken(baseUrl, refreshToken, scope, domainID, workspaceID)
-	if err != nil {
-		pterm.Error.Println("Failed to retrieve new access token:", err)
-		exitWithError()
-	}
-
-	// Save all tokens
-	if err := os.WriteFile(filepath.Join(envCacheDir, "refresh_token"), []byte(refreshToken), 0600); err != nil {
-		pterm.Error.Printf("Failed to save refresh token: %v\n", err)
-		exitWithError()
-	}
-
-	if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(newAccessToken), 0600); err != nil {
-		pterm.Error.Printf("Failed to save access token: %v\n", err)
-		exitWithError()
-	}
-
-	pterm.Success.Println("Successfully logged in and saved token.")
+	return "", false, nil
 }
 
 // Prompt for password when token is expired
