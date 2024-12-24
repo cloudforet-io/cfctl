@@ -425,7 +425,7 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	// Get console API endpoint
-	apiEndpoint, err := getAPIEndpoint(baseUrl)
+	apiEndpoint, err := GetAPIEndpoint(baseUrl)
 	if err != nil {
 		pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
 		exitWithError()
@@ -433,12 +433,13 @@ func executeUserLogin(currentEnv string) {
 	restIdentityEndpoint := apiEndpoint + "/identity"
 
 	// Get identity service endpoint
-	identityEndpoint, hasIdentityService, err := getIdentityEndpoint(apiEndpoint)
+	identityEndpoint, hasIdentityService, err := GetIdentityEndpoint(apiEndpoint)
 	if err != nil {
 		pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 		exitWithError()
 	}
 
+	var scope string
 	if !hasIdentityService {
 		client := &http.Client{}
 
@@ -571,20 +572,20 @@ func executeUserLogin(currentEnv string) {
 		pterm.Info.Printf("Logged in as %s\n", tempUserID)
 
 		// Use the tokens to fetch workspaces and role
-		workspaces, err := fetchWorkspaces(restIdentityEndpoint, accessToken)
+		workspaces, err := fetchWorkspaces(restIdentityEndpoint, identityEndpoint, hasIdentityService, accessToken)
 		if err != nil {
 			pterm.Error.Println("Failed to fetch workspaces:", err)
 			exitWithError()
 		}
 
-		domainID, roleType, err := fetchDomainIDAndRole(restIdentityEndpoint, accessToken)
+		domainID, roleType, err := fetchDomainIDAndRole(restIdentityEndpoint, identityEndpoint, hasIdentityService, accessToken)
 		if err != nil {
 			pterm.Error.Println("Failed to fetch Domain ID and Role Type:", err)
 			exitWithError()
 		}
 
 		// Determine scope and select workspace
-		scope := determineScope(roleType, len(workspaces))
+		scope = determineScope(roleType, len(workspaces))
 		var workspaceID string
 		if roleType == "DOMAIN_ADMIN" {
 			workspaceID = selectScopeOrWorkspace(workspaces, roleType)
@@ -667,6 +668,35 @@ func executeUserLogin(currentEnv string) {
 			}
 		}
 
+		// Use the tokens to fetch workspaces and role
+		workspaces, err := fetchWorkspaces(restIdentityEndpoint, identityEndpoint, hasIdentityService, accessToken)
+		if err != nil {
+			pterm.Error.Println("Failed to fetch workspaces:", err)
+			exitWithError()
+		}
+
+		domainID, roleType, err := fetchDomainIDAndRole(restIdentityEndpoint, identityEndpoint, hasIdentityService, accessToken)
+		if err != nil {
+			pterm.Error.Println("Failed to fetch Domain ID and Role Type:", err)
+			exitWithError()
+		}
+
+		// Determine scope and select workspace
+		scope = determineScope(roleType, len(workspaces))
+		var workspaceID string
+		if roleType == "DOMAIN_ADMIN" {
+			workspaceID = selectScopeOrWorkspace(workspaces, roleType)
+			if workspaceID == "0" {
+				scope = "DOMAIN"
+				workspaceID = ""
+			} else {
+				scope = "WORKSPACE"
+			}
+		} else {
+			workspaceID = selectWorkspaceOnly(workspaces)
+			scope = "WORKSPACE"
+		}
+
 		// Create cache directory
 		envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
 		if err := os.MkdirAll(envCacheDir, 0700); err != nil {
@@ -689,8 +719,8 @@ func executeUserLogin(currentEnv string) {
 	}
 }
 
-// getAPIEndpoint fetches the actual API endpoint from the config endpoint
-func getAPIEndpoint(endpoint string) (string, error) {
+// GetAPIEndpoint fetches the actual API endpoint from the config endpoint
+func GetAPIEndpoint(endpoint string) (string, error) {
 	// Remove protocol prefix if exists
 	endpoint = strings.TrimPrefix(endpoint, "https://")
 	endpoint = strings.TrimPrefix(endpoint, "http://")
@@ -727,8 +757,8 @@ func getAPIEndpoint(endpoint string) (string, error) {
 	return strings.TrimSuffix(config.ConsoleAPIV2.Endpoint, "/"), nil
 }
 
-// getIdentityEndpoint fetches the identity service endpoint from the API endpoint
-func getIdentityEndpoint(apiEndpoint string) (string, bool, error) {
+// GetIdentityEndpoint fetches the identity service endpoint from the API endpoint
+func GetIdentityEndpoint(apiEndpoint string) (string, bool, error) {
 	endpointListURL := fmt.Sprintf("%s/identity/endpoint/list", apiEndpoint)
 
 	payload := map[string]string{}
@@ -765,7 +795,11 @@ func getIdentityEndpoint(apiEndpoint string) (string, bool, error) {
 
 	for _, service := range result.Results {
 		if service.Service == "identity" {
-			return service.Endpoint, true, nil
+			endpoint := service.Endpoint
+			if idx := strings.Index(endpoint, "/v"); idx != -1 {
+				endpoint = endpoint[:idx]
+			}
+			return endpoint, true, nil
 		}
 	}
 
@@ -1232,8 +1266,8 @@ func issueToken(baseUrl, userID, password, domainID string) (string, string, err
 	return accessToken.(string), refreshToken.(string), nil
 }
 
-func fetchWorkspaces(baseUrl string, accessToken string) ([]map[string]interface{}, error) {
-	if strings.Contains(baseUrl, "megazone.io") {
+func fetchWorkspaces(baseUrl string, identityEndpoint string, hasIdentityService bool, accessToken string) ([]map[string]interface{}, error) {
+	if !hasIdentityService {
 		payload := map[string]string{}
 		jsonPayload, err := json.Marshal(payload)
 		if err != nil {
@@ -1286,112 +1320,112 @@ func fetchWorkspaces(baseUrl string, accessToken string) ([]map[string]interface
 		}
 
 		return workspaceList, nil
-	}
-
-	// Parse the endpoint
-	parts := strings.Split(baseUrl, "://")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid endpoint format: %s", baseUrl)
-	}
-
-	hostPort := parts[1]
-
-	// Configure gRPC connection
-	var opts []grpc.DialOption
-	if strings.HasPrefix(baseUrl, "grpc+ssl://") {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: false,
-		}
-		creds := credentials.NewTLS(tlsConfig)
-		opts = append(opts, grpc.WithTransportCredentials(creds))
 	} else {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	}
-
-	// Add token credentials
-	creds := &tokenAuth{
-		token: accessToken,
-	}
-	opts = append(opts, grpc.WithPerRPCCredentials(creds))
-
-	// Establish connection
-	conn, err := grpc.Dial(hostPort, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect: %v", err)
-	}
-	defer conn.Close()
-
-	// Create reflection client
-	refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
-	defer refClient.Reset()
-
-	// Resolve the service
-	serviceName := "spaceone.api.identity.v2.UserProfile"
-	serviceDesc, err := refClient.ResolveService(serviceName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
-	}
-
-	// Find the method descriptor
-	methodDesc := serviceDesc.FindMethodByName("get_workspaces")
-	if methodDesc == nil {
-		return nil, fmt.Errorf("method get_workspaces not found")
-	}
-
-	// Create request message
-	reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
-
-	// Create metadata with token
-	md := metadata.New(map[string]string{
-		"token": accessToken,
-	})
-	ctx := metadata.NewOutgoingContext(context.Background(), md)
-
-	// Make the gRPC call
-	fullMethod := "/spaceone.api.identity.v2.UserProfile/get_workspaces"
-	respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
-
-	err = conn.Invoke(ctx, fullMethod, reqMsg, respMsg)
-	if err != nil {
-		return nil, fmt.Errorf("RPC failed: %v", err)
-	}
-
-	// Extract results from response
-	results, err := respMsg.TryGetFieldByName("results")
-	if err != nil {
-		return nil, fmt.Errorf("failed to get results from response: %v", err)
-	}
-
-	workspaces, ok := results.([]interface{})
-	if !ok || len(workspaces) == 0 {
-		pterm.Warning.Println("There are no accessible workspaces. Ask your administrators or workspace owners for access.")
-		exitWithError()
-	}
-
-	var workspaceList []map[string]interface{}
-	for _, workspace := range workspaces {
-		workspaceMsg, ok := workspace.(*dynamic.Message)
-		if !ok {
-			return nil, fmt.Errorf("failed to parse workspace message")
+		// Parse the endpoint
+		parts := strings.Split(identityEndpoint, "://")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid endpoint format: %s", identityEndpoint)
 		}
 
-		workspaceMap := make(map[string]interface{})
-		fields := workspaceMsg.GetKnownFields()
+		hostPort := parts[1]
 
-		for _, field := range fields {
-			if value, err := workspaceMsg.TryGetFieldByName(field.GetName()); err == nil {
-				workspaceMap[field.GetName()] = value
+		// Configure gRPC connection
+		var opts []grpc.DialOption
+		if strings.HasPrefix(identityEndpoint, "grpc+ssl://") {
+			tlsConfig := &tls.Config{
+				InsecureSkipVerify: false,
 			}
+			creds := credentials.NewTLS(tlsConfig)
+			opts = append(opts, grpc.WithTransportCredentials(creds))
+		} else {
+			opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		}
 
-		workspaceList = append(workspaceList, workspaceMap)
-	}
+		// Add token credentials
+		creds := &tokenAuth{
+			token: accessToken,
+		}
+		opts = append(opts, grpc.WithPerRPCCredentials(creds))
 
-	return workspaceList, nil
+		// Establish connection
+		conn, err := grpc.Dial(hostPort, opts...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to connect: %v", err)
+		}
+		defer conn.Close()
+
+		// Create reflection client
+		refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+		defer refClient.Reset()
+
+		// Resolve the service
+		serviceName := "spaceone.api.identity.v2.UserProfile"
+		serviceDesc, err := refClient.ResolveService(serviceName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
+		}
+
+		// Find the method descriptor
+		methodDesc := serviceDesc.FindMethodByName("get_workspaces")
+		if methodDesc == nil {
+			return nil, fmt.Errorf("method get_workspaces not found")
+		}
+
+		// Create request message
+		reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
+
+		// Create metadata with token
+		md := metadata.New(map[string]string{
+			"token": accessToken,
+		})
+		ctx := metadata.NewOutgoingContext(context.Background(), md)
+
+		// Make the gRPC call
+		fullMethod := "/spaceone.api.identity.v2.UserProfile/get_workspaces"
+		respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
+
+		err = conn.Invoke(ctx, fullMethod, reqMsg, respMsg)
+		if err != nil {
+			return nil, fmt.Errorf("RPC failed: %v", err)
+		}
+
+		// Extract results from response
+		results, err := respMsg.TryGetFieldByName("results")
+		if err != nil {
+			return nil, fmt.Errorf("failed to get results from response: %v", err)
+		}
+
+		workspaces, ok := results.([]interface{})
+		if !ok || len(workspaces) == 0 {
+			pterm.Warning.Println("There are no accessible workspaces. Ask your administrators or workspace owners for access.")
+			exitWithError()
+		}
+
+		var workspaceList []map[string]interface{}
+		for _, workspace := range workspaces {
+			workspaceMsg, ok := workspace.(*dynamic.Message)
+			if !ok {
+				return nil, fmt.Errorf("failed to parse workspace message")
+			}
+
+			workspaceMap := make(map[string]interface{})
+			fields := workspaceMsg.GetKnownFields()
+
+			for _, field := range fields {
+				if value, err := workspaceMsg.TryGetFieldByName(field.GetName()); err == nil {
+					workspaceMap[field.GetName()] = value
+				}
+			}
+
+			workspaceList = append(workspaceList, workspaceMap)
+		}
+
+		return workspaceList, nil
+	}
 }
 
-func fetchDomainIDAndRole(baseUrl string, accessToken string) (string, string, error) {
-	if strings.Contains(baseUrl, "megazone.io") {
+func fetchDomainIDAndRole(baseUrl string, identityEndpoint string, hasIdentityService bool, accessToken string) (string, string, error) {
+	if !hasIdentityService {
 		payload := map[string]string{}
 		jsonPayload, err := json.Marshal(payload)
 		if err != nil {
@@ -1435,99 +1469,99 @@ func fetchDomainIDAndRole(baseUrl string, accessToken string) (string, string, e
 		}
 
 		return domainID, roleType, nil
-	}
-
-	// Parse the endpoint
-	parts := strings.Split(baseUrl, "://")
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid endpoint format: %s", baseUrl)
-	}
-
-	hostPort := parts[1]
-
-	// Configure gRPC connection
-	var opts []grpc.DialOption
-	if strings.HasPrefix(baseUrl, "grpc+ssl://") {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: false,
-		}
-		creds := credentials.NewTLS(tlsConfig)
-		opts = append(opts, grpc.WithTransportCredentials(creds))
 	} else {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	}
-
-	// Add token to metadata
-	opts = append(opts, grpc.WithPerRPCCredentials(&tokenAuth{token: accessToken}))
-
-	// Establish connection
-	conn, err := grpc.Dial(hostPort, opts...)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to connect: %v", err)
-	}
-	defer conn.Close()
-
-	// Create reflection client
-	refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
-	defer refClient.Reset()
-
-	// Resolve the service
-	serviceName := "spaceone.api.identity.v2.UserProfile"
-	serviceDesc, err := refClient.ResolveService(serviceName)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
-	}
-
-	// Find the method descriptor
-	methodDesc := serviceDesc.FindMethodByName("get")
-	if methodDesc == nil {
-		return "", "", fmt.Errorf("method get not found")
-	}
-
-	// Create request message
-	reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
-
-	// Make the gRPC call
-	fullMethod := fmt.Sprintf("/%s/%s", serviceName, "get")
-	respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
-
-	err = conn.Invoke(context.Background(), fullMethod, reqMsg, respMsg)
-	if err != nil {
-		return "", "", fmt.Errorf("RPC failed: %v", err)
-	}
-
-	// Extract domain_id and role_type from response
-	domainID, err := respMsg.TryGetFieldByName("domain_id")
-	if err != nil {
-		return "", "", fmt.Errorf("failed to get domain_id from response: %v", err)
-	}
-
-	roleType, err := respMsg.TryGetFieldByName("role_type")
-	if err != nil {
-		return "", "", fmt.Errorf("failed to get role_type from response: %v", err)
-	}
-
-	// Convert roleType to string based on enum value
-	var roleTypeStr string
-	switch v := roleType.(type) {
-	case int32:
-		switch v {
-		case 1:
-			roleTypeStr = "DOMAIN_ADMIN"
-		case 2:
-			roleTypeStr = "WORKSPACE_OWNER"
-		case 3:
-			roleTypeStr = "WORKSPACE_MEMBER"
-		default:
-			return "", "", fmt.Errorf("unknown role_type: %d", v)
+		// Parse the endpoint
+		parts := strings.Split(identityEndpoint, "://")
+		if len(parts) != 2 {
+			return "", "", fmt.Errorf("invalid endpoint format: %s", identityEndpoint)
 		}
-	case string:
-		roleTypeStr = v
-	default:
-		return "", "", fmt.Errorf("unexpected role_type type: %T", roleType)
-	}
 
-	return domainID.(string), roleTypeStr, nil
+		hostPort := parts[1]
+
+		// Configure gRPC connection
+		var opts []grpc.DialOption
+		if strings.HasPrefix(identityEndpoint, "grpc+ssl://") {
+			tlsConfig := &tls.Config{
+				InsecureSkipVerify: false,
+			}
+			creds := credentials.NewTLS(tlsConfig)
+			opts = append(opts, grpc.WithTransportCredentials(creds))
+		} else {
+			opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		}
+
+		// Add token to metadata
+		opts = append(opts, grpc.WithPerRPCCredentials(&tokenAuth{token: accessToken}))
+
+		// Establish connection
+		conn, err := grpc.Dial(hostPort, opts...)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to connect: %v", err)
+		}
+		defer conn.Close()
+
+		// Create reflection client
+		refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+		defer refClient.Reset()
+
+		// Resolve the service
+		serviceName := "spaceone.api.identity.v2.UserProfile"
+		serviceDesc, err := refClient.ResolveService(serviceName)
+		if err != nil {
+			return "", "", fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
+		}
+
+		// Find the method descriptor
+		methodDesc := serviceDesc.FindMethodByName("get")
+		if methodDesc == nil {
+			return "", "", fmt.Errorf("method get not found")
+		}
+
+		// Create request message
+		reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
+
+		// Make the gRPC call
+		fullMethod := fmt.Sprintf("/%s/%s", serviceName, "get")
+		respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
+
+		err = conn.Invoke(context.Background(), fullMethod, reqMsg, respMsg)
+		if err != nil {
+			return "", "", fmt.Errorf("RPC failed: %v", err)
+		}
+
+		// Extract domain_id and role_type from response
+		domainID, err := respMsg.TryGetFieldByName("domain_id")
+		if err != nil {
+			return "", "", fmt.Errorf("failed to get domain_id from response: %v", err)
+		}
+
+		roleType, err := respMsg.TryGetFieldByName("role_type")
+		if err != nil {
+			return "", "", fmt.Errorf("failed to get role_type from response: %v", err)
+		}
+
+		// Convert roleType to string based on enum value
+		var roleTypeStr string
+		switch v := roleType.(type) {
+		case int32:
+			switch v {
+			case 1:
+				roleTypeStr = "DOMAIN_ADMIN"
+			case 2:
+				roleTypeStr = "WORKSPACE_OWNER"
+			case 3:
+				roleTypeStr = "WORKSPACE_MEMBER"
+			default:
+				return "", "", fmt.Errorf("unknown role_type: %d", v)
+			}
+		case string:
+			roleTypeStr = v
+		default:
+			return "", "", fmt.Errorf("unexpected role_type type: %T", roleType)
+		}
+
+		return domainID.(string), roleTypeStr, nil
+	}
 }
 
 func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (string, error) {

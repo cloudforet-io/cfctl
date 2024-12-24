@@ -268,21 +268,31 @@ func addDynamicServiceCommands() error {
 
 		progressbar.UpdateTitle("Preparing endpoint configuration")
 		endpoint := config.Endpoint
-		if !strings.Contains(endpoint, "identity") {
-			parts := strings.Split(endpoint, "://")
-			if len(parts) == 2 {
-				hostParts := strings.Split(parts[1], ".")
-				if len(hostParts) >= 4 {
-					env := hostParts[2]
-					endpoint = fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", env)
-				}
+		//if !strings.Contains(endpoint, "identity") {
+		//	parts := strings.Split(endpoint, "://")
+		//	if len(parts) == 2 {
+		//		hostParts := strings.Split(parts[1], ".")
+		//		if len(hostParts) >= 4 {
+		//			env := hostParts[2]
+		//			endpoint = fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", env)
+		//		}
+		//	}
+		//}
+
+		var apiEndpoint string
+		if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+			apiEndpoint, err = other.GetAPIEndpoint(endpoint)
+			if err != nil {
+				pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
+				os.Exit(1)
 			}
 		}
+
 		progressbar.Increment()
 		time.Sleep(time.Millisecond * 300)
 
 		progressbar.UpdateTitle("Fetching available services")
-		endpointsMap, err := other.FetchEndpointsMap(endpoint)
+		endpointsMap, err := other.FetchEndpointsMap(apiEndpoint)
 		if err != nil {
 			return fmt.Errorf("failed to fetch services: %v", err)
 		}
