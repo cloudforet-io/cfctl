@@ -5,13 +5,14 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"log"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/jhump/protoreflect/dynamic"
 
@@ -37,7 +38,7 @@ You can initialize, switch environments, and display the current configuration.`
 var settingInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new environment setting",
-	Long:  `Initialize a new environment setting for cfctl by specifying either a URL or a local environment name.`,
+	Long:  `Initialize a new environment setting for cfctl by specifying an endpoint`,
 }
 
 // settingInitURLCmd initializes configuration with a URL
@@ -213,6 +214,89 @@ var settingInitLocalCmd = &cobra.Command{
 
 		pterm.Success.Printf("Environment '%s' successfully initialized.\n", envName)
 		return nil
+	},
+}
+
+// settingInitEndpointCmd initializes configuration with an endpoint
+var settingInitEndpointCmd = &cobra.Command{
+	Use:   "init",
+	Short: "Initialize configuration with an endpoint",
+	Long:  `Specify an endpoint to initialize the environment configuration.`,
+	Args:  cobra.NoArgs,
+	Example: `  cfctl setting init --endpoint https://www.example.com --app
+                          or
+  cfctl setting init --endpoint https://www.example.com --user`,
+	Run: func(cmd *cobra.Command, args []string) {
+		endpointStr, _ := cmd.Flags().GetString("endpoint")
+		appFlag, _ := cmd.Flags().GetBool("app")
+		userFlag, _ := cmd.Flags().GetBool("user")
+
+		if endpointStr == "" {
+			pterm.Error.Println("The --endpoint flag is required.")
+			cmd.Help()
+			return
+		}
+		if !appFlag && !userFlag {
+			pterm.Error.Println("You must specify either --app or --user flag.")
+			cmd.Help()
+			return
+		}
+
+		envName, err := parseEnvNameFromURL(endpointStr)
+		if err != nil {
+			pterm.Error.Printf("Failed to parse environment name from endpoint: %v\n", err)
+			return
+		}
+
+		settingDir := GetSettingDir()
+		if err := os.MkdirAll(settingDir, 0755); err != nil {
+			pterm.Error.Printf("Failed to create setting directory: %v\n", err)
+			return
+		}
+
+		mainSettingPath := filepath.Join(settingDir, "setting.yaml")
+		v := viper.New()
+		v.SetConfigFile(mainSettingPath)
+		v.SetConfigType("yaml")
+
+		envSuffix := map[bool]string{true: "app", false: "user"}[appFlag]
+		fullEnvName := fmt.Sprintf("%s-%s", envName, envSuffix)
+
+		if err := v.ReadInConfig(); err == nil {
+			environments := v.GetStringMap("environments")
+			if existingEnv, exists := environments[fullEnvName]; exists {
+				currentConfig, _ := yaml.Marshal(map[string]interface{}{
+					"environment": fullEnvName,
+					"environments": map[string]interface{}{
+						fullEnvName: existingEnv,
+					},
+				})
+
+				confirmBox := pterm.DefaultBox.WithTitle("Environment Already Exists").
+					WithTitleTopCenter().
+					WithRightPadding(4).
+					WithLeftPadding(4).
+					WithBoxStyle(pterm.NewStyle(pterm.FgYellow))
+
+				confirmBox.Println(fmt.Sprintf("Environment '%s' already exists.\nDo you want to overwrite it?", fullEnvName))
+
+				pterm.Info.Println("Current configuration:")
+				fmt.Println(string(currentConfig))
+
+				fmt.Print("\nEnter (y/N): ")
+				var response string
+				fmt.Scanln(&response)
+				response = strings.ToLower(strings.TrimSpace(response))
+
+				if response != "y" {
+					pterm.Info.Printf("Operation cancelled. Environment '%s' remains unchanged.\n", fullEnvName)
+					return
+				}
+			}
+		}
+
+		// Update configuration
+		updateSetting(envName, endpointStr, envSuffix)
 	},
 }
 
@@ -1014,44 +1098,34 @@ func updateSetting(envName, urlStr, settingType string) {
 		}
 	}
 
-	if urlStr != "" {
-		endpoint, err := constructEndpoint(urlStr)
-		if err != nil {
-			pterm.Error.Printf("Failed to construct endpoint: %v\n", err)
-			return
-		}
+	// Append -app or -user to the environment name
+	envName = fmt.Sprintf("%s-%s", envName, settingType)
 
-		// Append -app or -user to the environment name
-		envName = fmt.Sprintf("%s-%s", envName, settingType)
+	// Add new environment configuration
+	envConfig := map[string]interface{}{
+		"endpoint": fmt.Sprintf("https://%s", urlStr),
+		"proxy":    true,
+	}
 
-		// Add new environment configuration
-		envConfig := map[string]interface{}{
-			"endpoint": endpoint,
-			"proxy":    true,
-			"url":      fmt.Sprintf("https://%s", urlStr),
-		}
+	// Only add token field for app configuration
+	if settingType == "app" {
+		envConfig["token"] = ""
+	}
 
-		// Only add token field for app configuration
-		if settingType == "app" {
-			envConfig["token"] = ""
-		}
+	// Update configuration
+	v.Set(fmt.Sprintf("environments.%s", envName), envConfig)
+	v.Set("environment", envName)
 
-		// Update configuration
-		v.Set(fmt.Sprintf("environments.%s", envName), envConfig)
-		v.Set("environment", envName)
-
-		// Save configuration
-		if err := v.WriteConfig(); err != nil {
-			if os.IsNotExist(err) {
-				// Try to create the file if it doesn't exist
-				if err := v.SafeWriteConfig(); err != nil {
-					pterm.Error.Printf("Failed to create setting file: %v\n", err)
-					return
-				}
-			} else {
-				pterm.Error.Printf("Failed to write setting: %v\n", err)
+	// Write configuration to file
+	if err := v.WriteConfig(); err != nil {
+		if os.IsNotExist(err) {
+			if err := v.SafeWriteConfig(); err != nil {
+				pterm.Error.Printf("Failed to create setting file: %v\n", err)
 				return
 			}
+		} else {
+			pterm.Error.Printf("Failed to write setting: %v\n", err)
+			return
 		}
 	}
 
@@ -1123,22 +1197,15 @@ func constructEndpoint(baseURL string) (string, error) {
 }
 
 func init() {
-	SettingCmd.AddCommand(settingInitCmd)
+	SettingCmd.AddCommand(settingInitEndpointCmd)
 	SettingCmd.AddCommand(envCmd)
 	SettingCmd.AddCommand(showCmd)
 	SettingCmd.AddCommand(settingEndpointCmd)
 	SettingCmd.AddCommand(settingTokenCmd)
-	settingInitCmd.AddCommand(settingInitURLCmd)
-	settingInitCmd.AddCommand(settingInitLocalCmd)
 
-	settingInitCmd.Flags().StringP("environment", "e", "", "Override environment name")
-
-	settingInitURLCmd.Flags().StringP("url", "u", "", "URL for the environment")
-	settingInitURLCmd.Flags().Bool("app", false, "Initialize as application configuration")
-	settingInitURLCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
-
-	settingInitLocalCmd.Flags().Bool("app", false, "Initialize as application configuration")
-	settingInitLocalCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
+	settingInitEndpointCmd.Flags().StringP("endpoint", "e", "", "Endpoint for the environment")
+	settingInitEndpointCmd.Flags().Bool("app", false, "Initialize as application configuration")
+	settingInitEndpointCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
 
 	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
 	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
@@ -1147,6 +1214,4 @@ func init() {
 	showCmd.Flags().StringP("output", "o", "yaml", "Output format (yaml/json)")
 
 	settingEndpointCmd.Flags().StringP("service", "s", "", "Service to set the endpoint for")
-
-	// No need to set global Viper setting type since we are using separate instances
 }

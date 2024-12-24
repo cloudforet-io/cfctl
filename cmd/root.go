@@ -2,12 +2,13 @@ package cmd
 
 import (
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/spf13/viper"
 
