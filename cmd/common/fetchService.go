@@ -70,93 +70,94 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
 
-	// Check token
-	token := config.Environments[config.Environment].Token
-	if token == "" {
-		pterm.Error.Println("No token found for authentication.")
+	if config.Environment != "local" {
+		token := config.Environments[config.Environment].Token
+		if token == "" {
+			pterm.Error.Println("No token found for authentication.")
 
-		// Get current endpoint
-		endpoint := config.Environments[config.Environment].Endpoint
+			// Get current endpoint
+			endpoint := config.Environments[config.Environment].Endpoint
 
-		if strings.HasSuffix(config.Environment, "-app") {
-			// App environment message
-			headerBox := pterm.DefaultBox.WithTitle("App Guide").
-				WithTitleTopCenter().
-				WithRightPadding(4).
-				WithLeftPadding(4).
-				WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
+			if strings.HasSuffix(config.Environment, "-app") {
+				// App environment message
+				headerBox := pterm.DefaultBox.WithTitle("App Guide").
+					WithTitleTopCenter().
+					WithRightPadding(4).
+					WithLeftPadding(4).
+					WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
 
-			appTokenExplain := "Please create a Domain Admin App in SpaceONE Console.\n" +
-				"This requires Domain Admin privilege.\n\n" +
-				"Or Please create a Workspace App in SpaceONE Console.\n" +
-				"This requires Workspace Owner privilege."
+				appTokenExplain := "Please create a Domain Admin App in SpaceONE Console.\n" +
+					"This requires Domain Admin privilege.\n\n" +
+					"Or Please create a Workspace App in SpaceONE Console.\n" +
+					"This requires Workspace Owner privilege."
 
-			pterm.Info.Printf("Using endpoint: %s\n", endpoint)
-			headerBox.Println(appTokenExplain)
-			fmt.Println()
+				pterm.Info.Printf("Using endpoint: %s\n", endpoint)
+				headerBox.Println(appTokenExplain)
+				fmt.Println()
 
-			steps := []string{
-				"1. Go to SpaceONE Console",
-				"2. Navigate to either 'Admin > App Page' or specific 'Workspace > App page'",
-				"3. Click 'Create' to create your App",
-				"4. Copy value of either 'client_secret' from Client ID or 'token' from Spacectl (CLI)",
+				steps := []string{
+					"1. Go to SpaceONE Console",
+					"2. Navigate to either 'Admin > App Page' or specific 'Workspace > App page'",
+					"3. Click 'Create' to create your App",
+					"4. Copy value of either 'client_secret' from Client ID or 'token' from Spacectl (CLI)",
+				}
+
+				yamlExample := pterm.DefaultBox.WithTitle("Config Example").
+					WithTitleTopCenter().
+					WithRightPadding(4).
+					WithLeftPadding(4).
+					Sprint(fmt.Sprintf("environment: %s\nenvironments:\n    %s:\n        endpoint: %s\n        proxy: true\n        token: %s",
+						currentEnv,
+						currentEnv,
+						endpoint,
+						pterm.FgLightCyan.Sprint("YOUR_COPIED_TOKEN")))
+
+				instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
+					WithTitleTopCenter().
+					WithRightPadding(4).
+					WithLeftPadding(4)
+
+				allSteps := append(steps,
+					fmt.Sprintf("5. Add the token under the proxy in your config file:\n%s", yamlExample),
+					"6. Run 'cfctl login' again")
+
+				instructionBox.Println(strings.Join(allSteps, "\n\n"))
+			} else {
+				// User environment message
+				headerBox := pterm.DefaultBox.WithTitle("Authentication Required").
+					WithTitleTopCenter().
+					WithRightPadding(4).
+					WithLeftPadding(4).
+					WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
+
+				authExplain := "Please login to SpaceONE Console first.\n" +
+					"This requires your SpaceONE credentials."
+
+				headerBox.Println(authExplain)
+				fmt.Println()
+
+				steps := []string{
+					"1. Run 'cfctl login'",
+					"2. Enter your credentials when prompted",
+					"3. Select your workspace",
+					"4. Try your command again",
+				}
+
+				instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
+					WithTitleTopCenter().
+					WithRightPadding(4).
+					WithLeftPadding(4)
+
+				instructionBox.Println(strings.Join(steps, "\n\n"))
 			}
 
-			yamlExample := pterm.DefaultBox.WithTitle("Config Example").
-				WithTitleTopCenter().
-				WithRightPadding(4).
-				WithLeftPadding(4).
-				Sprint(fmt.Sprintf("environment: %s\nenvironments:\n    %s:\n        endpoint: %s\n        proxy: true\n        token: %s",
-					currentEnv,
-					currentEnv,
-					endpoint,
-					pterm.FgLightCyan.Sprint("YOUR_COPIED_TOKEN")))
-
-			instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
-				WithTitleTopCenter().
-				WithRightPadding(4).
-				WithLeftPadding(4)
-
-			allSteps := append(steps,
-				fmt.Sprintf("5. Add the token under the proxy in your config file:\n%s", yamlExample),
-				"6. Run 'cfctl login' again")
-
-			instructionBox.Println(strings.Join(allSteps, "\n\n"))
-		} else {
-			// User environment message
-			headerBox := pterm.DefaultBox.WithTitle("Authentication Required").
-				WithTitleTopCenter().
-				WithRightPadding(4).
-				WithLeftPadding(4).
-				WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
-
-			authExplain := "Please login to SpaceONE Console first.\n" +
-				"This requires your SpaceONE credentials."
-
-			headerBox.Println(authExplain)
-			fmt.Println()
-
-			steps := []string{
-				"1. Run 'cfctl login'",
-				"2. Enter your credentials when prompted",
-				"3. Select your workspace",
-				"4. Try your command again",
-			}
-
-			instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
-				WithTitleTopCenter().
-				WithRightPadding(4).
-				WithLeftPadding(4)
-
-			instructionBox.Println(strings.Join(steps, "\n\n"))
+			return nil, nil
 		}
-
-		return nil, nil
 	}
 
 	// Get hostPort based on environment prefix
 	var hostPort string
-	if strings.HasPrefix(config.Environment, "local-") {
+	if config.Environment == "local" {
 		hostPort = "localhost:50051"
 	} else {
 		if strings.Contains(config.Environments[config.Environment].URL, "megazone.io") {
@@ -181,7 +182,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 	// Configure gRPC connection
 	var conn *grpc.ClientConn
-	if strings.HasPrefix(config.Environment, "local-") {
+	if config.Environment == "local" {
 		// For local environment, use insecure connection
 		conn, err = grpc.Dial("localhost:50051", grpc.WithInsecure())
 		if err != nil {
@@ -385,7 +386,7 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 			fmt.Sprintf("page_size=%d", options.PageSize))
 	}
 
-	if strings.HasPrefix(config.Environment, "local-") {
+	if config.Environment == "local" {
 		conn, err = grpc.Dial("localhost:50051", grpc.WithInsecure(),
 			grpc.WithDefaultCallOptions(
 				grpc.MaxCallRecvMsgSize(10*1024*1024),
@@ -437,6 +438,7 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 	defer refClient.Reset()
 
 	fullServiceName, err := discoverService(refClient, serviceName, resourceName)
+	fmt.Println(fullServiceName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover service: %v", err)
 	}
@@ -471,7 +473,6 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 	if err := reqMsg.UnmarshalJSON(jsonBytes); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal JSON into request message: %v", err)
 	}
-
 
 	fullMethod := fmt.Sprintf("/%s/%s", fullServiceName, verb)
 
@@ -588,7 +589,6 @@ func parseParameters(options *FetchOptions) (map[string]interface{}, error) {
 
 	return parsed, nil
 }
-
 
 func discoverService(refClient *grpcreflect.Client, serviceName string, resourceName string) (string, error) {
 	services, err := refClient.ListServices()

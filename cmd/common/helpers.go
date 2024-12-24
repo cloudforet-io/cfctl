@@ -6,12 +6,13 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/spf13/cobra"
 
@@ -42,7 +43,7 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
 
-	if strings.HasPrefix(config.Environment, "local-") {
+	if config.Environment == "local" {
 		return handleLocalEnvironment(serviceName)
 	}
 
@@ -89,9 +90,10 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 }
 
 func handleLocalEnvironment(serviceName string) (map[string][]string, error) {
-	if serviceName != "plugin" {
-		return nil, fmt.Errorf("only plugin service is supported in local environment")
-	}
+	// TODO: check services
+	//if serviceName != "plugin" {
+	//	return nil, fmt.Errorf("only plugin service is supported in local environment")
+	//}
 
 	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
 	if err != nil {
@@ -110,22 +112,45 @@ func handleLocalEnvironment(serviceName string) (map[string][]string, error) {
 
 	verbResourceMap := make(map[string][]string)
 	for _, s := range services {
-		if !strings.Contains(s, ".plugin.") {
+		// Skip grpc reflection services
+		if strings.HasPrefix(s, "grpc.") {
 			continue
 		}
 
-		serviceDesc, err := refClient.ResolveService(s)
-		if err != nil {
+		// Handle plugin service
+		if serviceName == "plugin" && strings.Contains(s, ".plugin.") {
+			serviceDesc, err := refClient.ResolveService(s)
+			if err != nil {
+				continue
+			}
+
+			resourceName := s[strings.LastIndex(s, ".")+1:]
+			for _, method := range serviceDesc.GetMethods() {
+				verb := method.GetName()
+				if resources, ok := verbResourceMap[verb]; ok {
+					verbResourceMap[verb] = append(resources, resourceName)
+				} else {
+					verbResourceMap[verb] = []string{resourceName}
+				}
+			}
 			continue
 		}
 
-		resourceName := s[strings.LastIndex(s, ".")+1:]
-		for _, method := range serviceDesc.GetMethods() {
-			verb := method.GetName()
-			if resources, ok := verbResourceMap[verb]; ok {
-				verbResourceMap[verb] = append(resources, resourceName)
-			} else {
-				verbResourceMap[verb] = []string{resourceName}
+		// Handle other microservices
+		if strings.Contains(s, fmt.Sprintf("spaceone.api.%s.", serviceName)) {
+			serviceDesc, err := refClient.ResolveService(s)
+			if err != nil {
+				continue
+			}
+
+			resourceName := s[strings.LastIndex(s, ".")+1:]
+			for _, method := range serviceDesc.GetMethods() {
+				verb := method.GetName()
+				if resources, ok := verbResourceMap[verb]; ok {
+					verbResourceMap[verb] = append(resources, resourceName)
+				} else {
+					verbResourceMap[verb] = []string{resourceName}
+				}
 			}
 		}
 	}

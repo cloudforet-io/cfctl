@@ -1,12 +1,17 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/jhump/protoreflect/grpcreflect"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 
 	"gopkg.in/yaml.v3"
 
@@ -238,10 +243,65 @@ func addDynamicServiceCommands() error {
 		return err
 	}
 
-	// For local environment, only add plugin command
-	if strings.HasPrefix(config.Environment, "local") {
-		cmd := createServiceCommand("local")
-		rootCmd.AddCommand(cmd)
+	// For local environment
+	if config.Environment == "local" {
+		conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
+		if err != nil {
+			return err
+		}
+		defer conn.Close()
+
+		ctx := context.Background()
+		refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+		defer refClient.Reset()
+
+		services, err := refClient.ListServices()
+		if err != nil {
+			return err
+		}
+
+		// Check if plugin service exists
+		hasPlugin := false
+		microservices := make(map[string]bool)
+
+		for _, service := range services {
+			// Skip grpc reflection and health check services
+			if strings.HasPrefix(service, "grpc.") {
+				continue
+			}
+
+			// Handle plugin service
+			if strings.Contains(service, ".plugin.") {
+				hasPlugin = true
+				continue
+			}
+
+			// Handle SpaceONE microservices
+			if strings.Contains(service, "spaceone.api.") {
+				parts := strings.Split(service, ".")
+				if len(parts) >= 4 {
+					serviceName := parts[2]
+					// Skip core service and version prefixes
+					if serviceName != "core" && !strings.HasPrefix(serviceName, "v") {
+						microservices[serviceName] = true
+					}
+				}
+			}
+		}
+
+		if hasPlugin {
+			cmd := createServiceCommand("plugin")
+			cmd.GroupID = "available"
+			rootCmd.AddCommand(cmd)
+		}
+
+		// Add commands for other microservices
+		for serviceName := range microservices {
+			cmd := createServiceCommand(serviceName)
+			cmd.GroupID = "available"
+			rootCmd.AddCommand(cmd)
+		}
+
 		return nil
 	}
 
