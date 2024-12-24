@@ -1,13 +1,19 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/jhump/protoreflect/grpcreflect"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/spf13/viper"
 
@@ -237,10 +243,71 @@ func addDynamicServiceCommands() error {
 		return err
 	}
 
-	// For local environment, only add plugin command
-	if strings.HasPrefix(config.Environment, "local-") {
-		cmd := createServiceCommand("plugin")
-		rootCmd.AddCommand(cmd)
+	// For local environment
+	if config.Environment == "local" {
+		endpoint := strings.TrimPrefix(config.Endpoint, "grpc://")
+
+		conn, err := grpc.Dial(endpoint, grpc.WithInsecure(), grpc.WithBlock(), grpc.WithTimeout(time.Second))
+		if err != nil {
+			pterm.DefaultBox.WithTitle("Local gRPC Server Not Found").
+				WithTitleTopCenter().
+				WithBoxStyle(pterm.NewStyle(pterm.FgYellow)).
+				Printfln("Unable to connect to local gRPC server.\nPlease make sure your gRPC server is running on %s", config.Endpoint)
+			return nil
+		}
+		defer conn.Close()
+
+		ctx := context.Background()
+		refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+		defer refClient.Reset()
+
+		services, err := refClient.ListServices()
+		if err != nil {
+			return err
+		}
+
+		// Check if plugin service exists
+		hasPlugin := false
+		microservices := make(map[string]bool)
+
+		for _, service := range services {
+			// Skip grpc reflection and health check services
+			if strings.HasPrefix(service, "grpc.") {
+				continue
+			}
+
+			// Handle plugin service
+			if strings.Contains(service, ".plugin.") {
+				hasPlugin = true
+				continue
+			}
+
+			// Handle SpaceONE microservices
+			if strings.Contains(service, "spaceone.api.") {
+				parts := strings.Split(service, ".")
+				if len(parts) >= 4 {
+					serviceName := parts[2]
+					// Skip core service and version prefixes
+					if serviceName != "core" && !strings.HasPrefix(serviceName, "v") {
+						microservices[serviceName] = true
+					}
+				}
+			}
+		}
+
+		if hasPlugin {
+			cmd := createServiceCommand("plugin")
+			cmd.GroupID = "available"
+			rootCmd.AddCommand(cmd)
+		}
+
+		// Add commands for other microservices
+		for serviceName := range microservices {
+			cmd := createServiceCommand(serviceName)
+			cmd.GroupID = "available"
+			rootCmd.AddCommand(cmd)
+		}
+
 		return nil
 	}
 
@@ -267,21 +334,21 @@ func addDynamicServiceCommands() error {
 
 		progressbar.UpdateTitle("Preparing endpoint configuration")
 		endpoint := config.Endpoint
-		if !strings.Contains(endpoint, "identity") {
-			parts := strings.Split(endpoint, "://")
-			if len(parts) == 2 {
-				hostParts := strings.Split(parts[1], ".")
-				if len(hostParts) >= 4 {
-					env := hostParts[2]
-					endpoint = fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", env)
-				}
+
+		var apiEndpoint string
+		if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+			apiEndpoint, err = other.GetAPIEndpoint(endpoint)
+			if err != nil {
+				pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
+				os.Exit(1)
 			}
 		}
+
 		progressbar.Increment()
 		time.Sleep(time.Millisecond * 300)
 
 		progressbar.UpdateTitle("Fetching available services")
-		endpointsMap, err := other.FetchEndpointsMap(endpoint)
+		endpointsMap, err := other.FetchEndpointsMap(apiEndpoint)
 		if err != nil {
 			return fmt.Errorf("failed to fetch services: %v", err)
 		}
@@ -421,31 +488,16 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("no endpoint found in configuration")
 	}
 
-	var token string
-	// Check environment suffix
-	if strings.HasSuffix(currentEnv, "-user") {
-		// For user environments, read from cache directory
-		envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
-		grantTokenPath := filepath.Join(envCacheDir, "access_token")
-		data, err := os.ReadFile(grantTokenPath)
-		if err != nil {
-			return nil, fmt.Errorf("no valid token found in cache")
-		}
-		token = string(data)
-	} else if strings.HasSuffix(currentEnv, "-app") {
-		token = envConfig.GetString("token")
-		if token == "" {
-			return nil, fmt.Errorf("no token found in configuration")
-		}
-	} else {
-		return nil, fmt.Errorf("invalid environment suffix: must end with -user or -app")
-	}
-
-	return &Config{
+	config := &Config{
 		Environment: currentEnv,
 		Endpoint:    endpoint,
-		Token:       token,
-	}, nil
+	}
+
+	if strings.HasSuffix(currentEnv, "-app") {
+		config.Token = envConfig.GetString("token")
+	}
+
+	return config, nil
 }
 
 func createServiceCommand(serviceName string) *cobra.Command {

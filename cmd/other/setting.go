@@ -5,13 +5,14 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"log"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/jhump/protoreflect/dynamic"
 
@@ -37,37 +38,95 @@ You can initialize, switch environments, and display the current configuration.`
 var settingInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new environment setting",
-	Long:  `Initialize a new environment setting for cfctl by specifying either a URL or a local environment name.`,
+	Long:  `Initialize a new environment setting for cfctl by specifying an endpoint`,
+	Example: `  cfctl setting init endpoint https://example.com --app
+  cfctl setting init endpoint https://example.com --user
+  cfctl setting init endpoint http://localhost:8080 --app
+  cfctl setting init endpoint http://localhost:8080 --user
+	                         or 
+  cfctl setting init local`,
 }
 
-// settingInitURLCmd initializes configuration with a URL
-var settingInitURLCmd = &cobra.Command{
-	Use:   "url",
-	Short: "Initialize configuration with a URL",
-	Long:  `Specify a URL to initialize the environment configuration.`,
+// settingInitLocalCmd represents the setting init local command
+var settingInitLocalCmd = &cobra.Command{
+	Use:   "local",
+	Short: "Initialize local environment setting",
+	Long:  `Initialize a local environment setting with default configuration.`,
 	Args:  cobra.NoArgs,
-	Example: `  cfctl setting init url -u https://example.com --app
-                          or
-  cfctl setting init url -u https://example.com --user`,
 	Run: func(cmd *cobra.Command, args []string) {
-		urlStr, _ := cmd.Flags().GetString("url")
+		settingDir := GetSettingDir()
+		if err := os.MkdirAll(settingDir, 0755); err != nil {
+			pterm.Error.Printf("Failed to create setting directory: %v\n", err)
+			return
+		}
+
+		mainSettingPath := filepath.Join(settingDir, "setting.yaml")
+		v := viper.New()
+		v.SetConfigFile(mainSettingPath)
+		v.SetConfigType("yaml")
+
+		// Check if local environment already exists
+		if err := v.ReadInConfig(); err == nil {
+			environments := v.GetStringMap("environments")
+			if existingEnv, exists := environments["local"]; exists {
+				currentConfig, _ := yaml.Marshal(map[string]interface{}{
+					"environment": "local",
+					"environments": map[string]interface{}{
+						"local": existingEnv,
+					},
+				})
+
+				confirmBox := pterm.DefaultBox.WithTitle("Environment Already Exists").
+					WithTitleTopCenter().
+					WithRightPadding(4).
+					WithLeftPadding(4).
+					WithBoxStyle(pterm.NewStyle(pterm.FgYellow))
+
+				confirmBox.Println("Environment 'local' already exists.\nDo you want to overwrite it?")
+
+				pterm.Info.Println("Current configuration:")
+				fmt.Println(string(currentConfig))
+
+				fmt.Print("\nEnter (y/n): ")
+				var response string
+				fmt.Scanln(&response)
+				response = strings.ToLower(strings.TrimSpace(response))
+
+				if response != "y" {
+					pterm.Info.Println("Operation cancelled. Environment 'local' remains unchanged.")
+					return
+				}
+			}
+		}
+
+		updateSetting("local", "grpc://localhost:50051", "")
+	},
+}
+
+// settingInitEndpointCmd represents the setting init endpoint command
+var settingInitEndpointCmd = &cobra.Command{
+	Use:   "endpoint [URL]",
+	Short: "Initialize configuration with an endpoint",
+	Long:  `Specify an endpoint to initialize the environment configuration.`,
+	Args:  cobra.ExactArgs(1),
+	Example: `  cfctl setting init endpoint https://example.com --app
+  cfctl setting init endpoint https://example.com --user
+  cfctl setting init endpoint http://localhost:8080 --app
+  cfctl setting init endpoint http://localhost:8080 --user`,
+	Run: func(cmd *cobra.Command, args []string) {
+		endpointStr := args[0]
 		appFlag, _ := cmd.Flags().GetBool("app")
 		userFlag, _ := cmd.Flags().GetBool("user")
 
-		if urlStr == "" {
-			pterm.Error.Println("The --url flag is required.")
-			cmd.Help()
-			return
-		}
 		if !appFlag && !userFlag {
 			pterm.Error.Println("You must specify either --app or --user flag.")
 			cmd.Help()
 			return
 		}
 
-		envName, err := parseEnvNameFromURL(urlStr)
+		envName, err := parseEnvNameFromURL(endpointStr)
 		if err != nil {
-			pterm.Error.Printf("Failed to parse environment name from URL: %v\n", err)
+			pterm.Error.Printf("Failed to parse environment name from endpoint: %v\n", err)
 			return
 		}
 
@@ -106,7 +165,7 @@ var settingInitURLCmd = &cobra.Command{
 				pterm.Info.Println("Current configuration:")
 				fmt.Println(string(currentConfig))
 
-				fmt.Print("\nEnter (y/N): ")
+				fmt.Print("\nEnter (y/n): ")
 				var response string
 				fmt.Scanln(&response)
 				response = strings.ToLower(strings.TrimSpace(response))
@@ -119,100 +178,7 @@ var settingInitURLCmd = &cobra.Command{
 		}
 
 		// Update configuration
-		updateSetting(envName, urlStr, envSuffix)
-	},
-}
-
-// settingInitLocalCmd initializes configuration with a local environment
-var settingInitLocalCmd = &cobra.Command{
-	Use:   "local",
-	Short: "Initialize local environment setting",
-	Long:  `Initialize a local environment setting for cfctl.`,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		appFlag, _ := cmd.Flags().GetBool("app")
-		userFlag, _ := cmd.Flags().GetBool("user")
-
-		if !appFlag && !userFlag {
-			pterm.Error.Println("You must specify either --app or --user flag.")
-			return fmt.Errorf("missing required flag")
-		}
-
-		if appFlag && userFlag {
-			pterm.Error.Println("Cannot use both --app and --user flags together.")
-			return fmt.Errorf("conflicting flags")
-		}
-
-		settingDir := GetSettingDir()
-		mainSettingPath := filepath.Join(settingDir, "setting.yaml")
-
-		envName := "local"
-		if appFlag {
-			envName = fmt.Sprintf("%s-app", envName)
-		} else {
-			envName = fmt.Sprintf("%s-user", envName)
-		}
-
-		v := viper.New()
-		v.SetConfigFile(mainSettingPath)
-		v.SetConfigType("yaml")
-
-		if err := v.ReadInConfig(); err == nil {
-			environments := v.GetStringMap("environments")
-			if existingEnv, exists := environments[envName]; exists {
-				currentConfig, _ := yaml.Marshal(map[string]interface{}{
-					"environment": envName,
-					"environments": map[string]interface{}{
-						envName: existingEnv,
-					},
-				})
-
-				confirmBox := pterm.DefaultBox.WithTitle("Environment Already Exists").
-					WithTitleTopCenter().
-					WithRightPadding(4).
-					WithLeftPadding(4).
-					WithBoxStyle(pterm.NewStyle(pterm.FgYellow))
-
-				confirmBox.Println(fmt.Sprintf("Environment '%s' already exists.\nDo you want to overwrite it?", envName))
-
-				pterm.Info.Println("Current configuration:")
-				fmt.Println(string(currentConfig))
-
-				fmt.Print("\nEnter (y/N): ")
-				var response string
-				fmt.Scanln(&response)
-				response = strings.ToLower(strings.TrimSpace(response))
-
-				if response != "y" {
-					pterm.Info.Printf("Operation cancelled. Environment '%s' remains unchanged.\n", envName)
-					return nil
-				}
-			}
-		}
-
-		envConfig := map[string]interface{}{
-			"endpoint": "grpc://localhost:50051",
-			"url":      "http://localhost:8080",
-		}
-
-		if appFlag {
-			envConfig["token"] = "no_token"
-		}
-
-		v.Set(fmt.Sprintf("environments.%s", envName), envConfig)
-		v.Set("environment", envName)
-
-		if err := v.WriteConfig(); err != nil {
-			if os.IsNotExist(err) {
-				if err := v.SafeWriteConfig(); err != nil {
-					return fmt.Errorf("failed to create setting file: %v", err)
-				}
-			} else {
-				return fmt.Errorf("failed to write setting: %v", err)
-			}
-		}
-
-		pterm.Success.Printf("Environment '%s' successfully initialized.\n", envName)
-		return nil
+		updateSetting(envName, endpointStr, envSuffix)
 	},
 }
 
@@ -941,121 +907,111 @@ func updateGlobalSetting() {
 }
 
 func parseEnvNameFromURL(urlStr string) (string, error) {
-	if !strings.Contains(urlStr, "://") {
-		urlStr = "https://" + urlStr
-	}
-	parsedURL, err := url.Parse(urlStr)
-	if err != nil {
-		return "", err
-	}
-	hostname := parsedURL.Hostname()
+	urlStr = strings.TrimPrefix(urlStr, "https://")
+	urlStr = strings.TrimPrefix(urlStr, "http://")
+	urlStr = strings.TrimPrefix(urlStr, "grpc://")
+	urlStr = strings.TrimPrefix(urlStr, "grpc+ssl://")
 
-	// Check for `prd` environment pattern
-	if strings.HasSuffix(hostname, "spaceone.megazone.io") {
-		re := regexp.MustCompile(`^(.*?)\.spaceone`)
-		matches := re.FindStringSubmatch(hostname)
-		if len(matches) == 2 {
-			return matches[1], nil
-		}
+	if strings.Contains(urlStr, "localhost") {
+		return "local", nil
 	}
 
-	// Check for `dev` environment pattern
-	if strings.HasSuffix(hostname, "console.dev.spaceone.dev") {
-		re := regexp.MustCompile(`(.*)\.console\.dev\.spaceone\.dev`)
-		matches := re.FindStringSubmatch(hostname)
-		if len(matches) == 2 {
-			return matches[1], nil
-		}
-		pterm.Error.WithShowLineNumber(false).Println("Invalid URL format for dev environment. Expected format: '<prefix>.console.dev.spaceone.dev'")
-		return "", fmt.Errorf("invalid dev URL format")
+	hostParts := strings.Split(urlStr, ":")
+	hostname := hostParts[0]
+
+	parts := strings.Split(hostname, ".")
+
+	if isIPAddress(hostname) {
+		return "local", nil
 	}
 
-	// Check for `stg` environment pattern
-	if strings.HasSuffix(hostname, "console.stg.spaceone.dev") {
-		re := regexp.MustCompile(`(.*)\.console\.stg\.spaceone\.dev`)
-		matches := re.FindStringSubmatch(hostname)
-		if len(matches) == 2 {
-			return matches[1], nil
-		}
-		pterm.Error.WithShowLineNumber(false).Println("Invalid URL format for stg environment. Expected format: '<prefix>.console.stg.spaceone.dev'")
-		return "", fmt.Errorf("invalid stg URL format")
+	if len(parts) > 0 {
+		envName := parts[0]
+		reg := regexp.MustCompile(`[^a-zA-Z0-9]+`)
+		envName = reg.ReplaceAllString(envName, "")
+		return strings.ToLower(envName), nil
 	}
 
-	return "", fmt.Errorf("URL does not match any known environment patterns")
+	return "", fmt.Errorf("could not determine environment name from URL: %s", urlStr)
+}
+
+func isIPAddress(host string) bool {
+	ipv4Pattern := `^(\d{1,3}\.){3}\d{1,3}$`
+	match, _ := regexp.MatchString(ipv4Pattern, host)
+	return match
 }
 
 // updateSetting updates the configuration files
-func updateSetting(envName, urlStr, settingType string) {
-	urlStr = strings.TrimPrefix(urlStr, "https://")
-	urlStr = strings.TrimPrefix(urlStr, "http://")
-
+func updateSetting(envName, endpoint string, envSuffix string) {
 	settingDir := GetSettingDir()
 	mainSettingPath := filepath.Join(settingDir, "setting.yaml")
 
-	// Initialize viper instance
 	v := viper.New()
 	v.SetConfigFile(mainSettingPath)
 	v.SetConfigType("yaml")
 
-	// Create directory if it doesn't exist
-	if err := os.MkdirAll(settingDir, 0755); err != nil {
-		pterm.Error.Printf("Failed to create setting directory: %v\n", err)
+	// Create full environment name
+	var fullEnvName string
+	if envSuffix == "" {
+		fullEnvName = envName
+	} else {
+		fullEnvName = fmt.Sprintf("%s-%s", envName, envSuffix)
+	}
+
+	// Read existing config if it exists
+	_ = v.ReadInConfig()
+
+	// Set environment
+	v.Set("environment", fullEnvName)
+
+	// Handle protocol for endpoint
+	if !strings.Contains(endpoint, "://") {
+		if strings.Contains(endpoint, "localhost") || strings.Contains(endpoint, "127.0.0.1") {
+			endpoint = "http://" + endpoint
+		} else {
+			endpoint = "https://" + endpoint
+		}
+	}
+
+	// Set endpoint in environments map
+	envKey := fmt.Sprintf("environments.%s.endpoint", fullEnvName)
+	v.Set(envKey, endpoint)
+
+	// Set additional configurations based on environment type
+	if envName == "local" {
+		// Local environment settings (only for pure 'local', not 'local-user' or 'local-app')
+		if envSuffix == "" {
+			tokenKey := fmt.Sprintf("environments.%s.token", fullEnvName)
+			v.Set(tokenKey, "no_token")
+		} else {
+			// Set proxy for local-user and local-app
+			proxyKey := fmt.Sprintf("environments.%s.proxy", fullEnvName)
+			v.Set(proxyKey, true)
+
+			// Set token only for app environment
+			if envSuffix == "app" {
+				tokenKey := fmt.Sprintf("environments.%s.token", fullEnvName)
+				v.Set(tokenKey, "no_token")
+			}
+		}
+	} else {
+		// Non-local environment settings
+		proxyKey := fmt.Sprintf("environments.%s.proxy", fullEnvName)
+		v.Set(proxyKey, true)
+
+		// Only set token for app environment
+		if envSuffix == "app" {
+			tokenKey := fmt.Sprintf("environments.%s.token", fullEnvName)
+			v.Set(tokenKey, "no_token")
+		}
+	}
+
+	if err := v.WriteConfig(); err != nil {
+		pterm.Error.Printf("Failed to write setting file: %v\n", err)
 		return
 	}
 
-	// Read existing configuration or create new one
-	if err := v.ReadInConfig(); err != nil {
-		if os.IsNotExist(err) {
-			// Initialize with empty environments map
-			v.Set("environments", map[string]interface{}{})
-		} else {
-			pterm.Error.Printf("Error reading setting file: %v\n", err)
-			return
-		}
-	}
-
-	if urlStr != "" {
-		endpoint, err := constructEndpoint(urlStr)
-		if err != nil {
-			pterm.Error.Printf("Failed to construct endpoint: %v\n", err)
-			return
-		}
-
-		// Append -app or -user to the environment name
-		envName = fmt.Sprintf("%s-%s", envName, settingType)
-
-		// Add new environment configuration
-		envConfig := map[string]interface{}{
-			"endpoint": endpoint,
-			"proxy":    true,
-			"url":      fmt.Sprintf("https://%s", urlStr),
-		}
-
-		// Only add token field for app configuration
-		if settingType == "app" {
-			envConfig["token"] = ""
-		}
-
-		// Update configuration
-		v.Set(fmt.Sprintf("environments.%s", envName), envConfig)
-		v.Set("environment", envName)
-
-		// Save configuration
-		if err := v.WriteConfig(); err != nil {
-			if os.IsNotExist(err) {
-				// Try to create the file if it doesn't exist
-				if err := v.SafeWriteConfig(); err != nil {
-					pterm.Error.Printf("Failed to create setting file: %v\n", err)
-					return
-				}
-			} else {
-				pterm.Error.Printf("Failed to write setting: %v\n", err)
-				return
-			}
-		}
-	}
-
-	pterm.Success.Printf("Environment '%s' successfully initialized.\n", envName)
+	pterm.Success.Printf("Environment '%s' successfully initialized.\n", fullEnvName)
 }
 
 // convertToStringMap converts map[interface{}]interface{} to map[string]interface{}
@@ -1126,19 +1082,11 @@ func init() {
 	SettingCmd.AddCommand(settingInitCmd)
 	SettingCmd.AddCommand(envCmd)
 	SettingCmd.AddCommand(showCmd)
-	SettingCmd.AddCommand(settingEndpointCmd)
-	SettingCmd.AddCommand(settingTokenCmd)
-	settingInitCmd.AddCommand(settingInitURLCmd)
+	settingInitCmd.AddCommand(settingInitEndpointCmd)
 	settingInitCmd.AddCommand(settingInitLocalCmd)
 
-	settingInitCmd.Flags().StringP("environment", "e", "", "Override environment name")
-
-	settingInitURLCmd.Flags().StringP("url", "u", "", "URL for the environment")
-	settingInitURLCmd.Flags().Bool("app", false, "Initialize as application configuration")
-	settingInitURLCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
-
-	settingInitLocalCmd.Flags().Bool("app", false, "Initialize as application configuration")
-	settingInitLocalCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
+	settingInitEndpointCmd.Flags().Bool("app", false, "Initialize as application configuration")
+	settingInitEndpointCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
 
 	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
 	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
@@ -1147,6 +1095,4 @@ func init() {
 	showCmd.Flags().StringP("output", "o", "yaml", "Output format (yaml/json)")
 
 	settingEndpointCmd.Flags().StringP("service", "s", "", "Service to set the endpoint for")
-
-	// No need to set global Viper setting type since we are using separate instances
 }

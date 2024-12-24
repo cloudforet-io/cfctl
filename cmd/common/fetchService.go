@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cloudforet-io/cfctl/cmd/other"
+
 	"github.com/eiannone/keyboard"
 	"github.com/spf13/viper"
 
@@ -70,7 +72,6 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
 
-	// Check token
 	token := config.Environments[config.Environment].Token
 	if token == "" {
 		pterm.Error.Println("No token found for authentication.")
@@ -78,7 +79,11 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		// Get current endpoint
 		endpoint := config.Environments[config.Environment].Endpoint
 
-		if strings.HasSuffix(config.Environment, "-app") {
+		if config.Environment == "local" {
+			// Local environment message
+			pterm.Info.Printf("Using endpoint: %s\n", endpoint)
+			return nil, nil
+		} else if strings.HasSuffix(config.Environment, "-app") {
 			// App environment message
 			headerBox := pterm.DefaultBox.WithTitle("App Guide").
 				WithTitleTopCenter().
@@ -122,7 +127,8 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 				"6. Run 'cfctl login' again")
 
 			instructionBox.Println(strings.Join(allSteps, "\n\n"))
-		} else {
+
+		} else if strings.HasSuffix(config.Environment, "-user") {
 			// User environment message
 			headerBox := pterm.DefaultBox.WithTitle("Authentication Required").
 				WithTitleTopCenter().
@@ -156,32 +162,41 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 	// Get hostPort based on environment prefix
 	var hostPort string
-	if strings.HasPrefix(config.Environment, "local-") {
-		hostPort = "localhost:50051"
+	if config.Environment == "local" {
+		hostPort = strings.TrimPrefix(config.Environments[config.Environment].Endpoint, "grpc://")
 	} else {
-		if strings.Contains(config.Environments[config.Environment].URL, "megazone.io") {
+		apiEndpoint, err := other.GetAPIEndpoint(config.Environments[config.Environment].Endpoint)
+		if err != nil {
+			pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
+			os.Exit(1)
+		}
+		// Get identity service endpoint
+		identityEndpoint, hasIdentityService, err := other.GetIdentityEndpoint(apiEndpoint)
+		if err != nil {
+			pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
+			os.Exit(1)
+		}
+
+		// TODO: Remove this once all services are migrated to new endpoint format
+		if !hasIdentityService {
 			hostPort = fmt.Sprintf("%s.kr1.api.spaceone.megazone.io:443", convertServiceNameToEndpoint(serviceName))
 		} else {
-			var envPrefix string
-			urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
-			for i, part := range urlParts {
-				if part == "console" && i+1 < len(urlParts) {
-					envPrefix = urlParts[i+1]
-					break
-				}
+			trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
+			parts := strings.Split(trimmedEndpoint, ".")
+			if len(parts) < 4 {
+				return nil, fmt.Errorf("invalid endpoint format: %s", trimmedEndpoint)
 			}
 
-			if envPrefix == "" {
-				return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
-			}
-
-			hostPort = fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
+			// Replace 'identity' with the converted service name
+			parts[0] = convertServiceNameToEndpoint(serviceName)
+			hostPort = strings.Join(parts, ".")
+			fmt.Println(hostPort)
 		}
 	}
 
 	// Configure gRPC connection
 	var conn *grpc.ClientConn
-	if strings.HasPrefix(config.Environment, "local-") {
+	if config.Environment == "local" {
 		// For local environment, use insecure connection
 		conn, err = grpc.Dial("localhost:50051", grpc.WithInsecure())
 		if err != nil {
@@ -360,6 +375,9 @@ func loadConfig() (*Config, error) {
 	} else if strings.HasSuffix(currentEnv, "-app") {
 		// For app environments, get token from main config
 		envConfig.Token = mainV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+	} else if currentEnv == "local" {
+		// For local environment, get token from main config
+		envConfig.Token = mainV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
 	}
 
 	if envConfig == nil {
@@ -385,7 +403,7 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 			fmt.Sprintf("page_size=%d", options.PageSize))
 	}
 
-	if strings.HasPrefix(config.Environment, "local-") {
+	if config.Environment == "local" {
 		conn, err = grpc.Dial("localhost:50051", grpc.WithInsecure(),
 			grpc.WithDefaultCallOptions(
 				grpc.MaxCallRecvMsgSize(10*1024*1024),
@@ -471,7 +489,6 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 	if err := reqMsg.UnmarshalJSON(jsonBytes); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal JSON into request message: %v", err)
 	}
-
 
 	fullMethod := fmt.Sprintf("/%s/%s", fullServiceName, verb)
 
@@ -588,7 +605,6 @@ func parseParameters(options *FetchOptions) (map[string]interface{}, error) {
 
 	return parsed, nil
 }
-
 
 func discoverService(refClient *grpcreflect.Client, serviceName string, resourceName string) (string, error) {
 	services, err := refClient.ListServices()

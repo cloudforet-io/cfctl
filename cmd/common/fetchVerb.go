@@ -27,8 +27,8 @@ type FetchOptions struct {
 	MinimalColumns  bool
 	Columns         string
 	Limit           int
-	Page 			int
-	PageSize 		int
+	Page            int
+	PageSize        int
 }
 
 // AddVerbCommands adds subcommands for each verb to the parent command
@@ -56,8 +56,8 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 		verbCmd := &cobra.Command{
 			Use:   currentVerb + " <resource>",
 			Short: shortDesc,
-			Long: fmt.Sprintf("Supported %d resources for %s command.", len(resources), currentVerb),
-			Args: cobra.ArbitraryArgs, // Allow any number of arguments
+			Long:  fmt.Sprintf("Supported %d resources for %s command.", len(resources), currentVerb),
+			Args:  cobra.ArbitraryArgs, // Allow any number of arguments
 			RunE: func(cmd *cobra.Command, args []string) error {
 				if len(args) != 1 {
 					// Display the help message

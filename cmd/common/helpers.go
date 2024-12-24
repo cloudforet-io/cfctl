@@ -6,12 +6,15 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"gopkg.in/yaml.v3"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/cloudforet-io/cfctl/cmd/other"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/spf13/cobra"
 
@@ -42,7 +45,7 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
 
-	if strings.HasPrefix(config.Environment, "local-") {
+	if config.Environment == "local" {
 		return handleLocalEnvironment(serviceName)
 	}
 
@@ -89,9 +92,10 @@ func BuildVerbResourceMap(serviceName string) (map[string][]string, error) {
 }
 
 func handleLocalEnvironment(serviceName string) (map[string][]string, error) {
-	if serviceName != "plugin" {
-		return nil, fmt.Errorf("only plugin service is supported in local environment")
-	}
+	// TODO: check services
+	//if serviceName != "plugin" {
+	//	return nil, fmt.Errorf("only plugin service is supported in local environment")
+	//}
 
 	conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
 	if err != nil {
@@ -110,22 +114,45 @@ func handleLocalEnvironment(serviceName string) (map[string][]string, error) {
 
 	verbResourceMap := make(map[string][]string)
 	for _, s := range services {
-		if !strings.Contains(s, ".plugin.") {
+		// Skip grpc reflection services
+		if strings.HasPrefix(s, "grpc.") {
 			continue
 		}
 
-		serviceDesc, err := refClient.ResolveService(s)
-		if err != nil {
+		// Handle plugin service
+		if serviceName == "plugin" && strings.Contains(s, ".plugin.") {
+			serviceDesc, err := refClient.ResolveService(s)
+			if err != nil {
+				continue
+			}
+
+			resourceName := s[strings.LastIndex(s, ".")+1:]
+			for _, method := range serviceDesc.GetMethods() {
+				verb := method.GetName()
+				if resources, ok := verbResourceMap[verb]; ok {
+					verbResourceMap[verb] = append(resources, resourceName)
+				} else {
+					verbResourceMap[verb] = []string{resourceName}
+				}
+			}
 			continue
 		}
 
-		resourceName := s[strings.LastIndex(s, ".")+1:]
-		for _, method := range serviceDesc.GetMethods() {
-			verb := method.GetName()
-			if resources, ok := verbResourceMap[verb]; ok {
-				verbResourceMap[verb] = append(resources, resourceName)
-			} else {
-				verbResourceMap[verb] = []string{resourceName}
+		// Handle other microservices
+		if strings.Contains(s, fmt.Sprintf("spaceone.api.%s.", serviceName)) {
+			serviceDesc, err := refClient.ResolveService(s)
+			if err != nil {
+				continue
+			}
+
+			resourceName := s[strings.LastIndex(s, ".")+1:]
+			for _, method := range serviceDesc.GetMethods() {
+				verb := method.GetName()
+				if resources, ok := verbResourceMap[verb]; ok {
+					verbResourceMap[verb] = append(resources, resourceName)
+				} else {
+					verbResourceMap[verb] = []string{resourceName}
+				}
 			}
 		}
 	}
@@ -135,41 +162,70 @@ func handleLocalEnvironment(serviceName string) (map[string][]string, error) {
 
 func fetchVerbResourceMap(serviceName string, config *Config) (map[string][]string, error) {
 	envConfig := config.Environments[config.Environment]
-	if envConfig.URL == "" {
-		return nil, fmt.Errorf("URL not found in environment config")
+	if envConfig.Endpoint == "" {
+		return nil, fmt.Errorf("endpoint not found in environment config")
 	}
 
-	// Parse URL to get environment
-	urlParts := strings.Split(envConfig.URL, ".")
-	var envPrefix string
-	var hostPort string
+	var conn *grpc.ClientConn
+	var err error
 
-	if strings.Contains(envConfig.URL, "megazone.io") {
-		endpointServiceName := convertServiceNameToEndpoint(serviceName)
-		hostPort = fmt.Sprintf("%s.kr1.api.spaceone.megazone.io:443", endpointServiceName)
+	if config.Environment == "local" {
+		endpoint := strings.TrimPrefix(envConfig.Endpoint, "grpc://")
+		conn, err = grpc.Dial(endpoint, grpc.WithInsecure())
+		if err != nil {
+			return nil, fmt.Errorf("connection failed: %v", err)
+		}
 	} else {
-		for i, part := range urlParts {
-			if part == "console" && i+1 < len(urlParts) {
-				envPrefix = urlParts[i+1]
-				break
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false,
+		}
+		apiEndpoint, _ := other.GetAPIEndpoint(envConfig.Endpoint)
+		identityEndpoint, hasIdentityService, err := other.GetIdentityEndpoint(apiEndpoint)
+
+		if !hasIdentityService {
+			// Get endpoints map first
+			endpointsMap, err := other.FetchEndpointsMap(apiEndpoint)
+			if err != nil {
+				return nil, fmt.Errorf("failed to fetch endpoints map: %v", err)
+			}
+
+			// Find the endpoint for the current service
+			endpoint, exists := endpointsMap[serviceName]
+			if !exists {
+				return nil, fmt.Errorf("endpoint not found for service: %s", serviceName)
+			}
+
+			// Parse the endpoint
+			parts := strings.Split(endpoint, "://")
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
+			}
+
+			// Extract hostPort (remove the /v1 suffix if present)
+			hostPort := strings.Split(parts[1], "/")[0]
+
+			creds := credentials.NewTLS(tlsConfig)
+			conn, err = grpc.Dial(hostPort, grpc.WithTransportCredentials(creds))
+			if err != nil {
+				return nil, fmt.Errorf("connection failed: %v", err)
+			}
+		} else {
+			trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
+			parts := strings.Split(trimmedEndpoint, ".")
+			if len(parts) < 4 {
+				return nil, fmt.Errorf("invalid endpoint format: %s", trimmedEndpoint)
+			}
+
+			// Replace 'identity' with the converted service name
+			parts[0] = convertServiceNameToEndpoint(serviceName)
+			serviceEndpoint := strings.Join(parts, ".")
+
+			creds := credentials.NewTLS(tlsConfig)
+			conn, err = grpc.Dial(serviceEndpoint, grpc.WithTransportCredentials(creds))
+			if err != nil {
+				return nil, fmt.Errorf("connection failed: %v", err)
 			}
 		}
-
-		if envPrefix == "" {
-			return nil, fmt.Errorf("environment prefix not found in URL: %s", envConfig.URL)
-		}
-
-		endpointServiceName := convertServiceNameToEndpoint(serviceName)
-		hostPort = fmt.Sprintf("%s.api.%s.spaceone.dev:443", endpointServiceName, envPrefix)
-	}
-
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: false,
-	}
-	creds := credentials.NewTLS(tlsConfig)
-	conn, err := grpc.Dial(hostPort, grpc.WithTransportCredentials(creds))
-	if err != nil {
-		return nil, fmt.Errorf("connection failed: %v", err)
 	}
 	defer conn.Close()
 
