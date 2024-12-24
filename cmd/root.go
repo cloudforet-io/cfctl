@@ -239,8 +239,8 @@ func addDynamicServiceCommands() error {
 	}
 
 	// For local environment, only add plugin command
-	if strings.HasPrefix(config.Environment, "local-") {
-		cmd := createServiceCommand("plugin")
+	if strings.HasPrefix(config.Environment, "local") {
+		cmd := createServiceCommand("local")
 		rootCmd.AddCommand(cmd)
 		return nil
 	}
@@ -268,16 +268,6 @@ func addDynamicServiceCommands() error {
 
 		progressbar.UpdateTitle("Preparing endpoint configuration")
 		endpoint := config.Endpoint
-		//if !strings.Contains(endpoint, "identity") {
-		//	parts := strings.Split(endpoint, "://")
-		//	if len(parts) == 2 {
-		//		hostParts := strings.Split(parts[1], ".")
-		//		if len(hostParts) >= 4 {
-		//			env := hostParts[2]
-		//			endpoint = fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", env)
-		//		}
-		//	}
-		//}
 
 		var apiEndpoint string
 		if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
@@ -432,31 +422,16 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("no endpoint found in configuration")
 	}
 
-	var token string
-	// Check environment suffix
-	if strings.HasSuffix(currentEnv, "-user") {
-		// For user environments, read from cache directory
-		envCacheDir := filepath.Join(home, ".cfctl", "cache", currentEnv)
-		grantTokenPath := filepath.Join(envCacheDir, "access_token")
-		data, err := os.ReadFile(grantTokenPath)
-		if err != nil {
-			return nil, fmt.Errorf("no valid token found in cache")
-		}
-		token = string(data)
-	} else if strings.HasSuffix(currentEnv, "-app") {
-		token = envConfig.GetString("token")
-		if token == "" {
-			return nil, fmt.Errorf("no token found in configuration")
-		}
-	} else {
-		return nil, fmt.Errorf("invalid environment suffix: must end with -user or -app")
-	}
-
-	return &Config{
+	config := &Config{
 		Environment: currentEnv,
 		Endpoint:    endpoint,
-		Token:       token,
-	}, nil
+	}
+
+	if strings.HasSuffix(currentEnv, "-app") {
+		config.Token = envConfig.GetString("token")
+	}
+
+	return config, nil
 }
 
 func createServiceCommand(serviceName string) *cobra.Command {
