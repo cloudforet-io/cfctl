@@ -245,9 +245,15 @@ func addDynamicServiceCommands() error {
 
 	// For local environment
 	if config.Environment == "local" {
-		conn, err := grpc.Dial("localhost:50051", grpc.WithInsecure())
+		endpoint := strings.TrimPrefix(config.Endpoint, "grpc://")
+
+		conn, err := grpc.Dial(endpoint, grpc.WithInsecure(), grpc.WithBlock(), grpc.WithTimeout(time.Second))
 		if err != nil {
-			return err
+			pterm.DefaultBox.WithTitle("Local gRPC Server Not Found").
+				WithTitleTopCenter().
+				WithBoxStyle(pterm.NewStyle(pterm.FgYellow)).
+				Printfln("Unable to connect to local gRPC server.\nPlease make sure your gRPC server is running on %s", config.Endpoint)
+			return nil
 		}
 		defer conn.Close()
 

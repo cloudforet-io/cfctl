@@ -438,7 +438,6 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 	defer refClient.Reset()
 
 	fullServiceName, err := discoverService(refClient, serviceName, resourceName)
-	fmt.Println(fullServiceName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover service: %v", err)
 	}
