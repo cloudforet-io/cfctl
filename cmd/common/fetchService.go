@@ -172,8 +172,6 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		}
 		// Get identity service endpoint
 		identityEndpoint, hasIdentityService, err := other.GetIdentityEndpoint(apiEndpoint)
-		fmt.Println(identityEndpoint)
-		fmt.Println(hasIdentityService)
 		if err != nil {
 			pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 			os.Exit(1)

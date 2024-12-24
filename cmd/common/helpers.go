@@ -190,9 +190,10 @@ func fetchVerbResourceMap(serviceName string, config *Config) (map[string][]stri
 
 		// Replace 'identity' with the converted service name
 		parts[0] = convertServiceNameToEndpoint(serviceName)
+		serviceEndpoint := strings.Join(parts, ".")
 
 		creds := credentials.NewTLS(tlsConfig)
-		conn, err = grpc.Dial(trimmedEndpoint, grpc.WithTransportCredentials(creds))
+		conn, err = grpc.Dial(serviceEndpoint, grpc.WithTransportCredentials(creds))
 		if err != nil {
 			return nil, fmt.Errorf("connection failed: %v", err)
 		}
