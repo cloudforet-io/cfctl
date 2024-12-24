@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cloudforet-io/cfctl/cmd/other"
+
 	"github.com/eiannone/keyboard"
 	"github.com/spf13/viper"
 
@@ -161,25 +163,35 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	// Get hostPort based on environment prefix
 	var hostPort string
 	if config.Environment == "local" {
-		hostPort = "localhost:50051"
+		hostPort = strings.TrimPrefix(config.Environments[config.Environment].Endpoint, "grpc://")
 	} else {
-		if strings.Contains(config.Environments[config.Environment].URL, "megazone.io") {
+		apiEndpoint, err := other.GetAPIEndpoint(config.Environments[config.Environment].Endpoint)
+		if err != nil {
+			pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
+			os.Exit(1)
+		}
+		// Get identity service endpoint
+		identityEndpoint, hasIdentityService, err := other.GetIdentityEndpoint(apiEndpoint)
+		fmt.Println(identityEndpoint)
+		fmt.Println(hasIdentityService)
+		if err != nil {
+			pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
+			os.Exit(1)
+		}
+
+		if !hasIdentityService {
 			hostPort = fmt.Sprintf("%s.kr1.api.spaceone.megazone.io:443", convertServiceNameToEndpoint(serviceName))
 		} else {
-			var envPrefix string
-			urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
-			for i, part := range urlParts {
-				if part == "console" && i+1 < len(urlParts) {
-					envPrefix = urlParts[i+1]
-					break
-				}
+			trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
+			parts := strings.Split(trimmedEndpoint, ".")
+			if len(parts) < 4 {
+				return nil, fmt.Errorf("invalid endpoint format: %s", trimmedEndpoint)
 			}
 
-			if envPrefix == "" {
-				return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
-			}
-
-			hostPort = fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
+			// Replace 'identity' with the converted service name
+			parts[0] = convertServiceNameToEndpoint(serviceName)
+			hostPort = strings.Join(parts, ".")
+			fmt.Println(hostPort)
 		}
 	}
 

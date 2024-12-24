@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudforet-io/cfctl/cmd/other"
+
 	"gopkg.in/yaml.v3"
 
 	"github.com/spf13/cobra"
@@ -160,41 +162,41 @@ func handleLocalEnvironment(serviceName string) (map[string][]string, error) {
 
 func fetchVerbResourceMap(serviceName string, config *Config) (map[string][]string, error) {
 	envConfig := config.Environments[config.Environment]
-	if envConfig.URL == "" {
-		return nil, fmt.Errorf("URL not found in environment config")
+	if envConfig.Endpoint == "" {
+		return nil, fmt.Errorf("endpoint not found in environment config")
 	}
 
-	// Parse URL to get environment
-	urlParts := strings.Split(envConfig.URL, ".")
-	var envPrefix string
-	var hostPort string
+	var conn *grpc.ClientConn
+	var err error
 
-	if strings.Contains(envConfig.URL, "megazone.io") {
-		endpointServiceName := convertServiceNameToEndpoint(serviceName)
-		hostPort = fmt.Sprintf("%s.kr1.api.spaceone.megazone.io:443", endpointServiceName)
+	if config.Environment == "local" {
+		endpoint := strings.TrimPrefix(envConfig.Endpoint, "grpc://")
+		conn, err = grpc.Dial(endpoint, grpc.WithInsecure())
+		if err != nil {
+			return nil, fmt.Errorf("connection failed: %v", err)
+		}
 	} else {
-		for i, part := range urlParts {
-			if part == "console" && i+1 < len(urlParts) {
-				envPrefix = urlParts[i+1]
-				break
-			}
+		tlsConfig := &tls.Config{
+			InsecureSkipVerify: false,
+		}
+		apiEndpoint, _ := other.GetAPIEndpoint(envConfig.Endpoint)
+		identityEndpoint, _, err := other.GetIdentityEndpoint(apiEndpoint)
+
+		trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
+		parts := strings.Split(trimmedEndpoint, ".")
+		if len(parts) < 4 {
+			return nil, fmt.Errorf("invalid endpoint format: %s", trimmedEndpoint)
 		}
 
-		if envPrefix == "" {
-			return nil, fmt.Errorf("environment prefix not found in URL: %s", envConfig.URL)
+		// Replace 'identity' with the converted service name
+		parts[0] = convertServiceNameToEndpoint(serviceName)
+
+		creds := credentials.NewTLS(tlsConfig)
+		conn, err = grpc.Dial(trimmedEndpoint, grpc.WithTransportCredentials(creds))
+		if err != nil {
+			return nil, fmt.Errorf("connection failed: %v", err)
 		}
 
-		endpointServiceName := convertServiceNameToEndpoint(serviceName)
-		hostPort = fmt.Sprintf("%s.api.%s.spaceone.dev:443", endpointServiceName, envPrefix)
-	}
-
-	tlsConfig := &tls.Config{
-		InsecureSkipVerify: false,
-	}
-	creds := credentials.NewTLS(tlsConfig)
-	conn, err := grpc.Dial(hostPort, grpc.WithTransportCredentials(creds))
-	if err != nil {
-		return nil, fmt.Errorf("connection failed: %v", err)
 	}
 	defer conn.Close()
 
