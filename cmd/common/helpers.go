@@ -180,24 +180,52 @@ func fetchVerbResourceMap(serviceName string, config *Config) (map[string][]stri
 			InsecureSkipVerify: false,
 		}
 		apiEndpoint, _ := other.GetAPIEndpoint(envConfig.Endpoint)
-		identityEndpoint, _, err := other.GetIdentityEndpoint(apiEndpoint)
+		identityEndpoint, hasIdentityService, err := other.GetIdentityEndpoint(apiEndpoint)
 
-		trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
-		parts := strings.Split(trimmedEndpoint, ".")
-		if len(parts) < 4 {
-			return nil, fmt.Errorf("invalid endpoint format: %s", trimmedEndpoint)
+		if !hasIdentityService {
+			// Get endpoints map first
+			endpointsMap, err := other.FetchEndpointsMap(apiEndpoint)
+			if err != nil {
+				return nil, fmt.Errorf("failed to fetch endpoints map: %v", err)
+			}
+
+			// Find the endpoint for the current service
+			endpoint, exists := endpointsMap[serviceName]
+			if !exists {
+				return nil, fmt.Errorf("endpoint not found for service: %s", serviceName)
+			}
+
+			// Parse the endpoint
+			parts := strings.Split(endpoint, "://")
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
+			}
+
+			// Extract hostPort (remove the /v1 suffix if present)
+			hostPort := strings.Split(parts[1], "/")[0]
+
+			creds := credentials.NewTLS(tlsConfig)
+			conn, err = grpc.Dial(hostPort, grpc.WithTransportCredentials(creds))
+			if err != nil {
+				return nil, fmt.Errorf("connection failed: %v", err)
+			}
+		} else {
+			trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
+			parts := strings.Split(trimmedEndpoint, ".")
+			if len(parts) < 4 {
+				return nil, fmt.Errorf("invalid endpoint format: %s", trimmedEndpoint)
+			}
+
+			// Replace 'identity' with the converted service name
+			parts[0] = convertServiceNameToEndpoint(serviceName)
+			serviceEndpoint := strings.Join(parts, ".")
+
+			creds := credentials.NewTLS(tlsConfig)
+			conn, err = grpc.Dial(serviceEndpoint, grpc.WithTransportCredentials(creds))
+			if err != nil {
+				return nil, fmt.Errorf("connection failed: %v", err)
+			}
 		}
-
-		// Replace 'identity' with the converted service name
-		parts[0] = convertServiceNameToEndpoint(serviceName)
-		serviceEndpoint := strings.Join(parts, ".")
-
-		creds := credentials.NewTLS(tlsConfig)
-		conn, err = grpc.Dial(serviceEndpoint, grpc.WithTransportCredentials(creds))
-		if err != nil {
-			return nil, fmt.Errorf("connection failed: %v", err)
-		}
-
 	}
 	defer conn.Close()
 

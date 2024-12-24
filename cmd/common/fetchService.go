@@ -177,6 +177,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 			os.Exit(1)
 		}
 
+		// TODO: Remove this once all services are migrated to new endpoint format
 		if !hasIdentityService {
 			hostPort = fmt.Sprintf("%s.kr1.api.spaceone.megazone.io:443", convertServiceNameToEndpoint(serviceName))
 		} else {
