@@ -70,89 +70,92 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
 
-	if config.Environment != "local" {
-		token := config.Environments[config.Environment].Token
-		if token == "" {
-			pterm.Error.Println("No token found for authentication.")
+	token := config.Environments[config.Environment].Token
+	if token == "" {
+		pterm.Error.Println("No token found for authentication.")
 
-			// Get current endpoint
-			endpoint := config.Environments[config.Environment].Endpoint
+		// Get current endpoint
+		endpoint := config.Environments[config.Environment].Endpoint
 
-			if strings.HasSuffix(config.Environment, "-app") {
-				// App environment message
-				headerBox := pterm.DefaultBox.WithTitle("App Guide").
-					WithTitleTopCenter().
-					WithRightPadding(4).
-					WithLeftPadding(4).
-					WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
+		if config.Environment == "local" {
+			// Local environment message
+			pterm.Info.Printf("Using endpoint: %s\n", endpoint)
+			return nil, nil
+		} else if strings.HasSuffix(config.Environment, "-app") {
+			// App environment message
+			headerBox := pterm.DefaultBox.WithTitle("App Guide").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4).
+				WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
 
-				appTokenExplain := "Please create a Domain Admin App in SpaceONE Console.\n" +
-					"This requires Domain Admin privilege.\n\n" +
-					"Or Please create a Workspace App in SpaceONE Console.\n" +
-					"This requires Workspace Owner privilege."
+			appTokenExplain := "Please create a Domain Admin App in SpaceONE Console.\n" +
+				"This requires Domain Admin privilege.\n\n" +
+				"Or Please create a Workspace App in SpaceONE Console.\n" +
+				"This requires Workspace Owner privilege."
 
-				pterm.Info.Printf("Using endpoint: %s\n", endpoint)
-				headerBox.Println(appTokenExplain)
-				fmt.Println()
+			pterm.Info.Printf("Using endpoint: %s\n", endpoint)
+			headerBox.Println(appTokenExplain)
+			fmt.Println()
 
-				steps := []string{
-					"1. Go to SpaceONE Console",
-					"2. Navigate to either 'Admin > App Page' or specific 'Workspace > App page'",
-					"3. Click 'Create' to create your App",
-					"4. Copy value of either 'client_secret' from Client ID or 'token' from Spacectl (CLI)",
-				}
-
-				yamlExample := pterm.DefaultBox.WithTitle("Config Example").
-					WithTitleTopCenter().
-					WithRightPadding(4).
-					WithLeftPadding(4).
-					Sprint(fmt.Sprintf("environment: %s\nenvironments:\n    %s:\n        endpoint: %s\n        proxy: true\n        token: %s",
-						currentEnv,
-						currentEnv,
-						endpoint,
-						pterm.FgLightCyan.Sprint("YOUR_COPIED_TOKEN")))
-
-				instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
-					WithTitleTopCenter().
-					WithRightPadding(4).
-					WithLeftPadding(4)
-
-				allSteps := append(steps,
-					fmt.Sprintf("5. Add the token under the proxy in your config file:\n%s", yamlExample),
-					"6. Run 'cfctl login' again")
-
-				instructionBox.Println(strings.Join(allSteps, "\n\n"))
-			} else {
-				// User environment message
-				headerBox := pterm.DefaultBox.WithTitle("Authentication Required").
-					WithTitleTopCenter().
-					WithRightPadding(4).
-					WithLeftPadding(4).
-					WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
-
-				authExplain := "Please login to SpaceONE Console first.\n" +
-					"This requires your SpaceONE credentials."
-
-				headerBox.Println(authExplain)
-				fmt.Println()
-
-				steps := []string{
-					"1. Run 'cfctl login'",
-					"2. Enter your credentials when prompted",
-					"3. Select your workspace",
-					"4. Try your command again",
-				}
-
-				instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
-					WithTitleTopCenter().
-					WithRightPadding(4).
-					WithLeftPadding(4)
-
-				instructionBox.Println(strings.Join(steps, "\n\n"))
+			steps := []string{
+				"1. Go to SpaceONE Console",
+				"2. Navigate to either 'Admin > App Page' or specific 'Workspace > App page'",
+				"3. Click 'Create' to create your App",
+				"4. Copy value of either 'client_secret' from Client ID or 'token' from Spacectl (CLI)",
 			}
 
-			return nil, nil
+			yamlExample := pterm.DefaultBox.WithTitle("Config Example").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4).
+				Sprint(fmt.Sprintf("environment: %s\nenvironments:\n    %s:\n        endpoint: %s\n        proxy: true\n        token: %s",
+					currentEnv,
+					currentEnv,
+					endpoint,
+					pterm.FgLightCyan.Sprint("YOUR_COPIED_TOKEN")))
+
+			instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4)
+
+			allSteps := append(steps,
+				fmt.Sprintf("5. Add the token under the proxy in your config file:\n%s", yamlExample),
+				"6. Run 'cfctl login' again")
+
+			instructionBox.Println(strings.Join(allSteps, "\n\n"))
+
+		} else if strings.HasSuffix(config.Environment, "-user") {
+			// User environment message
+			headerBox := pterm.DefaultBox.WithTitle("Authentication Required").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4).
+				WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan))
+
+			authExplain := "Please login to SpaceONE Console first.\n" +
+				"This requires your SpaceONE credentials."
+
+			headerBox.Println(authExplain)
+			fmt.Println()
+
+			steps := []string{
+				"1. Run 'cfctl login'",
+				"2. Enter your credentials when prompted",
+				"3. Select your workspace",
+				"4. Try your command again",
+			}
+
+			instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4)
+
+			instructionBox.Println(strings.Join(steps, "\n\n"))
 		}
+
+		return nil, nil
 	}
 
 	// Get hostPort based on environment prefix
@@ -360,6 +363,9 @@ func loadConfig() (*Config, error) {
 		}
 	} else if strings.HasSuffix(currentEnv, "-app") {
 		// For app environments, get token from main config
+		envConfig.Token = mainV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+	} else if currentEnv == "local" {
+		// For local environment, get token from main config
 		envConfig.Token = mainV.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
 	}
 
