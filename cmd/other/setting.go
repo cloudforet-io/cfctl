@@ -394,52 +394,87 @@ var showCmd = &cobra.Command{
 var settingEndpointCmd = &cobra.Command{
 	Use:   "endpoint",
 	Short: "Set the endpoint for the current environment",
-	Long: `Update the endpoint for the current environment based on the specified service.
-If the service is not 'identity', the proxy setting will be updated to false.
-
-Available Services are fetched dynamically from the backend.`,
+	Long: `Update the endpoint for the current environment.
+You can either specify a new endpoint URL directly or use the service-based endpoint update.`,
 	Run: func(cmd *cobra.Command, args []string) {
+		urlFlag, _ := cmd.Flags().GetString("url")
 		service, _ := cmd.Flags().GetString("service")
-		if service == "" {
-			// Create a new Viper instance for app setting
-			appV := viper.New()
 
-			// Load app configuration
-			settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
-			appV.SetConfigFile(settingPath)
-			appV.SetConfigType("yaml")
+		if urlFlag == "" && service == "" {
+			pterm.DefaultBox.
+				WithTitle("Required Flags").
+				WithTitleTopCenter().
+				WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
+				WithRightPadding(1).
+				WithLeftPadding(1).
+				Println("Please use one of the following flags:")
 
-			if err := loadSetting(appV, settingPath); err != nil {
-				pterm.Error.Println(err)
+			pterm.Info.Println("To update endpoint URL directly:")
+			pterm.Printf("  $ cfctl setting endpoint -u %s\n\n", pterm.FgLightCyan.Sprint("https://example.com"))
+
+			pterm.Info.Println("To update endpoint based on service:")
+			pterm.Printf("  $ cfctl setting endpoint -s %s\n\n", pterm.FgLightCyan.Sprint("identity"))
+
+			cmd.Help()
+			return
+		}
+
+		// Create a new Viper instance for app setting
+		appV := viper.New()
+
+		// Load app configuration
+		settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
+		appV.SetConfigFile(settingPath)
+		appV.SetConfigType("yaml")
+
+		if err := loadSetting(appV, settingPath); err != nil {
+			pterm.Error.Println(err)
+			return
+		}
+
+		currentEnv := getCurrentEnvironment(appV)
+		if currentEnv == "" {
+			pterm.Error.Println("No environment is set. Please initialize or switch to an environment.")
+			return
+		}
+
+		if urlFlag != "" {
+			// Update endpoint directly with URL
+			appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), urlFlag)
+			if err := appV.WriteConfig(); err != nil {
+				pterm.Error.Printf("Failed to update setting.yaml: %v\n", err)
 				return
 			}
+			pterm.Success.Printf("Updated endpoint for '%s' to '%s'.\n", currentEnv, urlFlag)
+			return
+		}
 
-			token, err := getToken(appV)
-			if err != nil {
-				currentEnv := getCurrentEnvironment(appV)
-				if strings.HasSuffix(currentEnv, "-app") {
-					// Parse environment name to extract service name and environment
-					parts := strings.Split(currentEnv, "-")
-					if len(parts) >= 3 {
-						envPrefix := parts[0]   // dev, stg
-						serviceName := parts[1] // cloudone, spaceone, etc.
-						url := fmt.Sprintf("https://%s.console.%s.spaceone.dev", serviceName, envPrefix)
-						settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
+		token, err := getToken(appV)
+		if err != nil {
+			currentEnv := getCurrentEnvironment(appV)
+			if strings.HasSuffix(currentEnv, "-app") {
+				// Parse environment name to extract service name and environment
+				parts := strings.Split(currentEnv, "-")
+				if len(parts) >= 3 {
+					envPrefix := parts[0]   // dev, stg
+					serviceName := parts[1] // cloudone, spaceone, etc.
+					url := fmt.Sprintf("https://%s.console.%s.spaceone.dev", serviceName, envPrefix)
+					settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
 
-						// Create header for the error message
-						//pterm.DefaultHeader.WithBackgroundStyle(pterm.NewStyle(pterm.BgRed)).WithMargin(10).Println("Token Not Found")
-						pterm.DefaultBox.
-							WithTitle("Token Not Found").
-							WithTitleTopCenter().
-							WithBoxStyle(pterm.NewStyle(pterm.FgWhite)).
-							WithRightPadding(1).
-							WithLeftPadding(1).
-							WithTopPadding(0).
-							WithBottomPadding(0).
-							Println("Please follow the instructions below to obtain an App Token.")
+					// Create header for the error message
+					//pterm.DefaultHeader.WithBackgroundStyle(pterm.NewStyle(pterm.BgRed)).WithMargin(10).Println("Token Not Found")
+					pterm.DefaultBox.
+						WithTitle("Token Not Found").
+						WithTitleTopCenter().
+						WithBoxStyle(pterm.NewStyle(pterm.FgWhite)).
+						WithRightPadding(1).
+						WithLeftPadding(1).
+						WithTopPadding(0).
+						WithBottomPadding(0).
+						Println("Please follow the instructions below to obtain an App Token.")
 
-						// Create a styled box with instructions
-						boxContent := fmt.Sprintf(`Please follow these steps to obtain an App Token:
+					// Create a styled box with instructions
+					boxContent := fmt.Sprintf(`Please follow these steps to obtain an App Token:
 
 1. Visit %s
 2. Go to Admin page or Workspace page
@@ -450,78 +485,70 @@ Available Services are fetched dynamically from the backend.`,
      Path: %s
      Environment: %s
      Field: "token"`,
-							pterm.FgLightCyan.Sprint(url),
-							pterm.FgLightYellow.Sprint(settingPath),
-							pterm.FgLightGreen.Sprint(currentEnv))
+						pterm.FgLightCyan.Sprint(url),
+						pterm.FgLightYellow.Sprint(settingPath),
+						pterm.FgLightGreen.Sprint(currentEnv))
 
-						// Print the box with instructions
-						pterm.DefaultBox.
-							WithTitle("Setup Instructions").
-							WithTitleTopCenter().
-							WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
-							// WithTextAlignment(pterm.TextAlignLeft).
-							Println(boxContent)
+					// Print the box with instructions
+					pterm.DefaultBox.
+						WithTitle("Setup Instructions").
+						WithTitleTopCenter().
+						WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
+						// WithTextAlignment(pterm.TextAlignLeft).
+						Println(boxContent)
 
-						// Print additional help message
-						pterm.Info.Println("After updating the token, please try your command again.")
+					// Print additional help message
+					pterm.Info.Println("After updating the token, please try your command again.")
 
-						return
-					}
-				} else if strings.HasSuffix(currentEnv, "-user") {
-					pterm.Error.Printf("No token found for environment '%s'. Please run 'cfctl login' to authenticate.\n", currentEnv)
-				} else {
-					pterm.Error.Println("Error retrieving token:", err)
+					return
 				}
-				return
+			} else if strings.HasSuffix(currentEnv, "-user") {
+				pterm.Error.Printf("No token found for environment '%s'. Please run 'cfctl login' to authenticate.\n", currentEnv)
+			} else {
+				pterm.Error.Println("Error retrieving token:", err)
 			}
-
-			pterm.Error.Println("Please specify a service using -s or --service.")
-			fmt.Println()
-
-			// Fetch and display available services
-			baseURL, err := getBaseURL(appV)
-			if err != nil {
-				pterm.Error.Println("Error retrieving base URL:", err)
-				return
-			}
-
-			services, err := fetchAvailableServices(baseURL, token)
-			if err != nil {
-				pterm.Error.Println("Error fetching available services:", err)
-				return
-			}
-
-			if len(services) == 0 {
-				pterm.Println("No available services found.")
-				return
-			}
-
-			var formattedServices []string
-			for _, service := range services {
-				if service == "identity" {
-					formattedServices = append(formattedServices, pterm.FgCyan.Sprintf("%s (proxy)", service))
-				} else {
-					formattedServices = append(formattedServices, pterm.FgDefault.Sprint(service))
-				}
-			}
-
-			pterm.DefaultBox.WithTitle("Available Services").
-				WithRightPadding(1).
-				WithLeftPadding(1).
-				WithTopPadding(0).
-				WithBottomPadding(0).
-				Println(strings.Join(formattedServices, "\n"))
 			return
 		}
 
-		// Create Viper instances for both app and cache settings
-		appV := viper.New()
-		cacheV := viper.New()
+		pterm.Error.Println("Please specify a service using -s or --service.")
+		fmt.Println()
 
-		// Load app configuration (for getting current environment)
-		settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
-		appV.SetConfigFile(settingPath)
-		appV.SetConfigType("yaml")
+		// Fetch and display available services
+		baseURL, err := getBaseURL(appV)
+		if err != nil {
+			pterm.Error.Println("Error retrieving base URL:", err)
+			return
+		}
+
+		services, err := fetchAvailableServices(baseURL, token)
+		if err != nil {
+			pterm.Error.Println("Error fetching available services:", err)
+			return
+		}
+
+		if len(services) == 0 {
+			pterm.Println("No available services found.")
+			return
+		}
+
+		var formattedServices []string
+		for _, service := range services {
+			if service == "identity" {
+				formattedServices = append(formattedServices, pterm.FgCyan.Sprintf("%s (proxy)", service))
+			} else {
+				formattedServices = append(formattedServices, pterm.FgDefault.Sprint(service))
+			}
+		}
+
+		pterm.DefaultBox.WithTitle("Available Services").
+			WithRightPadding(1).
+			WithLeftPadding(1).
+			WithTopPadding(0).
+			WithBottomPadding(0).
+			Println(strings.Join(formattedServices, "\n"))
+
+		// Create Viper instances for both app and cache settings
+		cacheV := viper.New()
 
 		// Load cache configuration
 		cachePath := filepath.Join(GetSettingDir(), "cache", "setting.yaml")
@@ -533,7 +560,7 @@ Available Services are fetched dynamically from the backend.`,
 			return
 		}
 
-		currentEnv := getCurrentEnvironment(appV)
+		currentEnv = getCurrentEnvironment(appV)
 		if currentEnv == "" {
 			pterm.Error.Println("No environment is set. Please initialize or switch to an environment.")
 			return
@@ -820,14 +847,21 @@ func getBaseURL(v *viper.Viper) (string, error) {
 func getToken(v *viper.Viper) (string, error) {
 	currentEnv := getCurrentEnvironment(v)
 	if currentEnv == "" {
-		return "", fmt.Errorf("no environment is set")
+		return "", fmt.Errorf("no environment selected")
 	}
 
-	token := v.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
-	if token == "" {
-		return "", fmt.Errorf("no token found for environment '%s'", currentEnv)
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("failed to get home directory: %v", err)
 	}
-	return token, nil
+
+	tokenPath := filepath.Join(homeDir, ".cfctl", "cache", currentEnv, "access_token")
+	tokenBytes, err := os.ReadFile(tokenPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read token: %v", err)
+	}
+
+	return strings.TrimSpace(string(tokenBytes)), nil
 }
 
 // GetSettingDir returns the directory where setting file are stored
@@ -1081,6 +1115,7 @@ func constructEndpoint(baseURL string) (string, error) {
 func init() {
 	SettingCmd.AddCommand(settingInitCmd)
 	SettingCmd.AddCommand(envCmd)
+	SettingCmd.AddCommand(settingEndpointCmd)
 	SettingCmd.AddCommand(showCmd)
 	settingInitCmd.AddCommand(settingInitEndpointCmd)
 	settingInitCmd.AddCommand(settingInitLocalCmd)
@@ -1094,5 +1129,6 @@ func init() {
 
 	showCmd.Flags().StringP("output", "o", "yaml", "Output format (yaml/json)")
 
+	settingEndpointCmd.Flags().StringP("url", "u", "", "Direct URL to set as endpoint")
 	settingEndpointCmd.Flags().StringP("service", "s", "", "Service to set the endpoint for")
 }
