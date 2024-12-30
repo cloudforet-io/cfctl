@@ -1,11 +1,13 @@
 package other
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -399,6 +401,81 @@ You can either specify a new endpoint URL directly or use the service-based endp
 	Run: func(cmd *cobra.Command, args []string) {
 		urlFlag, _ := cmd.Flags().GetString("url")
 		service, _ := cmd.Flags().GetString("service")
+		listFlag, _ := cmd.Flags().GetBool("list")
+
+		// Create a new Viper instance for app setting
+		appV := viper.New()
+		settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
+		appV.SetConfigFile(settingPath)
+		appV.SetConfigType("yaml")
+
+		if err := loadSetting(appV, settingPath); err != nil {
+			pterm.Error.Println(err)
+			return
+		}
+
+		currentEnv := getCurrentEnvironment(appV)
+		if currentEnv == "" {
+			pterm.Error.Println("No environment is set. Please initialize or switch to an environment.")
+			return
+		}
+
+		endpoint, err := getEndpoint(appV)
+		if err != nil {
+			pterm.Error.Println("Error retrieving endpoint:", err)
+			return
+		}
+
+		// Get identity service endpoint
+		apiEndpoint, err := GetAPIEndpoint(endpoint)
+		if err != nil {
+			pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
+			return
+		}
+
+		identityEndpoint, hasIdentityService, err := GetIdentityEndpoint(apiEndpoint)
+		if err != nil {
+			pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
+			return
+		}
+		restIdentityEndpoint := apiEndpoint + "/identity"
+
+		// If list flag is provided, only show available services
+		if listFlag {
+			token, err := getToken(appV)
+			if err != nil {
+				pterm.Error.Println("Error retrieving token:", err)
+				return
+			}
+
+			services, err := fetchAvailableServices(endpoint, identityEndpoint, restIdentityEndpoint, hasIdentityService, token)
+			if err != nil {
+				pterm.Error.Println("Error fetching available services:", err)
+				return
+			}
+
+			if len(services) == 0 {
+				pterm.Println("No available services found.")
+				return
+			}
+
+			var formattedServices []string
+			for _, service := range services {
+				if service == "identity" {
+					formattedServices = append(formattedServices, pterm.FgCyan.Sprintf("%s (proxy)", service))
+				} else {
+					formattedServices = append(formattedServices, pterm.FgDefault.Sprint(service))
+				}
+			}
+
+			pterm.DefaultBox.WithTitle("Available Services").
+				WithRightPadding(1).
+				WithLeftPadding(1).
+				WithTopPadding(0).
+				WithBottomPadding(0).
+				Println(strings.Join(formattedServices, "\n"))
+			return
+		}
 
 		if urlFlag == "" && service == "" {
 			pterm.DefaultBox.
@@ -419,25 +496,6 @@ You can either specify a new endpoint URL directly or use the service-based endp
 			return
 		}
 
-		// Create a new Viper instance for app setting
-		appV := viper.New()
-
-		// Load app configuration
-		settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
-		appV.SetConfigFile(settingPath)
-		appV.SetConfigType("yaml")
-
-		if err := loadSetting(appV, settingPath); err != nil {
-			pterm.Error.Println(err)
-			return
-		}
-
-		currentEnv := getCurrentEnvironment(appV)
-		if currentEnv == "" {
-			pterm.Error.Println("No environment is set. Please initialize or switch to an environment.")
-			return
-		}
-
 		if urlFlag != "" {
 			// Update endpoint directly with URL
 			appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), urlFlag)
@@ -450,77 +508,7 @@ You can either specify a new endpoint URL directly or use the service-based endp
 		}
 
 		token, err := getToken(appV)
-		if err != nil {
-			currentEnv := getCurrentEnvironment(appV)
-			if strings.HasSuffix(currentEnv, "-app") {
-				// Parse environment name to extract service name and environment
-				parts := strings.Split(currentEnv, "-")
-				if len(parts) >= 3 {
-					envPrefix := parts[0]   // dev, stg
-					serviceName := parts[1] // cloudone, spaceone, etc.
-					url := fmt.Sprintf("https://%s.console.%s.spaceone.dev", serviceName, envPrefix)
-					settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
-
-					// Create header for the error message
-					//pterm.DefaultHeader.WithBackgroundStyle(pterm.NewStyle(pterm.BgRed)).WithMargin(10).Println("Token Not Found")
-					pterm.DefaultBox.
-						WithTitle("Token Not Found").
-						WithTitleTopCenter().
-						WithBoxStyle(pterm.NewStyle(pterm.FgWhite)).
-						WithRightPadding(1).
-						WithLeftPadding(1).
-						WithTopPadding(0).
-						WithBottomPadding(0).
-						Println("Please follow the instructions below to obtain an App Token.")
-
-					// Create a styled box with instructions
-					boxContent := fmt.Sprintf(`Please follow these steps to obtain an App Token:
-
-1. Visit %s
-2. Go to Admin page or Workspace page
-3. Navigate to the App page
-4. Click [Create] button
-5. Copy the generated App Token
-6. Update your settings:
-     Path: %s
-     Environment: %s
-     Field: "token"`,
-						pterm.FgLightCyan.Sprint(url),
-						pterm.FgLightYellow.Sprint(settingPath),
-						pterm.FgLightGreen.Sprint(currentEnv))
-
-					// Print the box with instructions
-					pterm.DefaultBox.
-						WithTitle("Setup Instructions").
-						WithTitleTopCenter().
-						WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
-						// WithTextAlignment(pterm.TextAlignLeft).
-						Println(boxContent)
-
-					// Print additional help message
-					pterm.Info.Println("After updating the token, please try your command again.")
-
-					return
-				}
-			} else if strings.HasSuffix(currentEnv, "-user") {
-				pterm.Error.Printf("No token found for environment '%s'. Please run 'cfctl login' to authenticate.\n", currentEnv)
-			} else {
-				pterm.Error.Println("Error retrieving token:", err)
-			}
-			return
-		}
-
-		pterm.Error.Println("Please specify a service using -s or --service.")
-		fmt.Println()
-
-		// Fetch and display available services
-		baseURL, err := getBaseURL(appV)
-		if err != nil {
-			pterm.Error.Println("Error retrieving base URL:", err)
-			return
-		}
-
-		services, err := fetchAvailableServices(baseURL, token)
+		services, err := fetchAvailableServices(endpoint, identityEndpoint, restIdentityEndpoint, hasIdentityService, token)
 		if err != nil {
 			pterm.Error.Println("Error fetching available services:", err)
 			return
@@ -668,147 +656,173 @@ This command only works with app environments (-app suffix).`,
 }
 
 // fetchAvailableServices retrieves the list of services by calling the List method on the Endpoint service.
-func fetchAvailableServices(endpoint, token string) ([]string, error) {
-	if !strings.Contains(endpoint, "identity.api") {
-		parts := strings.Split(endpoint, "://")
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
+func fetchAvailableServices(endpoint, identityEndpoint, restIdentityEndpoint string, hasIdentityEndpoint bool, token string) ([]string, error) {
+	if !hasIdentityEndpoint {
+		// Create HTTP client and request
+		client := &http.Client{}
+
+		// Define response structure
+		type EndpointResponse struct {
+			Results []struct {
+				Service string `json:"service"`
+			} `json:"results"`
 		}
 
-		hostParts := strings.Split(parts[1], ".")
-		if len(hostParts) < 4 {
-			return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
-		}
-		env := hostParts[2]
-
-		endpoint = fmt.Sprintf("grpc+ssl://identity.api.%s.spaceone.dev:443", env)
-	}
-
-	parsedURL, err := url.Parse(endpoint)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse endpoint: %w", err)
-	}
-
-	host := parsedURL.Hostname()
-	port := parsedURL.Port()
-	if port == "" {
-		port = "443" // Default gRPC port
-	}
-
-	var opts []grpc.DialOption
-
-	// Set up TLS credentials if the scheme is grpc+ssl://
-	if strings.HasPrefix(endpoint, "grpc+ssl://") {
-		tlsSetting := &tls.Config{
-			InsecureSkipVerify: false, // Set to true only if you want to skip TLS verification (not recommended)
-		}
-		creds := credentials.NewTLS(tlsSetting)
-		opts = append(opts, grpc.WithTransportCredentials(creds))
-	} else {
-		return nil, fmt.Errorf("unsupported scheme in endpoint: %s", endpoint)
-	}
-
-	// Add token-based authentication if a token is provided
-	if token != "" {
-		opts = append(opts, grpc.WithPerRPCCredentials(&tokenCreds{token}))
-	}
-
-	// Establish a connection to the gRPC server
-	conn, err := grpc.Dial(fmt.Sprintf("%s:%s", host, port), opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dial gRPC endpoint: %w", err)
-	}
-	defer conn.Close()
-
-	ctx := context.Background()
-
-	// Create a reflection client to discover services and methods
-	refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
-	defer refClient.Reset()
-
-	// Resolve the service descriptor for "spaceone.api.identity.v2.Endpoint"
-	serviceName := "spaceone.api.identity.v2.Endpoint"
-	svcDesc, err := refClient.ResolveService(serviceName)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve service %s: %w", serviceName, err)
-	}
-
-	// Resolve the method descriptor for the "List" method
-	methodName := "list"
-	methodDesc := svcDesc.FindMethodByName(methodName)
-	if methodDesc == nil {
-		return nil, fmt.Errorf("method '%s' not found in service '%s'", methodName, serviceName)
-	}
-
-	inputType := methodDesc.GetInputType()
-	if inputType == nil {
-		return nil, fmt.Errorf("input type not found for method '%s'", methodName)
-	}
-
-	// Get the request and response message descriptors
-	reqDesc := methodDesc.GetInputType()
-	respDesc := methodDesc.GetOutputType()
-
-	// Create a dynamic message for the request
-	reqMsg := dynamic.NewMessage(reqDesc)
-	// If ListRequest has required fields, set them here. For example:
-	// reqMsg.SetField("page_size", 100)
-
-	// Create a dynamic message for the response
-	respMsg := dynamic.NewMessage(respDesc)
-
-	// Invoke the RPC method
-	//err = grpc.Invoke(ctx, fmt.Sprintf("/%s/%s", serviceName, methodName), reqMsg, conn, respMsg)
-	err = conn.Invoke(ctx, fmt.Sprintf("/%s/%s", serviceName, methodName), reqMsg, respMsg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to invoke RPC: %w", err)
-	}
-
-	// Extract the 'results' field from the response message
-	resultsFieldDesc := respDesc.FindFieldByName("results")
-	if resultsFieldDesc == nil {
-		return nil, fmt.Errorf("'results' field not found in response message")
-	}
-
-	resultsField, err := respMsg.TryGetField(resultsFieldDesc)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get 'results' field: %w", err)
-	}
-
-	// 'results' is expected to be a repeated field (list) of messages
-	resultsSlice, ok := resultsField.([]interface{})
-	if !ok {
-		return nil, fmt.Errorf("'results' field is not a list")
-	}
-
-	var availableServices []string
-	for _, res := range resultsSlice {
-		// Each item in 'results' should be a dynamic.Message
-		resMsg, ok := res.(*dynamic.Message)
-		if !ok {
-			continue
-		}
-
-		// Extract the 'service' field from each result message
-		serviceFieldDesc := resMsg.GetMessageDescriptor().FindFieldByName("service")
-		if serviceFieldDesc == nil {
-			continue // Skip if 'service' field is not found
-		}
-
-		serviceField, err := resMsg.TryGetField(serviceFieldDesc)
+		// Create and send request
+		req, err := http.NewRequest("POST", restIdentityEndpoint+"/endpoint/list", bytes.NewBuffer([]byte("{}")))
 		if err != nil {
-			continue // Skip if unable to get the 'service' field
+			return nil, fmt.Errorf("failed to create request: %v", err)
 		}
 
-		serviceStr, ok := serviceField.(string)
+		req.Header.Set("accept", "application/json")
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return nil, fmt.Errorf("failed to send request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		// Parse response
+		var response EndpointResponse
+		if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+			return nil, fmt.Errorf("failed to decode response: %v", err)
+		}
+
+		// Extract services
+		var availableServices []string
+		for _, result := range response.Results {
+			availableServices = append(availableServices, result.Service)
+		}
+
+		return availableServices, nil
+	} else {
+		parsedURL, err := url.Parse(identityEndpoint)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse endpoint: %w", err)
+		}
+
+		host := parsedURL.Hostname()
+		port := parsedURL.Port()
+		if port == "" {
+			port = "443" // Default gRPC port
+		}
+
+		var opts []grpc.DialOption
+
+		// Set up TLS credentials if the scheme is grpc+ssl://
+		if strings.HasPrefix(identityEndpoint, "grpc+ssl://") {
+			tlsSetting := &tls.Config{
+				InsecureSkipVerify: false, // Set to true only if you want to skip TLS verification (not recommended)
+			}
+			creds := credentials.NewTLS(tlsSetting)
+			opts = append(opts, grpc.WithTransportCredentials(creds))
+		} else {
+			return nil, fmt.Errorf("unsupported scheme in endpoint: %s", identityEndpoint)
+		}
+
+		// Add token-based authentication if a token is provided
+		if token != "" {
+			opts = append(opts, grpc.WithPerRPCCredentials(&tokenCreds{token}))
+		}
+
+		// Establish a connection to the gRPC server
+		conn, err := grpc.Dial(fmt.Sprintf("%s:%s", host, port), opts...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to dial gRPC endpoint: %w", err)
+		}
+		defer conn.Close()
+
+		ctx := context.Background()
+
+		// Create a reflection client to discover services and methods
+		refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+		defer refClient.Reset()
+
+		// Resolve the service descriptor for "spaceone.api.identity.v2.Endpoint"
+		serviceName := "spaceone.api.identity.v2.Endpoint"
+		svcDesc, err := refClient.ResolveService(serviceName)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve service %s: %w", serviceName, err)
+		}
+
+		// Resolve the method descriptor for the "List" method
+		methodName := "list"
+		methodDesc := svcDesc.FindMethodByName(methodName)
+		if methodDesc == nil {
+			return nil, fmt.Errorf("method '%s' not found in service '%s'", methodName, serviceName)
+		}
+
+		inputType := methodDesc.GetInputType()
+		if inputType == nil {
+			return nil, fmt.Errorf("input type not found for method '%s'", methodName)
+		}
+
+		// Get the request and response message descriptors
+		reqDesc := methodDesc.GetInputType()
+		respDesc := methodDesc.GetOutputType()
+
+		// Create a dynamic message for the request
+		reqMsg := dynamic.NewMessage(reqDesc)
+		// If ListRequest has required fields, set them here. For example:
+		// reqMsg.SetField("page_size", 100)
+
+		// Create a dynamic message for the response
+		respMsg := dynamic.NewMessage(respDesc)
+
+		// Invoke the RPC method
+		//err = grpc.Invoke(ctx, fmt.Sprintf("/%s/%s", serviceName, methodName), reqMsg, conn, respMsg)
+		err = conn.Invoke(ctx, fmt.Sprintf("/%s/%s", serviceName, methodName), reqMsg, respMsg)
+		if err != nil {
+			return nil, fmt.Errorf("failed to invoke RPC: %w", err)
+		}
+
+		// Extract the 'results' field from the response message
+		resultsFieldDesc := respDesc.FindFieldByName("results")
+		if resultsFieldDesc == nil {
+			return nil, fmt.Errorf("'results' field not found in response message")
+		}
+
+		resultsField, err := respMsg.TryGetField(resultsFieldDesc)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get 'results' field: %w", err)
+		}
+
+		// 'results' is expected to be a repeated field (list) of messages
+		resultsSlice, ok := resultsField.([]interface{})
 		if !ok {
-			continue // Skip if 'service' field is not a string
+			return nil, fmt.Errorf("'results' field is not a list")
 		}
 
-		availableServices = append(availableServices, serviceStr)
-	}
+		var availableServices []string
+		for _, res := range resultsSlice {
+			// Each item in 'results' should be a dynamic.Message
+			resMsg, ok := res.(*dynamic.Message)
+			if !ok {
+				continue
+			}
 
-	return availableServices, nil
+			// Extract the 'service' field from each result message
+			serviceFieldDesc := resMsg.GetMessageDescriptor().FindFieldByName("service")
+			if serviceFieldDesc == nil {
+				continue // Skip if 'service' field is not found
+			}
+
+			serviceField, err := resMsg.TryGetField(serviceFieldDesc)
+			if err != nil {
+				continue // Skip if unable to get the 'service' field
+			}
+
+			serviceStr, ok := serviceField.(string)
+			if !ok {
+				continue // Skip if 'service' field is not a string
+			}
+
+			availableServices = append(availableServices, serviceStr)
+		}
+
+		return availableServices, nil
+	}
 }
 
 // tokenCreds implements grpc.PerRPCCredentials for token-based authentication.
@@ -827,7 +841,7 @@ func (t *tokenCreds) RequireTransportSecurity() bool {
 }
 
 // getBaseURL retrieves the base URL for the current environment from the given Viper instance.
-func getBaseURL(v *viper.Viper) (string, error) {
+func getEndpoint(v *viper.Viper) (string, error) {
 	currentEnv := getCurrentEnvironment(v)
 	if currentEnv == "" {
 		return "", fmt.Errorf("no environment is set")
@@ -1131,4 +1145,5 @@ func init() {
 
 	settingEndpointCmd.Flags().StringP("url", "u", "", "Direct URL to set as endpoint")
 	settingEndpointCmd.Flags().StringP("service", "s", "", "Service to set the endpoint for")
+	settingEndpointCmd.Flags().BoolP("list", "l", false, "List available services")
 }
