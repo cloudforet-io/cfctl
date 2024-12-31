@@ -162,24 +162,37 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 	// Get hostPort based on environment prefix
 	var hostPort string
+	var apiEndpoint string
+	var identityEndpoint string
+	var hasIdentityService bool
 	if config.Environment == "local" {
 		hostPort = strings.TrimPrefix(config.Environments[config.Environment].Endpoint, "grpc://")
 	} else {
-		apiEndpoint, err := other.GetAPIEndpoint(config.Environments[config.Environment].Endpoint)
+		apiEndpoint, err = other.GetAPIEndpoint(config.Environments[config.Environment].Endpoint)
 		if err != nil {
 			pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
 			os.Exit(1)
 		}
 		// Get identity service endpoint
-		identityEndpoint, hasIdentityService, err := other.GetIdentityEndpoint(apiEndpoint)
+		identityEndpoint, hasIdentityService, err = other.GetIdentityEndpoint(apiEndpoint)
 		if err != nil {
 			pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 			os.Exit(1)
 		}
 
-		// TODO: Remove this once all services are migrated to new endpoint format
 		if !hasIdentityService {
-			hostPort = fmt.Sprintf("%s.kr1.api.spaceone.megazone.io:443", convertServiceNameToEndpoint(serviceName))
+			urlParts := strings.Split(apiEndpoint, "//")
+			if len(urlParts) != 2 {
+				return nil, fmt.Errorf("invalid API endpoint format: %s", apiEndpoint)
+			}
+
+			domainParts := strings.Split(urlParts[1], ".")
+			if len(domainParts) < 4 {
+				return nil, fmt.Errorf("invalid domain format in API endpoint: %s", apiEndpoint)
+			}
+
+			domainParts[0] = convertServiceNameToEndpoint(serviceName)
+			hostPort = strings.Join(domainParts, ".") + ":443"
 		} else {
 			trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
 			parts := strings.Split(trimmedEndpoint, ".")
@@ -223,7 +236,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	defer refClient.Reset()
 
 	// Call the service
-	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options)
+	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options, apiEndpoint, identityEndpoint, hasIdentityService)
 	if err != nil {
 		// Check if the error is about missing required parameters
 		if strings.Contains(err.Error(), "ERROR_REQUIRED_PARAMETER") {
@@ -392,7 +405,7 @@ func loadConfig() (*Config, error) {
 	}, nil
 }
 
-func fetchJSONResponse(config *Config, serviceName string, verb string, resourceName string, options *FetchOptions) ([]byte, error) {
+func fetchJSONResponse(config *Config, serviceName string, verb string, resourceName string, options *FetchOptions, apiEndpoint, identityEndpoint string, hasIdentityService bool) ([]byte, error) {
 	var conn *grpc.ClientConn
 	var err error
 	var hostPort string
@@ -413,8 +426,20 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 			return nil, fmt.Errorf("connection failed: unable to connect to local server: %v", err)
 		}
 	} else {
-		if strings.Contains(config.Environments[config.Environment].URL, "megazone.io") {
-			hostPort = fmt.Sprintf("%s.kr1.api.spaceone.megazone.io:443", convertServiceNameToEndpoint(serviceName))
+		if !hasIdentityService {
+			urlParts := strings.Split(apiEndpoint, "//")
+			if len(urlParts) != 2 {
+				return nil, fmt.Errorf("invalid API endpoint format: %s", apiEndpoint)
+			}
+
+			domainParts := strings.Split(urlParts[1], ".")
+			if len(domainParts) < 4 {
+				return nil, fmt.Errorf("invalid domain format in API endpoint: %s", apiEndpoint)
+			}
+
+			domainParts[0] = convertServiceNameToEndpoint(serviceName)
+
+			hostPort = strings.Join(domainParts, ".") + ":443"
 		} else {
 			var envPrefix string
 			urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
