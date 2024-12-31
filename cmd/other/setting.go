@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"google.golang.org/grpc/credentials/insecure"
 	"log"
 	"net/http"
 	"net/url"
@@ -27,6 +28,12 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
+
+type ServiceEndpoint struct {
+	Name     string `json:"name"`
+	Service  string `json:"service"`
+	Endpoint string `json:"endpoint"`
+}
 
 // SettingCmd represents the setting command
 var SettingCmd = &cobra.Command{
@@ -426,19 +433,48 @@ You can either specify a new endpoint URL directly or use the service-based endp
 			return
 		}
 
-		// Get identity service endpoint
-		apiEndpoint, err := GetAPIEndpoint(endpoint)
-		if err != nil {
-			pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
+		if urlFlag != "" {
+			if strings.HasSuffix(currentEnv, "-app") {
+				pterm.Error.Println("Direct URL endpoint update is not available for user environment.")
+				pterm.Info.Println("Please use the service flag (-s) instead.")
+				return
+			}
+
+			// Handle protocol for endpoint
+			if !strings.HasPrefix(urlFlag, "http://") && !strings.HasPrefix(urlFlag, "https://") {
+				urlFlag = "https://" + urlFlag
+			} else if strings.HasPrefix(urlFlag, "http://") {
+				urlFlag = "https://" + strings.TrimPrefix(urlFlag, "http://")
+			}
+
+			// Update endpoint directly with URL
+			appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), urlFlag)
+			appV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
+
+			if err := appV.WriteConfig(); err != nil {
+				pterm.Error.Printf("Failed to update setting.yaml: %v\n", err)
+				return
+			}
+			pterm.Success.Printf("Updated endpoint for '%s' to '%s'.\n", currentEnv, urlFlag)
 			return
 		}
 
-		identityEndpoint, hasIdentityService, err := GetIdentityEndpoint(apiEndpoint)
-		if err != nil {
-			pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
-			return
+		var identityEndpoint, restIdentityEndpoint string
+		var hasIdentityService bool
+		if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+			apiEndpoint, err := GetAPIEndpoint(endpoint)
+			if err != nil {
+				pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
+				return
+			}
+
+			identityEndpoint, hasIdentityService, err = GetIdentityEndpoint(apiEndpoint)
+			if err != nil {
+				pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
+				return
+			}
+			restIdentityEndpoint = apiEndpoint + "/identity"
 		}
-		restIdentityEndpoint := apiEndpoint + "/identity"
 
 		// If list flag is provided, only show available services
 		if listFlag {
@@ -448,163 +484,358 @@ You can either specify a new endpoint URL directly or use the service-based endp
 				return
 			}
 
-			services, err := fetchAvailableServices(endpoint, identityEndpoint, restIdentityEndpoint, hasIdentityService, token)
-			if err != nil {
-				pterm.Error.Println("Error fetching available services:", err)
-				return
-			}
+			isProxy := appV.GetBool(fmt.Sprintf("environments.%s.proxy", currentEnv))
 
-			if len(services) == 0 {
-				pterm.Println("No available services found.")
-				return
-			}
+			if strings.HasPrefix(endpoint, "grpc://") || strings.HasPrefix(endpoint, "grpc+ssl://") {
+				if !isProxy {
+					pterm.Error.Println("Service listing is only available when proxy is enabled.")
+					pterm.DefaultBox.WithTitle("Available Options").
+						WithTitleTopCenter().
+						WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
+						WithRightPadding(1).
+						WithLeftPadding(1).
+						Println("Update endpoint to use identity service:\n" +
+							"   $ cfctl setting endpoint -s identity\n" +
+							"                   Or\n" +
+							"Update endpoint with a valid console URL:\n" +
+							"   $ cfctl setting endpoint -u example.com")
+					return
+				}
 
-			var formattedServices []string
-			for _, service := range services {
-				if service == "identity" {
-					formattedServices = append(formattedServices, pterm.FgCyan.Sprintf("%s (proxy)", service))
+				var endpoints map[string]string
+				parts := strings.Split(endpoint, "/")
+				endpoint = strings.Join(parts[:len(parts)-1], "/")
+				parts = strings.Split(endpoint, "://")
+				if len(parts) != 2 {
+					fmt.Errorf("invalid endpoint format: %s", endpoint)
+				}
+
+				scheme := parts[0]
+				hostPort := parts[1]
+
+				// Configure gRPC connection based on scheme
+				var opts []grpc.DialOption
+				if scheme == "grpc+ssl" {
+					tlsConfig := &tls.Config{
+						InsecureSkipVerify: false, // Enable server certificate verification
+					}
+					creds := credentials.NewTLS(tlsConfig)
+					opts = append(opts, grpc.WithTransportCredentials(creds))
 				} else {
-					formattedServices = append(formattedServices, pterm.FgDefault.Sprint(service))
+					opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+				}
+
+				// Establish the connection
+				conn, err := grpc.Dial(hostPort, opts...)
+				if err != nil {
+					fmt.Errorf("connection failed: unable to connect to %s: %v", endpoint, err)
+				}
+				defer conn.Close()
+
+				// Use Reflection to discover services
+				refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+				defer refClient.Reset()
+
+				// Resolve the service and method
+				serviceName := "spaceone.api.identity.v2.Endpoint"
+				methodName := "list"
+
+				serviceDesc, err := refClient.ResolveService(serviceName)
+				if err != nil {
+					fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
+				}
+
+				methodDesc := serviceDesc.FindMethodByName(methodName)
+				if methodDesc == nil {
+					fmt.Errorf("method not found: %s", methodName)
+				}
+
+				// Dynamically create the request message
+				reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
+
+				// Set "query" field (optional)
+				queryField := methodDesc.GetInputType().FindFieldByName("query")
+				if queryField != nil && queryField.GetMessageType() != nil {
+					queryMsg := dynamic.NewMessage(queryField.GetMessageType())
+					// Set additional query fields here if needed
+					reqMsg.SetFieldByName("query", queryMsg)
+				}
+
+				// Prepare an empty response message
+				respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
+
+				// Full method name
+				fullMethod := fmt.Sprintf("/%s/%s", serviceName, methodName)
+
+				// Invoke the gRPC method
+				err = conn.Invoke(context.Background(), fullMethod, reqMsg, respMsg)
+				if err != nil {
+					fmt.Errorf("failed to invoke method %s: %v", fullMethod, err)
+				}
+
+				// Process the response to extract `service` and `endpoint`
+				endpoints = make(map[string]string)
+				resultsField := respMsg.FindFieldDescriptorByName("results")
+				if resultsField == nil {
+					fmt.Errorf("'results' field not found in response")
+				}
+
+				results := respMsg.GetField(resultsField).([]interface{})
+				var formattedServices []string
+				for _, result := range results {
+					resultMsg := result.(*dynamic.Message)
+					serviceName := resultMsg.GetFieldByName("service").(string)
+					serviceEndpoint := resultMsg.GetFieldByName("endpoint").(string)
+					endpoints[serviceName] = serviceEndpoint
+
+					if serviceName == "identity" {
+						formattedServices = append(formattedServices, pterm.FgCyan.Sprintf("%s (proxy)", serviceName))
+					} else {
+						formattedServices = append(formattedServices, pterm.FgDefault.Sprint(serviceName))
+					}
+				}
+
+				pterm.DefaultBox.WithTitle("Available Services").
+					WithRightPadding(1).
+					WithLeftPadding(1).
+					WithTopPadding(0).
+					WithBottomPadding(0).
+					Println(strings.Join(formattedServices, "\n"))
+			} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+				services, err := fetchAvailableServices(identityEndpoint, restIdentityEndpoint, hasIdentityService, token)
+				if err != nil {
+					pterm.Error.Println("Error fetching available services:", err)
+					return
+				}
+
+				if len(services) == 0 {
+					pterm.Println("No available services found.")
+					return
+				}
+
+				var formattedServices []string
+				for _, service := range services {
+					if service == "identity" {
+						formattedServices = append(formattedServices, pterm.FgCyan.Sprintf("%s (proxy)", service))
+					} else {
+						formattedServices = append(formattedServices, pterm.FgDefault.Sprint(service))
+					}
+				}
+
+				pterm.DefaultBox.WithTitle("Available Services").
+					WithRightPadding(1).
+					WithLeftPadding(1).
+					WithTopPadding(0).
+					WithBottomPadding(0).
+					Println(strings.Join(formattedServices, "\n"))
+				return
+			}
+		} else if urlFlag == "" && service == "" {
+			if !hasIdentityService {
+				pterm.DefaultBox.
+					WithTitle("Required Flags").
+					WithTitleTopCenter().
+					WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
+					WithRightPadding(1).
+					WithLeftPadding(1).
+					Println("Please use the following flag")
+
+				pterm.Info.Println("To update endpoint URL directly:")
+				pterm.Printf("  $ cfctl setting endpoint -u %s\n\n", pterm.FgLightCyan.Sprint("https://example.com"))
+
+				cmd.Help()
+				return
+			} else {
+				pterm.DefaultBox.
+					WithTitle("Required Flags").
+					WithTitleTopCenter().
+					WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
+					WithRightPadding(1).
+					WithLeftPadding(1).
+					Println("Please use one of the following flags:")
+
+				pterm.Info.Println("To update endpoint URL directly:")
+				pterm.Printf("  $ cfctl setting endpoint -u %s\n\n", pterm.FgLightCyan.Sprint("https://example.com"))
+
+				pterm.Info.Println("To update endpoint based on service:")
+				pterm.Printf("  $ cfctl setting endpoint -s %s\n\n", pterm.FgLightCyan.Sprint("identity"))
+
+				cmd.Help()
+				return
+			}
+		}
+
+		// Handle service flag
+		if service != "" {
+			var endpoints map[string]string
+
+			if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+				// HTTP/HTTPS endpoint case
+				client := &http.Client{}
+				req, err := http.NewRequest("POST", restIdentityEndpoint+"/endpoint/list", bytes.NewBuffer([]byte("{}")))
+				if err != nil {
+					pterm.Error.Printf("Failed to create request: %v\n", err)
+					return
+				}
+
+				req.Header.Set("accept", "application/json")
+				req.Header.Set("Content-Type", "application/json")
+
+				resp, err := client.Do(req)
+				if err != nil {
+					pterm.Error.Printf("Failed to send request: %v\n", err)
+					return
+				}
+				defer resp.Body.Close()
+
+				var response struct {
+					Results []ServiceEndpoint `json:"results"`
+				}
+				if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+					pterm.Error.Printf("Failed to decode response: %v\n", err)
+					return
+				}
+
+				endpoints = make(map[string]string)
+				for _, svc := range response.Results {
+					endpoints[svc.Service] = svc.Endpoint
+				}
+			} else if (strings.HasPrefix(endpoint, "grpc://") || strings.HasPrefix(endpoint, "grpc+ssl://")) && !hasIdentityService {
+				// Parse the endpoint
+				parts := strings.Split(endpoint, "/")
+				endpoint = strings.Join(parts[:len(parts)-1], "/")
+				parts = strings.Split(endpoint, "://")
+				if len(parts) != 2 {
+					fmt.Errorf("invalid endpoint format: %s", endpoint)
+				}
+
+				scheme := parts[0]
+				hostPort := parts[1]
+
+				hostParts := strings.Split(hostPort, ".")
+				svc := hostParts[0]
+				baseDomain := strings.Join(hostParts[1:], ".")
+
+				// Configure gRPC connection based on scheme
+				var opts []grpc.DialOption
+				if scheme == "grpc+ssl" {
+					tlsConfig := &tls.Config{
+						InsecureSkipVerify: false, // Enable server certificate verification
+					}
+					creds := credentials.NewTLS(tlsConfig)
+					opts = append(opts, grpc.WithTransportCredentials(creds))
+				} else {
+					opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+				}
+
+				if svc != "identity" {
+					hostPort = fmt.Sprintf("identity.%s", baseDomain)
+					endpoint = fmt.Sprintf("%s://%s", scheme, hostPort)
+				}
+
+				endpoints, err = invokeGRPCEndpointList(hostPort, opts)
+				if err != nil {
+					pterm.Warning.Printf("Failed to get endpoints from gRPC: %v\n", err)
+					pterm.DefaultBox.WithTitle("Available Option").
+						WithTitleTopCenter().
+						WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
+						WithRightPadding(1).
+						WithLeftPadding(1).
+						Println("Update endpoint with a valid console URL:\n" +
+							"   $ cfctl setting endpoint -u example.com")
+					return
 				}
 			}
 
-			pterm.DefaultBox.WithTitle("Available Services").
-				WithRightPadding(1).
-				WithLeftPadding(1).
-				WithTopPadding(0).
-				WithBottomPadding(0).
-				Println(strings.Join(formattedServices, "\n"))
-			return
-		}
-
-		if urlFlag == "" && service == "" {
-			pterm.DefaultBox.
-				WithTitle("Required Flags").
-				WithTitleTopCenter().
-				WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
-				WithRightPadding(1).
-				WithLeftPadding(1).
-				Println("Please use one of the following flags:")
-
-			pterm.Info.Println("To update endpoint URL directly:")
-			pterm.Printf("  $ cfctl setting endpoint -u %s\n\n", pterm.FgLightCyan.Sprint("https://example.com"))
-
-			pterm.Info.Println("To update endpoint based on service:")
-			pterm.Printf("  $ cfctl setting endpoint -s %s\n\n", pterm.FgLightCyan.Sprint("identity"))
-
-			cmd.Help()
-			return
-		}
-
-		if urlFlag != "" {
-			// Update endpoint directly with URL
-			appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), urlFlag)
-			if err := appV.WriteConfig(); err != nil {
-				pterm.Error.Printf("Failed to update setting.yaml: %v\n", err)
+			selectedEndpoint, exists := endpoints[service]
+			if !exists {
+				pterm.Error.Printf("Service '%s' not found in available services\n", service)
 				return
 			}
-			pterm.Success.Printf("Updated endpoint for '%s' to '%s'.\n", currentEnv, urlFlag)
-			return
-		}
 
-		token, err := getToken(appV)
-		services, err := fetchAvailableServices(endpoint, identityEndpoint, restIdentityEndpoint, hasIdentityService, token)
-		if err != nil {
-			pterm.Error.Println("Error fetching available services:", err)
-			return
-		}
-
-		if len(services) == 0 {
-			pterm.Println("No available services found.")
-			return
-		}
-
-		var formattedServices []string
-		for _, service := range services {
+			appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), selectedEndpoint)
 			if service == "identity" {
-				formattedServices = append(formattedServices, pterm.FgCyan.Sprintf("%s (proxy)", service))
-			} else {
-				formattedServices = append(formattedServices, pterm.FgDefault.Sprint(service))
-			}
-		}
-
-		pterm.DefaultBox.WithTitle("Available Services").
-			WithRightPadding(1).
-			WithLeftPadding(1).
-			WithTopPadding(0).
-			WithBottomPadding(0).
-			Println(strings.Join(formattedServices, "\n"))
-
-		// Create Viper instances for both app and cache settings
-		cacheV := viper.New()
-
-		// Load cache configuration
-		cachePath := filepath.Join(GetSettingDir(), "cache", "setting.yaml")
-		cacheV.SetConfigFile(cachePath)
-		cacheV.SetConfigType("yaml")
-
-		if err := loadSetting(appV, settingPath); err != nil {
-			pterm.Error.Println(err)
-			return
-		}
-
-		currentEnv = getCurrentEnvironment(appV)
-		if currentEnv == "" {
-			pterm.Error.Println("No environment is set. Please initialize or switch to an environment.")
-			return
-		}
-
-		// Determine prefix from the current environment
-		var prefix string
-		if strings.HasPrefix(currentEnv, "dev-") {
-			prefix = "dev"
-		} else if strings.HasPrefix(currentEnv, "stg-") {
-			prefix = "stg"
-		} else {
-			pterm.Error.Printf("Unsupported environment prefix for '%s'.\n", currentEnv)
-			return
-		}
-
-		// Construct new endpoint
-		newEndpoint := fmt.Sprintf("grpc+ssl://%s.api.%s.spaceone.dev:443", service, prefix)
-
-		// Update the appropriate setting file based on environment type
-		if strings.HasSuffix(currentEnv, "-app") {
-			// Update endpoint in main setting for app environments
-			appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), newEndpoint)
-			if service != "identity" {
-				appV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
-			} else {
 				appV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
+			} else {
+				appV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
 			}
 
 			if err := appV.WriteConfig(); err != nil {
 				pterm.Error.Printf("Failed to update setting.yaml: %v\n", err)
 				return
 			}
-		} else {
-			// Update endpoint in cache setting for user environments
-			cachePath := filepath.Join(GetSettingDir(), "cache", "setting.yaml")
-			if err := loadSetting(cacheV, cachePath); err != nil {
-				pterm.Error.Println(err)
-				return
-			}
 
-			cacheV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), newEndpoint)
-			if service != "identity" {
-				cacheV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
-			} else {
-				cacheV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
-			}
+			pterm.Success.Printf("Updated endpoint for '%s' to '%s'.\n", currentEnv, selectedEndpoint)
+			return
+		}
+	},
+}
 
-			if err := cacheV.WriteConfig(); err != nil {
-				pterm.Error.Printf("Failed to update cache/setting.yaml: %v\n", err)
-				return
+func invokeGRPCEndpointList(hostPort string, opts []grpc.DialOption) (map[string]string, error) {
+	// Wrap the entire operation in a function that can recover from panic
+	var endpoints = make(map[string]string)
+	var err error
+
+	defer func() {
+		if r := recover(); r != nil {
+			switch x := r.(type) {
+			case string:
+				err = fmt.Errorf("error: %s", x)
+			case error:
+				err = x
+			default:
+				err = fmt.Errorf("unknown panic: %v", r)
 			}
 		}
+	}()
 
-		pterm.Success.Printf("Updated endpoint for '%s' to '%s'.\n", currentEnv, newEndpoint)
-	},
+	// Establish the connection
+	conn, err := grpc.Dial(hostPort, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("connection failed: unable to connect to %s: %v", hostPort, err)
+	}
+	defer conn.Close()
+
+	// Use Reflection to discover services
+	refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+	defer refClient.Reset()
+
+	serviceName := "spaceone.api.identity.v2.Endpoint"
+	methodName := "list"
+
+	serviceDesc, err := refClient.ResolveService(serviceName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
+	}
+
+	methodDesc := serviceDesc.FindMethodByName(methodName)
+	if methodDesc == nil {
+		return nil, fmt.Errorf("method not found: %s", methodName)
+	}
+
+	reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
+	respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
+	fullMethod := fmt.Sprintf("/%s/%s", serviceName, methodName)
+
+	err = conn.Invoke(context.Background(), fullMethod, reqMsg, respMsg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to invoke method %s: %v", fullMethod, err)
+	}
+
+	resultsField := respMsg.FindFieldDescriptorByName("results")
+	if resultsField == nil {
+		return nil, fmt.Errorf("'results' field not found in response")
+	}
+
+	results := respMsg.GetField(resultsField).([]interface{})
+	for _, result := range results {
+		resultMsg := result.(*dynamic.Message)
+		serviceName := resultMsg.GetFieldByName("service").(string)
+		serviceEndpoint := resultMsg.GetFieldByName("endpoint").(string)
+		endpoints[serviceName] = serviceEndpoint
+	}
+
+	return endpoints, nil
 }
 
 // settingTokenCmd updates the token for the current environment
@@ -656,7 +887,7 @@ This command only works with app environments (-app suffix).`,
 }
 
 // fetchAvailableServices retrieves the list of services by calling the List method on the Endpoint service.
-func fetchAvailableServices(endpoint, identityEndpoint, restIdentityEndpoint string, hasIdentityEndpoint bool, token string) ([]string, error) {
+func fetchAvailableServices(identityEndpoint, restIdentityEndpoint string, hasIdentityEndpoint bool, token string) ([]string, error) {
 	if !hasIdentityEndpoint {
 		// Create HTTP client and request
 		client := &http.Client{}
@@ -664,8 +895,11 @@ func fetchAvailableServices(endpoint, identityEndpoint, restIdentityEndpoint str
 		// Define response structure
 		type EndpointResponse struct {
 			Results []struct {
-				Service string `json:"service"`
+				Name     string `json:"name"`
+				Service  string `json:"service"`
+				Endpoint string `json:"endpoint"`
 			} `json:"results"`
+			TotalCount int `json:"total_count"`
 		}
 
 		// Create and send request
@@ -864,18 +1098,30 @@ func getToken(v *viper.Viper) (string, error) {
 		return "", fmt.Errorf("no environment selected")
 	}
 
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("failed to get home directory: %v", err)
+	if strings.HasSuffix(currentEnv, "-app") {
+		token := v.GetString(fmt.Sprintf("environments.%s.token", currentEnv))
+		if token == "" {
+			return "", fmt.Errorf("token not found in settings for environment: %s", currentEnv)
+		}
+		return token, nil
 	}
 
-	tokenPath := filepath.Join(homeDir, ".cfctl", "cache", currentEnv, "access_token")
-	tokenBytes, err := os.ReadFile(tokenPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read token: %v", err)
+	if strings.HasSuffix(currentEnv, "-user") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("failed to get home directory: %v", err)
+		}
+
+		tokenPath := filepath.Join(home, ".cfctl", "cache", currentEnv, "access_token")
+		tokenBytes, err := os.ReadFile(tokenPath)
+		if err != nil {
+			return "", fmt.Errorf("failed to read token: %v", err)
+		}
+
+		return strings.TrimSpace(string(tokenBytes)), nil
 	}
 
-	return strings.TrimSpace(string(tokenBytes)), nil
+	return "", fmt.Errorf("unsupported environment type: %s", currentEnv)
 }
 
 // GetSettingDir returns the directory where setting file are stored
