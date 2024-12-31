@@ -601,7 +601,7 @@ func executeUserLogin(currentEnv string) {
 		}
 
 		// Grant new token using the refresh token
-		newAccessToken, err := grantToken(restIdentityEndpoint, refreshToken, scope, domainID, workspaceID)
+		newAccessToken, err := grantToken(restIdentityEndpoint, identityEndpoint, hasIdentityService, refreshToken, scope, domainID, workspaceID)
 		if err != nil {
 			pterm.Error.Println("Failed to retrieve new access token:", err)
 			exitWithError()
@@ -1564,8 +1564,8 @@ func fetchDomainIDAndRole(baseUrl string, identityEndpoint string, hasIdentitySe
 	}
 }
 
-func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (string, error) {
-	if strings.Contains(baseUrl, "megazone.io") {
+func grantToken(restIdentityEndpoint, identityEndpoint string, hasIdentityService bool, refreshToken, scope, domainID, workspaceID string) (string, error) {
+	if !hasIdentityService {
 		payload := map[string]interface{}{
 			"grant_type":   "REFRESH_TOKEN",
 			"token":        refreshToken,
@@ -1579,7 +1579,7 @@ func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (str
 			return "", err
 		}
 
-		req, err := http.NewRequest("POST", baseUrl+"/token/grant", bytes.NewBuffer(jsonPayload))
+		req, err := http.NewRequest("POST", restIdentityEndpoint+"/token/grant", bytes.NewBuffer(jsonPayload))
 		if err != nil {
 			return "", err
 		}
@@ -1607,93 +1607,93 @@ func grantToken(baseUrl, refreshToken, scope, domainID, workspaceID string) (str
 		}
 
 		return accessToken, nil
-	}
-
-	// Parse the endpoint
-	parts := strings.Split(baseUrl, "://")
-	if len(parts) != 2 {
-		return "", fmt.Errorf("invalid endpoint format: %s", baseUrl)
-	}
-
-	hostPort := parts[1]
-
-	// Configure gRPC connection
-	var opts []grpc.DialOption
-	if strings.HasPrefix(baseUrl, "grpc+ssl://") {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: false,
-		}
-		creds := credentials.NewTLS(tlsConfig)
-		opts = append(opts, grpc.WithTransportCredentials(creds))
 	} else {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		// Parse the endpoint
+		parts := strings.Split(identityEndpoint, "://")
+		if len(parts) != 2 {
+			return "", fmt.Errorf("invalid endpoint format: %s", identityEndpoint)
+		}
+
+		hostPort := parts[1]
+
+		// Configure gRPC connection
+		var opts []grpc.DialOption
+		if strings.HasPrefix(identityEndpoint, "grpc+ssl://") {
+			tlsConfig := &tls.Config{
+				InsecureSkipVerify: false,
+			}
+			creds := credentials.NewTLS(tlsConfig)
+			opts = append(opts, grpc.WithTransportCredentials(creds))
+		} else {
+			opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		}
+
+		// Establish connection
+		conn, err := grpc.Dial(hostPort, opts...)
+		if err != nil {
+			return "", fmt.Errorf("failed to connect: %v", err)
+		}
+		defer conn.Close()
+
+		// Create reflection client
+		refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+		defer refClient.Reset()
+
+		// Resolve the service
+		serviceName := "spaceone.api.identity.v2.Token"
+		serviceDesc, err := refClient.ResolveService(serviceName)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
+		}
+
+		// Find the method descriptor
+		methodDesc := serviceDesc.FindMethodByName("grant")
+		if methodDesc == nil {
+			return "", fmt.Errorf("method grant not found")
+		}
+
+		// Create request message
+		reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
+
+		reqMsg.SetFieldByName("grant_type", int32(1))
+
+		var scopeEnum int32
+		switch scope {
+		case "DOMAIN":
+			scopeEnum = 2
+		case "WORKSPACE":
+			scopeEnum = 3
+		case "USER":
+			scopeEnum = 5
+		default:
+			return "", fmt.Errorf("unknown scope: %s", scope)
+		}
+
+		reqMsg.SetFieldByName("scope", scopeEnum)
+		reqMsg.SetFieldByName("token", refreshToken)
+		reqMsg.SetFieldByName("timeout", int32(10800))
+		reqMsg.SetFieldByName("domain_id", domainID)
+		if workspaceID != "" {
+			reqMsg.SetFieldByName("workspace_id", workspaceID)
+		}
+
+		// Make the gRPC call
+		fullMethod := "/spaceone.api.identity.v2.Token/grant"
+		respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
+
+		err = conn.Invoke(context.Background(), fullMethod, reqMsg, respMsg)
+		if err != nil {
+			return "", fmt.Errorf("RPC failed: %v", err)
+		}
+
+		// Extract access_token from response
+		accessToken, err := respMsg.TryGetFieldByName("access_token")
+		if err != nil {
+			return "", fmt.Errorf("failed to get access_token from response: %v", err)
+		}
+
+		return accessToken.(string), nil
 	}
-
-	// Establish connection
-	conn, err := grpc.Dial(hostPort, opts...)
-	if err != nil {
-		return "", fmt.Errorf("failed to connect: %v", err)
-	}
-	defer conn.Close()
-
-	// Create reflection client
-	refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
-	defer refClient.Reset()
-
-	// Resolve the service
-	serviceName := "spaceone.api.identity.v2.Token"
-	serviceDesc, err := refClient.ResolveService(serviceName)
-	if err != nil {
-		return "", fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
-	}
-
-	// Find the method descriptor
-	methodDesc := serviceDesc.FindMethodByName("grant")
-	if methodDesc == nil {
-		return "", fmt.Errorf("method grant not found")
-	}
-
-	// Create request message
-	reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
-
-	reqMsg.SetFieldByName("grant_type", int32(1))
-
-	var scopeEnum int32
-	switch scope {
-	case "DOMAIN":
-		scopeEnum = 2
-	case "WORKSPACE":
-		scopeEnum = 3
-	case "USER":
-		scopeEnum = 5
-	default:
-		return "", fmt.Errorf("unknown scope: %s", scope)
-	}
-
-	reqMsg.SetFieldByName("scope", scopeEnum)
-	reqMsg.SetFieldByName("token", refreshToken)
-	reqMsg.SetFieldByName("timeout", int32(10800))
-	reqMsg.SetFieldByName("domain_id", domainID)
-	if workspaceID != "" {
-		reqMsg.SetFieldByName("workspace_id", workspaceID)
-	}
-
-	// Make the gRPC call
-	fullMethod := "/spaceone.api.identity.v2.Token/grant"
-	respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
-
-	err = conn.Invoke(context.Background(), fullMethod, reqMsg, respMsg)
-	if err != nil {
-		return "", fmt.Errorf("RPC failed: %v", err)
-	}
-
-	// Extract access_token from response
-	accessToken, err := respMsg.TryGetFieldByName("access_token")
-	if err != nil {
-		return "", fmt.Errorf("failed to get access_token from response: %v", err)
-	}
-
-	return accessToken.(string), nil
 }
 
 // saveSelectedToken saves the selected token as the current token for the environment

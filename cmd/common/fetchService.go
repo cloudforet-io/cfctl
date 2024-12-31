@@ -441,20 +441,15 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 
 			hostPort = strings.Join(domainParts, ".") + ":443"
 		} else {
-			var envPrefix string
-			urlParts := strings.Split(config.Environments[config.Environment].URL, ".")
-			for i, part := range urlParts {
-				if part == "console" && i+1 < len(urlParts) {
-					envPrefix = urlParts[i+1]
-					break
-				}
+			trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
+			parts := strings.Split(trimmedEndpoint, ".")
+			if len(parts) < 4 {
+				return nil, fmt.Errorf("invalid endpoint format: %s", trimmedEndpoint)
 			}
 
-			if envPrefix == "" {
-				return nil, fmt.Errorf("environment prefix not found in URL: %s", config.Environments[config.Environment].URL)
-			}
-
-			hostPort = fmt.Sprintf("%s.api.%s.spaceone.dev:443", convertServiceNameToEndpoint(serviceName), envPrefix)
+			// Replace 'identity' with the converted service name
+			parts[0] = convertServiceNameToEndpoint(serviceName)
+			hostPort = strings.Join(parts, ".")
 		}
 
 		tlsConfig := &tls.Config{
@@ -473,7 +468,12 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 		}
 	}
 
-	defer conn.Close()
+	defer func(conn *grpc.ClientConn) {
+		err := conn.Close()
+		if err != nil {
+
+		}
+	}(conn)
 
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", config.Environments[config.Environment].Token)
 	refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
