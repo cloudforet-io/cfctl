@@ -1746,7 +1746,7 @@ func selectScopeOrWorkspace(workspaces []map[string]interface{}, roleType string
 		return selectWorkspaceOnly(workspaces)
 	}
 
-	options := []string{"DOMAIN", "WORKSPACES"}
+	options := []string{"DOMAIN ADMIN", "WORKSPACES"}
 	selectedIndex := 0
 
 	for {
