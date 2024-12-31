@@ -24,7 +24,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var cfgFile string
 var cachedEndpointsMap map[string]string
 
 // Config represents the configuration structure
@@ -98,7 +97,10 @@ func init() {
 	select {
 	case <-done:
 	case <-time.After(50 * time.Millisecond):
-		fmt.Fprintf(os.Stderr, "Warning: Cache loading timed out\n")
+		_, err := fmt.Fprintf(os.Stderr, "Warning: Cache loading timed out\n")
+		if err != nil {
+			return
+		}
 	}
 
 	if len(os.Args) > 1 && (os.Args[1] == "__complete" || os.Args[1] == "completion") {
@@ -114,7 +116,7 @@ func init() {
 
 	if !skipDynamicCommands {
 		if err := addDynamicServiceCommands(); err != nil {
-			showInitializationGuide(err)
+			showInitializationGuide()
 		}
 	}
 
@@ -146,7 +148,7 @@ func init() {
 }
 
 // showInitializationGuide displays a helpful message when configuration is missing
-func showInitializationGuide(originalErr error) {
+func showInitializationGuide() {
 	// Skip showing guide for certain commands
 	if len(os.Args) >= 2 && (os.Args[1] == "setting" ||
 		os.Args[1] == "login" ||
@@ -255,7 +257,12 @@ func addDynamicServiceCommands() error {
 				Printfln("Unable to connect to local gRPC server.\nPlease make sure your gRPC server is running on %s", config.Endpoint)
 			return nil
 		}
-		defer conn.Close()
+		defer func(conn *grpc.ClientConn) {
+			err := conn.Close()
+			if err != nil {
+
+			}
+		}(conn)
 
 		ctx := context.Background()
 		refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
@@ -358,7 +365,10 @@ func addDynamicServiceCommands() error {
 		progressbar.UpdateTitle("Creating cache for faster subsequent runs")
 		cachedEndpointsMap = endpointsMap
 		if err := saveEndpointsCache(endpointsMap); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
+			_, err2 := fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
+			if err2 != nil {
+				return err2
+			}
 		}
 		progressbar.Increment()
 		time.Sleep(time.Millisecond * 300)
@@ -524,7 +534,10 @@ func createServiceCommand(serviceName string) *cobra.Command {
 
 	err := common.AddVerbCommands(cmd, serviceName, "other")
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error adding verb commands for %s: %v\n", serviceName, err)
+		_, err2 := fmt.Fprintf(os.Stderr, "Error adding verb commands for %s: %v\n", serviceName, err)
+		if err2 != nil {
+			return nil
+		}
 	}
 
 	return cmd
