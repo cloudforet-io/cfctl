@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"google.golang.org/grpc/credentials/insecure"
@@ -49,13 +50,16 @@ var settingInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new environment setting",
 	Long:  `Initialize a new environment setting for cfctl by specifying an endpoint`,
-	Example: `  cfctl setting init endpoint https://example.com --app
-  cfctl setting init endpoint https://example.com --user
-  cfctl setting init endpoint http://localhost:8080 --app
-  cfctl setting init endpoint http://localhost:8080 --user
-	                         or 
-  cfctl setting init static grpc://localhost:50051
-  cfctl setting init static grpc+ssl://inventory.-`,
+	Run: func(cmd *cobra.Command, args []string) {
+		proxyFlag, _ := cmd.Flags().GetBool("proxy")
+		staticFlag, _ := cmd.Flags().GetBool("static")
+
+		if !proxyFlag && !staticFlag {
+			pterm.Error.Println("You must specify either proxy or static command.")
+			cmd.Help()
+			return
+		}
+	},
 }
 
 // settingInitStaticCmd represents the setting init direct command
@@ -125,16 +129,14 @@ This is useful for development or when connecting directly to specific service e
 	},
 }
 
-// settingInitEndpointCmd represents the setting init endpoint command
-var settingInitEndpointCmd = &cobra.Command{
-	Use:   "endpoint [URL]",
-	Short: "Initialize configuration with an endpoint",
-	Long:  `Specify an endpoint to initialize the environment configuration.`,
+// settingInitProxyCmd represents the setting init proxy command
+var settingInitProxyCmd = &cobra.Command{
+	Use:   "proxy [URL]",
+	Short: "Initialize configuration with a proxy URL",
+	Long:  `Specify a proxy URL to initialize the environment configuration.`,
 	Args:  cobra.ExactArgs(1),
-	Example: `  cfctl setting init endpoint https://example.com --app
-  cfctl setting init endpoint https://example.com --user
-  cfctl setting init endpoint http://localhost:8080 --app
-  cfctl setting init endpoint http://localhost:8080 --user`,
+	Example: `  cfctl setting init proxy http(s)://example.com --app
+  cfctl setting init proxy http(s)://example.com --user`,
 	Run: func(cmd *cobra.Command, args []string) {
 		endpointStr := args[0]
 		appFlag, _ := cmd.Flags().GetBool("app")
@@ -146,10 +148,30 @@ var settingInitEndpointCmd = &cobra.Command{
 			return
 		}
 
-		envName, err := parseEnvNameFromURL(endpointStr)
+		// Get environment name from user input
+		result, err := pterm.DefaultInteractiveTextInput.
+			WithDefaultText("default").
+			WithDefaultValue("default").
+			WithMultiLine(false).
+			Show("Environment name")
+
 		if err != nil {
-			pterm.Error.Printf("Failed to parse environment name from endpoint: %v\n", err)
+			pterm.Error.Printf("Failed to get environment name: %v\n", err)
 			return
+		}
+
+		// If user didn't input anything, use default
+		envPrefix := result
+		if envPrefix == "" || envPrefix == "default" {
+			envPrefix = "default"
+		}
+
+		// Add suffix based on flag
+		var envName string
+		if appFlag {
+			envName = envPrefix + "-app"
+		} else if userFlag {
+			envName = envPrefix + "-user"
 		}
 
 		settingDir := GetSettingDir()
@@ -163,16 +185,16 @@ var settingInitEndpointCmd = &cobra.Command{
 		v.SetConfigFile(mainSettingPath)
 		v.SetConfigType("yaml")
 
-		envSuffix := map[bool]string{true: "app", false: "user"}[appFlag]
-		fullEnvName := fmt.Sprintf("%s-%s", envName, envSuffix)
+		// Always set proxy to true
+		pterm.Success.Printf("Successfully initialized proxy connection to %s with environment '%s'\n", endpointStr, envName)
 
 		if err := v.ReadInConfig(); err == nil {
 			environments := v.GetStringMap("environments")
-			if existingEnv, exists := environments[fullEnvName]; exists {
+			if existingEnv, exists := environments[envName]; exists {
 				currentConfig, _ := yaml.Marshal(map[string]interface{}{
-					"environment": fullEnvName,
+					"environment": envName,
 					"environments": map[string]interface{}{
-						fullEnvName: existingEnv,
+						envName: existingEnv,
 					},
 				})
 
@@ -182,7 +204,7 @@ var settingInitEndpointCmd = &cobra.Command{
 					WithLeftPadding(4).
 					WithBoxStyle(pterm.NewStyle(pterm.FgYellow))
 
-				confirmBox.Println(fmt.Sprintf("Environment '%s' already exists.\nDo you want to overwrite it?", fullEnvName))
+				confirmBox.Println(fmt.Sprintf("Environment '%s' already exists.\nDo you want to overwrite it?", envName))
 
 				pterm.Info.Println("Current configuration:")
 				fmt.Println(string(currentConfig))
@@ -193,14 +215,14 @@ var settingInitEndpointCmd = &cobra.Command{
 				response = strings.ToLower(strings.TrimSpace(response))
 
 				if response != "y" {
-					pterm.Info.Printf("Operation cancelled. Environment '%s' remains unchanged.\n", fullEnvName)
+					pterm.Info.Printf("Operation cancelled. Environment '%s' remains unchanged.\n", envName)
 					return
 				}
 			}
 		}
 
 		// Update configuration
-		updateSetting(envName, endpointStr, envSuffix)
+		updateSetting(envName, endpointStr, "")
 	},
 }
 
@@ -420,29 +442,26 @@ var settingEndpointCmd = &cobra.Command{
 You can either specify a new endpoint URL directly or use the service-based endpoint update.`,
 	Run: func(cmd *cobra.Command, args []string) {
 		urlFlag, _ := cmd.Flags().GetString("url")
-		service, _ := cmd.Flags().GetString("service")
 		listFlag, _ := cmd.Flags().GetBool("list")
 
-		// Create a new Viper instance for app setting
+		// Get current environment configuration
+		settingDir := GetSettingDir()
+		settingPath := filepath.Join(settingDir, "setting.yaml")
 		appV := viper.New()
-		settingPath := filepath.Join(GetSettingDir(), "setting.yaml")
-		appV.SetConfigFile(settingPath)
-		appV.SetConfigType("yaml")
-
 		if err := loadSetting(appV, settingPath); err != nil {
-			pterm.Error.Println(err)
+			pterm.Error.Printf("Failed to load setting: %v\n", err)
 			return
 		}
 
 		currentEnv := getCurrentEnvironment(appV)
 		if currentEnv == "" {
-			pterm.Error.Println("No environment is set. Please initialize or switch to an environment.")
+			pterm.Error.Println("No environment is currently selected.")
 			return
 		}
 
 		endpoint, err := getEndpoint(appV)
 		if err != nil {
-			pterm.Error.Println("Error retrieving endpoint:", err)
+			pterm.Error.Printf("Failed to get endpoint: %v\n", err)
 			return
 		}
 
@@ -467,8 +486,6 @@ You can either specify a new endpoint URL directly or use the service-based endp
 			// Handle protocol for endpoint
 			if !strings.HasPrefix(urlFlag, "http://") && !strings.HasPrefix(urlFlag, "https://") {
 				urlFlag = "https://" + urlFlag
-			} else if strings.HasPrefix(urlFlag, "http://") {
-				urlFlag = "https://" + strings.TrimPrefix(urlFlag, "http://")
 			}
 
 			// Update endpoint directly with URL
@@ -636,181 +653,128 @@ You can either specify a new endpoint URL directly or use the service-based endp
 					}
 				}
 
-				pterm.DefaultBox.WithTitle("Available Services").
-					WithRightPadding(1).
-					WithLeftPadding(1).
-					WithTopPadding(0).
-					WithBottomPadding(0).
-					Println(strings.Join(formattedServices, "\n"))
+				tableData := pterm.TableData{
+					{"Service", "Endpoint"},
+				}
+
+				services := make([]string, 0, len(endpoints))
+				for service := range endpoints {
+					services = append(services, service)
+				}
+				sort.Strings(services)
+
+				for _, service := range services {
+					endpoint := endpoints[service]
+					if service == "identity" {
+						tableData = append(tableData, []string{
+							pterm.FgLightCyan.Sprintf("%s (proxy)", service),
+							endpoint,
+						})
+					} else {
+						tableData = append(tableData, []string{
+							service,
+							endpoint,
+						})
+					}
+				}
+
+				pterm.Println("Available Services:")
+				pterm.Println()
+
+				pterm.DefaultTable.
+					WithHasHeader().
+					WithData(tableData).
+					WithBoxed(true).
+					Render()
 			} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-				services, err := fetchAvailableServices(identityEndpoint, restIdentityEndpoint, hasIdentityService, token)
+				var formattedServices []string
+				endpoints, err := fetchAvailableServices(identityEndpoint, restIdentityEndpoint, hasIdentityService, token)
 				if err != nil {
 					pterm.Error.Println("Error fetching available services:", err)
 					return
 				}
 
-				if len(services) == 0 {
+				if len(endpoints) == 0 {
 					pterm.Println("No available services found.")
 					return
 				}
 
-				var formattedServices []string
-				for _, service := range services {
+				for service, endpoint := range endpoints {
 					if service == "identity" {
-						formattedServices = append(formattedServices, pterm.FgCyan.Sprintf("%s (proxy)", service))
+						formattedServices = append(formattedServices, fmt.Sprintf("%s (proxy)\n%s",
+							pterm.FgCyan.Sprint(service),
+							pterm.FgGray.Sprint(endpoint)))
 					} else {
-						formattedServices = append(formattedServices, pterm.FgDefault.Sprint(service))
+						formattedServices = append(formattedServices, fmt.Sprintf("%s\n%s",
+							pterm.FgDefault.Sprint(service),
+							pterm.FgGray.Sprint(endpoint)))
 					}
 				}
 
-				pterm.DefaultBox.WithTitle("Available Services").
-					WithRightPadding(1).
-					WithLeftPadding(1).
-					WithTopPadding(0).
-					WithBottomPadding(0).
-					Println(strings.Join(formattedServices, "\n"))
-				return
-			}
-		} else if urlFlag == "" && service == "" {
-			if !hasIdentityService {
-				pterm.DefaultBox.
-					WithTitle("Required Flags").
-					WithTitleTopCenter().
-					WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
-					WithRightPadding(1).
-					WithLeftPadding(1).
-					Println("Please use the following flag")
+				tableData := pterm.TableData{
+					{"Service", "Endpoint"},
+				}
 
-				pterm.Info.Println("To update endpoint URL directly:")
-				pterm.Printf("  $ cfctl setting endpoint -u %s\n\n", pterm.FgLightCyan.Sprint("https://example.com"))
+				services := make([]string, 0, len(endpoints))
+				for service := range endpoints {
+					services = append(services, service)
+				}
+				sort.Strings(services)
 
-				cmd.Help()
-				return
-			} else {
-				pterm.DefaultBox.
-					WithTitle("Required Flags").
-					WithTitleTopCenter().
-					WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
-					WithRightPadding(1).
-					WithLeftPadding(1).
-					Println("Please use one of the following flags:")
+				for _, service := range services {
+					endpoint := endpoints[service]
+					if service == "identity" {
+						tableData = append(tableData, []string{
+							pterm.FgLightCyan.Sprintf("%s (proxy)", service),
+							endpoint,
+						})
+					} else {
+						tableData = append(tableData, []string{
+							service,
+							endpoint,
+						})
+					}
+				}
 
-				pterm.Info.Println("To update endpoint URL directly:")
-				pterm.Printf("  $ cfctl setting endpoint -u %s\n\n", pterm.FgLightCyan.Sprint("https://example.com"))
+				pterm.Info.Println("Available Services")
 
-				pterm.Info.Println("To update endpoint based on service:")
-				pterm.Printf("  $ cfctl setting endpoint -s %s\n\n", pterm.FgLightCyan.Sprint("identity"))
+				pterm.DefaultTable.
+					WithHasHeader().
+					WithData(tableData).
+					WithBoxed(true).
+					Render()
 
-				cmd.Help()
 				return
 			}
 		}
 
-		// Handle service flag
-		if service != "" {
-			var endpoints map[string]string
-
-			if strings.HasPrefix(endpoint, "grpc://") || strings.HasPrefix(endpoint, "grpc+ssl://") {
-				appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), endpoint)
-			} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-				// HTTP/HTTPS endpoint case
-				client := &http.Client{}
-				req, err := http.NewRequest("POST", restIdentityEndpoint+"/endpoint/list", bytes.NewBuffer([]byte("{}")))
-				if err != nil {
-					pterm.Error.Printf("Failed to create request: %v\n", err)
-					return
-				}
-
-				req.Header.Set("accept", "application/json")
-				req.Header.Set("Content-Type", "application/json")
-
-				resp, err := client.Do(req)
-				if err != nil {
-					pterm.Error.Printf("Failed to send request: %v\n", err)
-					return
-				}
-				defer resp.Body.Close()
-
-				var response struct {
-					Results []ServiceEndpoint `json:"results"`
-				}
-				if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-					pterm.Error.Printf("Failed to decode response: %v\n", err)
-					return
-				}
-
-				endpoints = make(map[string]string)
-				for _, svc := range response.Results {
-					endpoints[svc.Service] = svc.Endpoint
-				}
-			} else if (strings.HasPrefix(endpoint, "grpc://") || strings.HasPrefix(endpoint, "grpc+ssl://")) && !hasIdentityService {
-				// Parse the endpoint
-				parts := strings.Split(endpoint, "/")
-				endpoint = strings.Join(parts[:len(parts)-1], "/")
-				parts = strings.Split(endpoint, "://")
-				if len(parts) != 2 {
-					fmt.Errorf("invalid endpoint format: %s", endpoint)
-				}
-
-				scheme := parts[0]
-				hostPort := parts[1]
-
-				hostParts := strings.Split(hostPort, ".")
-				svc := hostParts[0]
-				baseDomain := strings.Join(hostParts[1:], ".")
-
-				// Configure gRPC connection based on scheme
-				var opts []grpc.DialOption
-				if scheme == "grpc+ssl" {
-					tlsConfig := &tls.Config{
-						InsecureSkipVerify: false, // Enable server certificate verification
-					}
-					creds := credentials.NewTLS(tlsConfig)
-					opts = append(opts, grpc.WithTransportCredentials(creds))
-				} else {
-					opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-				}
-
-				if svc != "identity" {
-					hostPort = fmt.Sprintf("identity.%s", baseDomain)
-					endpoint = fmt.Sprintf("%s://%s", scheme, hostPort)
-				}
-
-				endpoints, err = invokeGRPCEndpointList(hostPort, opts)
-				if err != nil {
-					pterm.Warning.Printf("Failed to get endpoints from gRPC: %v\n", err)
-					pterm.DefaultBox.WithTitle("Available Option").
-						WithTitleTopCenter().
-						WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
-						WithRightPadding(1).
-						WithLeftPadding(1).
-						Println("Update endpoint with a valid console URL:\n" +
-							"   $ cfctl setting endpoint -u example.com")
-					return
-				}
-			}
-
-			selectedEndpoint, exists := endpoints[service]
-			if !exists {
-				pterm.Error.Printf("Service '%s' not found in available services\n", service)
-				return
-			}
-
-			appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), selectedEndpoint)
-			if service == "identity" {
-				appV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), true)
-			} else {
-				appV.Set(fmt.Sprintf("environments.%s.proxy", currentEnv), false)
-			}
-
+		// Handle URL flag
+		if urlFlag != "" {
+			appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), urlFlag)
 			if err := appV.WriteConfig(); err != nil {
 				pterm.Error.Printf("Failed to update setting.yaml: %v\n", err)
 				return
 			}
-
-			pterm.Success.Printf("Updated endpoint for '%s' to '%s'.\n", currentEnv, selectedEndpoint)
+			pterm.Success.Printf("Updated endpoint for '%s' to '%s'.\n", currentEnv, urlFlag)
 			return
 		}
+
+		// Show help if no flags provided
+		pterm.DefaultBox.
+			WithTitle("Required Flags").
+			WithTitleTopCenter().
+			WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
+			WithRightPadding(1).
+			WithLeftPadding(1).
+			Println("Please use one of the following flags:")
+
+		pterm.Info.Println("To update endpoint URL directly:")
+		pterm.Printf("  $ cfctl setting endpoint -u %s\n\n", pterm.FgLightCyan.Sprint("https://example.com"))
+
+		pterm.Info.Println("To list available services:")
+		pterm.Printf("  $ cfctl setting endpoint --list\n\n")
+
+		cmd.Help()
 	},
 }
 
@@ -930,7 +894,9 @@ This command only works with app environments (-app suffix).`,
 }
 
 // fetchAvailableServices retrieves the list of services by calling the List method on the Endpoint service.
-func fetchAvailableServices(identityEndpoint, restIdentityEndpoint string, hasIdentityEndpoint bool, token string) ([]string, error) {
+func fetchAvailableServices(identityEndpoint, restIdentityEndpoint string, hasIdentityEndpoint bool, token string) (map[string]string, error) {
+	endpoints := make(map[string]string)
+
 	if !hasIdentityEndpoint {
 		// Create HTTP client and request
 		client := &http.Client{}
@@ -967,12 +933,11 @@ func fetchAvailableServices(identityEndpoint, restIdentityEndpoint string, hasId
 		}
 
 		// Extract services
-		var availableServices []string
 		for _, result := range response.Results {
-			availableServices = append(availableServices, result.Service)
+			endpoints[result.Service] = result.Endpoint
 		}
 
-		return availableServices, nil
+		return endpoints, nil
 	} else {
 		parsedURL, err := url.Parse(identityEndpoint)
 		if err != nil {
@@ -1071,34 +1036,48 @@ func fetchAvailableServices(identityEndpoint, restIdentityEndpoint string, hasId
 			return nil, fmt.Errorf("'results' field is not a list")
 		}
 
-		var availableServices []string
 		for _, res := range resultsSlice {
-			// Each item in 'results' should be a dynamic.Message
 			resMsg, ok := res.(*dynamic.Message)
 			if !ok {
 				continue
 			}
 
-			// Extract the 'service' field from each result message
+			// Extract service field
 			serviceFieldDesc := resMsg.GetMessageDescriptor().FindFieldByName("service")
 			if serviceFieldDesc == nil {
-				continue // Skip if 'service' field is not found
+				continue
 			}
 
 			serviceField, err := resMsg.TryGetField(serviceFieldDesc)
 			if err != nil {
-				continue // Skip if unable to get the 'service' field
+				continue
 			}
 
 			serviceStr, ok := serviceField.(string)
 			if !ok {
-				continue // Skip if 'service' field is not a string
+				continue
 			}
 
-			availableServices = append(availableServices, serviceStr)
+			// Extract endpoint field
+			endpointFieldDesc := resMsg.GetMessageDescriptor().FindFieldByName("endpoint")
+			if endpointFieldDesc == nil {
+				continue
+			}
+
+			endpointField, err := resMsg.TryGetField(endpointFieldDesc)
+			if err != nil {
+				continue
+			}
+
+			endpointStr, ok := endpointField.(string)
+			if !ok {
+				continue
+			}
+
+			endpoints[serviceStr] = endpointStr
 		}
 
-		return availableServices, nil
+		return endpoints, nil
 	}
 }
 
@@ -1439,11 +1418,11 @@ func init() {
 	SettingCmd.AddCommand(envCmd)
 	SettingCmd.AddCommand(settingEndpointCmd)
 	SettingCmd.AddCommand(showCmd)
-	settingInitCmd.AddCommand(settingInitEndpointCmd)
+	settingInitCmd.AddCommand(settingInitProxyCmd)
 	settingInitCmd.AddCommand(settingInitStaticCmd)
 
-	settingInitEndpointCmd.Flags().Bool("app", false, "Initialize as application configuration")
-	settingInitEndpointCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
+	settingInitProxyCmd.Flags().Bool("app", false, "Initialize as application configuration")
+	settingInitProxyCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
 
 	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
 	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
@@ -1452,6 +1431,5 @@ func init() {
 	showCmd.Flags().StringP("output", "o", "yaml", "Output format (yaml/json)")
 
 	settingEndpointCmd.Flags().StringP("url", "u", "", "Direct URL to set as endpoint")
-	settingEndpointCmd.Flags().StringP("service", "s", "", "Service to set the endpoint for")
 	settingEndpointCmd.Flags().BoolP("list", "l", false, "List available services")
 }
