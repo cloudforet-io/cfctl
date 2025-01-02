@@ -233,6 +233,20 @@ func showInitializationGuide() {
 			pterm.Info.Println("After updating the token, please try your command again.")
 		}
 	} else if strings.HasSuffix(currentEnv, "-user") {
+		// Get endpoint from environment config
+		envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
+		if envConfig == nil {
+			pterm.Warning.Printf("No environment configuration found.\n")
+			return
+		}
+
+		endpoint := envConfig.GetString("endpoint")
+
+		// Skip authentication warning for gRPC+SSL endpoints
+		if strings.HasPrefix(endpoint, "grpc+ssl://") {
+			return
+		}
+
 		pterm.Warning.Printf("Authentication required.\n")
 		pterm.Info.Println("To see Available Commands, please authenticate first:")
 		pterm.Info.Println("$ cfctl login")
@@ -318,70 +332,104 @@ func addDynamicServiceCommands() error {
 		return nil
 	}
 
-	// For non-local environments, continue with existing logic...
+	// For non-local environments
+	endpoint := config.Endpoint
+	var apiEndpoint string
+
+	if strings.HasPrefix(endpoint, "grpc+ssl://") {
+		apiEndpoint = endpoint
+	} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+		apiEndpoint, err = other.GetAPIEndpoint(endpoint)
+		if err != nil {
+			return fmt.Errorf("failed to get API endpoint: %v", err)
+		}
+	}
+
+	// Try to use cached endpoints first
 	if cachedEndpointsMap != nil {
+		currentService := ""
+		if strings.HasPrefix(endpoint, "grpc+ssl://") {
+			parts := strings.Split(endpoint, "://")
+			if len(parts) == 2 {
+				hostParts := strings.Split(parts[1], ".")
+				if len(hostParts) > 0 {
+					currentService = hostParts[0]
+				}
+			}
+		}
+
+		if currentService != "identity" && currentService != "" {
+			if cmd := createServiceCommand(currentService); cmd != nil {
+				cmd.GroupID = "available"
+				rootCmd.AddCommand(cmd)
+			}
+			return nil
+		}
+
+		// If identity service or no specific service, add all available commands
 		for serviceName := range cachedEndpointsMap {
 			cmd := createServiceCommand(serviceName)
+			cmd.GroupID = "available"
 			rootCmd.AddCommand(cmd)
 		}
 		return nil
 	}
 
-	// Only show progress bar when actually fetching services
-	if len(os.Args) == 1 || (len(os.Args) > 1 &&
-		os.Args[1] != "setting" &&
-		os.Args[1] != "login" &&
-		os.Args[1] != "api_resources" &&
-		os.Args[1] != "short_name") {
-		// Create progress bar
-		progressbar, _ := pterm.DefaultProgressbar.
-			WithTotal(4).
-			WithTitle("Initializing services").
-			Start()
+	// If no cached endpoints, fetch them
+	progressbar, _ := pterm.DefaultProgressbar.
+		WithTotal(4).
+		WithTitle("Initializing services").
+		Start()
 
-		progressbar.UpdateTitle("Preparing endpoint configuration")
-		endpoint := config.Endpoint
-
-		var apiEndpoint string
-		if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-			apiEndpoint, err = other.GetAPIEndpoint(endpoint)
-			if err != nil {
-				pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
-				os.Exit(1)
-			}
-		}
-
-		progressbar.Increment()
-		time.Sleep(time.Millisecond * 300)
-
-		progressbar.UpdateTitle("Fetching available services")
-		endpointsMap, err := other.FetchEndpointsMap(apiEndpoint)
-		if err != nil {
-			return fmt.Errorf("failed to fetch services: %v", err)
-		}
-		progressbar.Increment()
-		time.Sleep(time.Millisecond * 300)
-
-		progressbar.UpdateTitle("Creating cache for faster subsequent runs")
-		cachedEndpointsMap = endpointsMap
-		if err := saveEndpointsCache(endpointsMap); err != nil {
-			_, err2 := fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
-			if err2 != nil {
-				return err2
-			}
-		}
-		progressbar.Increment()
-		time.Sleep(time.Millisecond * 300)
-
-		progressbar.UpdateTitle("Registering verbs and resources commands to the cache")
-		for serviceName := range endpointsMap {
-			cmd := createServiceCommand(serviceName)
-			rootCmd.AddCommand(cmd)
-		}
-		progressbar.Increment()
-		time.Sleep(time.Millisecond * 300)
+	progressbar.UpdateTitle("Fetching available services")
+	endpointsMap, err := other.FetchEndpointsMap(apiEndpoint)
+	if err != nil {
+		return fmt.Errorf("failed to fetch services: %v", err)
 	}
 
+	progressbar.Increment()
+	time.Sleep(time.Millisecond * 300)
+
+	progressbar.UpdateTitle("Creating cache for faster subsequent runs")
+	cachedEndpointsMap = endpointsMap
+	if err := saveEndpointsCache(endpointsMap); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
+	}
+
+	progressbar.Increment()
+	time.Sleep(time.Millisecond * 300)
+
+	//progressbar.UpdateTitle("Finalizing")
+	progressbar.Increment()
+	time.Sleep(time.Millisecond * 300)
+
+	fmt.Println()
+	// Add commands based on the current service
+	currentService := ""
+	if strings.HasPrefix(endpoint, "grpc+ssl://") {
+		parts := strings.Split(endpoint, "://")
+		if len(parts) == 2 {
+			hostParts := strings.Split(parts[1], ".")
+			if len(hostParts) > 0 {
+				currentService = hostParts[0]
+			}
+		}
+	}
+
+	if currentService != "identity" && currentService != "" {
+		if cmd := createServiceCommand(currentService); cmd != nil {
+			cmd.GroupID = "available"
+			rootCmd.AddCommand(cmd)
+		}
+	} else {
+		for serviceName := range endpointsMap {
+			cmd := createServiceCommand(serviceName)
+			cmd.GroupID = "available"
+			rootCmd.AddCommand(cmd)
+		}
+	}
+
+	progressbar.Increment()
 	return nil
 }
 

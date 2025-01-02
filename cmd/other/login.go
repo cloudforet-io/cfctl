@@ -697,6 +697,13 @@ func executeUserLogin(currentEnv string) {
 			scope = "WORKSPACE"
 		}
 
+		// Grant new token using the refresh token
+		newAccessToken, err := grantToken("", identityEndpoint, hasIdentityService, refreshToken, scope, domainID, workspaceID)
+		if err != nil {
+			pterm.Error.Println("Failed to retrieve new access token:", err)
+			exitWithError()
+		}
+
 		// Create cache directory
 		envCacheDir := filepath.Join(homeDir, ".cfctl", "cache", currentEnv)
 		if err := os.MkdirAll(envCacheDir, 0700); err != nil {
@@ -710,7 +717,7 @@ func executeUserLogin(currentEnv string) {
 			exitWithError()
 		}
 
-		if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(accessToken), 0600); err != nil {
+		if err := os.WriteFile(filepath.Join(envCacheDir, "access_token"), []byte(newAccessToken), 0600); err != nil {
 			pterm.Error.Printf("Failed to save access token: %v\n", err)
 			exitWithError()
 		}
@@ -721,6 +728,12 @@ func executeUserLogin(currentEnv string) {
 
 // GetAPIEndpoint fetches the actual API endpoint from the config endpoint
 func GetAPIEndpoint(endpoint string) (string, error) {
+	// Handle gRPC+SSL protocol
+	if strings.HasPrefix(endpoint, "grpc+ssl://") {
+		// For gRPC+SSL endpoints, return as is since it's already in the correct format
+		return endpoint, nil
+	}
+
 	// Remove protocol prefix if exists
 	endpoint = strings.TrimPrefix(endpoint, "https://")
 	endpoint = strings.TrimPrefix(endpoint, "http://")
@@ -759,6 +772,20 @@ func GetAPIEndpoint(endpoint string) (string, error) {
 
 // GetIdentityEndpoint fetches the identity service endpoint from the API endpoint
 func GetIdentityEndpoint(apiEndpoint string) (string, bool, error) {
+	// If the endpoint is already gRPC+SSL
+	if strings.HasPrefix(apiEndpoint, "grpc+ssl://") {
+		// Check if it contains 'identity'
+		containsIdentity := strings.Contains(apiEndpoint, "identity")
+
+		// Remove /v1 suffix if present
+		if idx := strings.Index(apiEndpoint, "/v"); idx != -1 {
+			apiEndpoint = apiEndpoint[:idx]
+		}
+
+		return apiEndpoint, containsIdentity, nil
+	}
+
+	// Original HTTP/HTTPS handling logic
 	endpointListURL := fmt.Sprintf("%s/identity/endpoint/list", apiEndpoint)
 
 	payload := map[string]string{}
@@ -1062,7 +1089,7 @@ func loadEnvironmentConfig() {
 				"Please enable proxy mode and set identity endpoint first.")
 
 		pterm.DefaultBox.WithBoxStyle(pterm.NewStyle(pterm.FgCyan)).
-			Println("$ cfctl config endpoint -s identity\n" +
+			Println("$ cfctl setting endpoint -s identity\n" +
 				"$ cfctl login")
 
 		exitWithError()
