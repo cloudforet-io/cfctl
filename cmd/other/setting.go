@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
-	"google.golang.org/grpc/credentials/insecure"
 	"log"
 	"net/http"
 	"net/url"
@@ -14,6 +13,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"google.golang.org/grpc/credentials/insecure"
 
 	"gopkg.in/yaml.v3"
 
@@ -53,16 +54,21 @@ var settingInitCmd = &cobra.Command{
   cfctl setting init endpoint http://localhost:8080 --app
   cfctl setting init endpoint http://localhost:8080 --user
 	                         or 
-  cfctl setting init local`,
+  cfctl setting init static grpc://localhost:50051
+  cfctl setting init static grpc+ssl://inventory.-`,
 }
 
-// settingInitLocalCmd represents the setting init local command
-var settingInitLocalCmd = &cobra.Command{
-	Use:   "local",
-	Short: "Initialize local environment setting",
-	Long:  `Initialize a local environment setting with default configuration.`,
-	Args:  cobra.NoArgs,
+// settingInitStaticCmd represents the setting init direct command
+var settingInitStaticCmd = &cobra.Command{
+	Use:   "static [endpoint]",
+	Short: "Initialize static connection to a local or service endpoint",
+	Long: `Initialize configuration with a static service endpoint.
+This is useful for development or when connecting directly to specific service endpoints.`,
+	Example: `  cfctl setting init static grpc://localhost:50051
+  cfctl setting init static grpc+ssl://inventory-`,
+	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		endpoint := args[0]
 		settingDir := GetSettingDir()
 		if err := os.MkdirAll(settingDir, 0755); err != nil {
 			pterm.Error.Printf("Failed to create setting directory: %v\n", err)
@@ -74,14 +80,20 @@ var settingInitLocalCmd = &cobra.Command{
 		v.SetConfigFile(mainSettingPath)
 		v.SetConfigType("yaml")
 
-		// Check if local environment already exists
+		envName, err := parseEnvNameFromURL(endpoint)
+		if err != nil {
+			pterm.Error.Printf("Failed to parse environment name: %v\n", err)
+			return
+		}
+
+		// Check if environment already exists
 		if err := v.ReadInConfig(); err == nil {
 			environments := v.GetStringMap("environments")
-			if existingEnv, exists := environments["local"]; exists {
+			if existingEnv, exists := environments[envName]; exists {
 				currentConfig, _ := yaml.Marshal(map[string]interface{}{
-					"environment": "local",
+					"environment": envName,
 					"environments": map[string]interface{}{
-						"local": existingEnv,
+						envName: existingEnv,
 					},
 				})
 
@@ -91,7 +103,7 @@ var settingInitLocalCmd = &cobra.Command{
 					WithLeftPadding(4).
 					WithBoxStyle(pterm.NewStyle(pterm.FgYellow))
 
-				confirmBox.Println("Environment 'local' already exists.\nDo you want to overwrite it?")
+				confirmBox.Println(fmt.Sprintf("Environment '%s' already exists.\nDo you want to overwrite it?", envName))
 
 				pterm.Info.Println("Current configuration:")
 				fmt.Println(string(currentConfig))
@@ -102,13 +114,14 @@ var settingInitLocalCmd = &cobra.Command{
 				response = strings.ToLower(strings.TrimSpace(response))
 
 				if response != "y" {
-					pterm.Info.Println("Operation cancelled. Environment 'local' remains unchanged.")
+					pterm.Info.Printf("Operation cancelled. Environment '%s' remains unchanged.\n", envName)
 					return
 				}
 			}
 		}
 
-		updateSetting("local", "grpc://localhost:50051", "")
+		updateSetting(envName, endpoint, "")
+		pterm.Success.Printf("Successfully initialized direct connection to %s\n", endpoint)
 	},
 }
 
@@ -1201,10 +1214,16 @@ func updateGlobalSetting() {
 }
 
 func parseEnvNameFromURL(urlStr string) (string, error) {
+	isGRPC := strings.HasPrefix(urlStr, "grpc://") || strings.HasPrefix(urlStr, "grpc+ssl://")
+
 	urlStr = strings.TrimPrefix(urlStr, "https://")
 	urlStr = strings.TrimPrefix(urlStr, "http://")
 	urlStr = strings.TrimPrefix(urlStr, "grpc://")
 	urlStr = strings.TrimPrefix(urlStr, "grpc+ssl://")
+
+	if isGRPC {
+		return "local", nil
+	}
 
 	if strings.Contains(urlStr, "localhost") {
 		return "local", nil
@@ -1378,7 +1397,7 @@ func init() {
 	SettingCmd.AddCommand(settingEndpointCmd)
 	SettingCmd.AddCommand(showCmd)
 	settingInitCmd.AddCommand(settingInitEndpointCmd)
-	settingInitCmd.AddCommand(settingInitLocalCmd)
+	settingInitCmd.AddCommand(settingInitStaticCmd)
 
 	settingInitEndpointCmd.Flags().Bool("app", false, "Initialize as application configuration")
 	settingInitEndpointCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
