@@ -49,13 +49,16 @@ var settingInitCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Initialize a new environment setting",
 	Long:  `Initialize a new environment setting for cfctl by specifying an endpoint`,
-	Example: `  cfctl setting init endpoint https://example.com --app
-  cfctl setting init endpoint https://example.com --user
-  cfctl setting init endpoint http://localhost:8080 --app
-  cfctl setting init endpoint http://localhost:8080 --user
-	                         or 
-  cfctl setting init static grpc://localhost:50051
-  cfctl setting init static grpc+ssl://inventory.-`,
+	Run: func(cmd *cobra.Command, args []string) {
+		proxyFlag, _ := cmd.Flags().GetBool("proxy")
+		staticFlag, _ := cmd.Flags().GetBool("static")
+
+		if !proxyFlag && !staticFlag {
+			pterm.Error.Println("You must specify either proxy or static command.")
+			cmd.Help()
+			return
+		}
+	},
 }
 
 // settingInitStaticCmd represents the setting init direct command
@@ -125,16 +128,14 @@ This is useful for development or when connecting directly to specific service e
 	},
 }
 
-// settingInitEndpointCmd represents the setting init endpoint command
-var settingInitEndpointCmd = &cobra.Command{
-	Use:   "endpoint [URL]",
-	Short: "Initialize configuration with an endpoint",
-	Long:  `Specify an endpoint to initialize the environment configuration.`,
+// settingInitProxyCmd represents the setting init proxy command
+var settingInitProxyCmd = &cobra.Command{
+	Use:   "proxy [URL]",
+	Short: "Initialize configuration with a proxy URL",
+	Long:  `Specify a proxy URL to initialize the environment configuration.`,
 	Args:  cobra.ExactArgs(1),
-	Example: `  cfctl setting init endpoint https://example.com --app
-  cfctl setting init endpoint https://example.com --user
-  cfctl setting init endpoint http://localhost:8080 --app
-  cfctl setting init endpoint http://localhost:8080 --user`,
+	Example: `  cfctl setting init proxy http(s)://example.com --app
+  cfctl setting init proxy http(s)://example.com --user`,
 	Run: func(cmd *cobra.Command, args []string) {
 		endpointStr := args[0]
 		appFlag, _ := cmd.Flags().GetBool("app")
@@ -146,10 +147,30 @@ var settingInitEndpointCmd = &cobra.Command{
 			return
 		}
 
-		envName, err := parseEnvNameFromURL(endpointStr)
+		// Get environment name from user input
+		result, err := pterm.DefaultInteractiveTextInput.
+			WithDefaultText("default").
+			WithDefaultValue("default").
+			WithMultiLine(false).
+			Show("Environment name")
+
 		if err != nil {
-			pterm.Error.Printf("Failed to parse environment name from endpoint: %v\n", err)
+			pterm.Error.Printf("Failed to get environment name: %v\n", err)
 			return
+		}
+
+		// If user didn't input anything, use default
+		envPrefix := result
+		if envPrefix == "" || envPrefix == "default" {
+			envPrefix = "default"
+		}
+
+		// Add suffix based on flag
+		var envName string
+		if appFlag {
+			envName = envPrefix + "-app"
+		} else if userFlag {
+			envName = envPrefix + "-user"
 		}
 
 		settingDir := GetSettingDir()
@@ -163,16 +184,16 @@ var settingInitEndpointCmd = &cobra.Command{
 		v.SetConfigFile(mainSettingPath)
 		v.SetConfigType("yaml")
 
-		envSuffix := map[bool]string{true: "app", false: "user"}[appFlag]
-		fullEnvName := fmt.Sprintf("%s-%s", envName, envSuffix)
+		// Always set proxy to true
+		pterm.Success.Printf("Successfully initialized proxy connection to %s with environment '%s'\n", endpointStr, envName)
 
 		if err := v.ReadInConfig(); err == nil {
 			environments := v.GetStringMap("environments")
-			if existingEnv, exists := environments[fullEnvName]; exists {
+			if existingEnv, exists := environments[envName]; exists {
 				currentConfig, _ := yaml.Marshal(map[string]interface{}{
-					"environment": fullEnvName,
+					"environment": envName,
 					"environments": map[string]interface{}{
-						fullEnvName: existingEnv,
+						envName: existingEnv,
 					},
 				})
 
@@ -182,7 +203,7 @@ var settingInitEndpointCmd = &cobra.Command{
 					WithLeftPadding(4).
 					WithBoxStyle(pterm.NewStyle(pterm.FgYellow))
 
-				confirmBox.Println(fmt.Sprintf("Environment '%s' already exists.\nDo you want to overwrite it?", fullEnvName))
+				confirmBox.Println(fmt.Sprintf("Environment '%s' already exists.\nDo you want to overwrite it?", envName))
 
 				pterm.Info.Println("Current configuration:")
 				fmt.Println(string(currentConfig))
@@ -193,14 +214,14 @@ var settingInitEndpointCmd = &cobra.Command{
 				response = strings.ToLower(strings.TrimSpace(response))
 
 				if response != "y" {
-					pterm.Info.Printf("Operation cancelled. Environment '%s' remains unchanged.\n", fullEnvName)
+					pterm.Info.Printf("Operation cancelled. Environment '%s' remains unchanged.\n", envName)
 					return
 				}
 			}
 		}
 
 		// Update configuration
-		updateSetting(envName, endpointStr, envSuffix)
+		updateSetting(envName, endpointStr, "")
 	},
 }
 
@@ -1439,11 +1460,11 @@ func init() {
 	SettingCmd.AddCommand(envCmd)
 	SettingCmd.AddCommand(settingEndpointCmd)
 	SettingCmd.AddCommand(showCmd)
-	settingInitCmd.AddCommand(settingInitEndpointCmd)
+	settingInitCmd.AddCommand(settingInitProxyCmd)
 	settingInitCmd.AddCommand(settingInitStaticCmd)
 
-	settingInitEndpointCmd.Flags().Bool("app", false, "Initialize as application configuration")
-	settingInitEndpointCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
+	settingInitProxyCmd.Flags().Bool("app", false, "Initialize as application configuration")
+	settingInitProxyCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
 
 	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
 	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
