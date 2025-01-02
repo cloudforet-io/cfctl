@@ -493,6 +493,17 @@ You can either specify a new endpoint URL directly or use the service-based endp
 		if listFlag {
 			token, err := getToken(appV)
 			if err != nil {
+				if strings.HasSuffix(currentEnv, "-user") {
+					pterm.DefaultBox.WithTitle("Authentication Required").
+						WithTitleTopCenter().
+						WithBoxStyle(pterm.NewStyle(pterm.FgLightCyan)).
+						WithRightPadding(4).
+						WithLeftPadding(4).
+						Println("Please login to SpaceONE Console first.\n" +
+							"Run the following command to authenticate:\n\n" +
+							"$ cfctl login")
+					return
+				}
 				pterm.Error.Println("Error retrieving token:", err)
 				return
 			}
@@ -1289,6 +1300,19 @@ func updateSetting(envName, endpoint string, envSuffix string) {
 	// Set endpoint in environments map
 	envKey := fmt.Sprintf("environments.%s.endpoint", fullEnvName)
 	v.Set(envKey, endpoint)
+
+	// Set proxy based on endpoint type
+	proxyKey := fmt.Sprintf("environments.%s.proxy", fullEnvName)
+	if strings.HasPrefix(endpoint, "grpc://") || strings.HasPrefix(endpoint, "grpc+ssl://") {
+		// Check if endpoint contains 'identity'
+		if strings.Contains(strings.ToLower(endpoint), "identity") {
+			v.Set(proxyKey, true)
+		} else {
+			v.Set(proxyKey, false)
+		}
+	} else {
+		v.Set(proxyKey, true)
+	}
 
 	// Set additional configurations based on environment type
 	if envName == "local" {

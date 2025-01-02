@@ -236,6 +236,12 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	defer refClient.Reset()
 
 	// Call the service
+	fmt.Println("serviceName:", serviceName)
+	fmt.Println("verb:", verb)
+	fmt.Println("resourceName:", resourceName)
+	fmt.Println("apiEndpoint:", apiEndpoint)
+	fmt.Println("identityEndpoint:", identityEndpoint)
+	fmt.Println("hasIdentityService:", hasIdentityService)
 	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options, apiEndpoint, identityEndpoint, hasIdentityService)
 	if err != nil {
 		// Check if the error is about missing required parameters
@@ -427,19 +433,39 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 		}
 	} else {
 		if !hasIdentityService {
-			urlParts := strings.Split(apiEndpoint, "//")
-			if len(urlParts) != 2 {
-				return nil, fmt.Errorf("invalid API endpoint format: %s", apiEndpoint)
+			// Handle gRPC+SSL protocol directly
+			if strings.HasPrefix(config.Environments[config.Environment].Endpoint, "grpc+ssl://") {
+				endpoint := config.Environments[config.Environment].Endpoint
+				parts := strings.Split(endpoint, "/")
+				endpoint = strings.Join(parts[:len(parts)-1], "/")
+				parts = strings.Split(endpoint, "://")
+				if len(parts) != 2 {
+					return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
+				}
+
+				hostParts := strings.Split(parts[1], ".")
+				if len(hostParts) < 4 {
+					return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
+				}
+
+				// Replace service name
+				hostParts[0] = convertServiceNameToEndpoint(serviceName)
+				hostPort = strings.Join(hostParts, ".")
+			} else {
+				// Original HTTP/HTTPS handling
+				urlParts := strings.Split(apiEndpoint, "//")
+				if len(urlParts) != 2 {
+					return nil, fmt.Errorf("invalid API endpoint format: %s", apiEndpoint)
+				}
+
+				domainParts := strings.Split(urlParts[1], ".")
+				if len(domainParts) < 4 {
+					return nil, fmt.Errorf("invalid domain format in API endpoint: %s", apiEndpoint)
+				}
+
+				domainParts[0] = convertServiceNameToEndpoint(serviceName)
+				hostPort = strings.Join(domainParts, ".") + ":443"
 			}
-
-			domainParts := strings.Split(urlParts[1], ".")
-			if len(domainParts) < 4 {
-				return nil, fmt.Errorf("invalid domain format in API endpoint: %s", apiEndpoint)
-			}
-
-			domainParts[0] = convertServiceNameToEndpoint(serviceName)
-
-			hostPort = strings.Join(domainParts, ".") + ":443"
 		} else {
 			trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
 			parts := strings.Split(trimmedEndpoint, ".")

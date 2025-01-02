@@ -201,6 +201,39 @@ func FetchEndpointsMap(endpoint string) (map[string]string, error) {
 	}
 
 	if !hasIdentityService {
+		// Handle gRPC+SSL protocol directly
+		if strings.HasPrefix(endpoint, "grpc+ssl://") {
+			// Parse the endpoint
+			parts := strings.Split(endpoint, "/")
+			endpoint = strings.Join(parts[:len(parts)-1], "/")
+			parts = strings.Split(endpoint, "://")
+			if len(parts) != 2 {
+				return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
+			}
+
+			hostParts := strings.Split(parts[1], ".")
+			svc := hostParts[0]
+			baseDomain := strings.Join(hostParts[1:], ".")
+
+			// Configure TLS
+			tlsConfig := &tls.Config{
+				InsecureSkipVerify: false,
+			}
+			opts := []grpc.DialOption{
+				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
+			}
+
+			//If current service is not identity, modify hostPort to use identity service
+			if svc != "identity" {
+				hostPort := fmt.Sprintf("identity.%s", baseDomain)
+				endpoints, err := invokeGRPCEndpointList(hostPort, opts)
+				if err != nil {
+					return nil, fmt.Errorf("failed to get endpoints from gRPC: %v", err)
+				}
+				return endpoints, nil
+			}
+		}
+
 		payload := map[string]string{}
 		jsonPayload, err := json.Marshal(payload)
 		if err != nil {
