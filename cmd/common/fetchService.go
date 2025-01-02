@@ -145,7 +145,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 			steps := []string{
 				"1. Run 'cfctl login'",
 				"2. Enter your credentials when prompted",
-				"3. Select your workspace",
+				"3. Select your scope",
 				"4. Try your command again",
 			}
 
