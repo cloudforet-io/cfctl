@@ -236,12 +236,6 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	defer refClient.Reset()
 
 	// Call the service
-	fmt.Println("serviceName:", serviceName)
-	fmt.Println("verb:", verb)
-	fmt.Println("resourceName:", resourceName)
-	fmt.Println("apiEndpoint:", apiEndpoint)
-	fmt.Println("identityEndpoint:", identityEndpoint)
-	fmt.Println("hasIdentityService:", hasIdentityService)
 	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options, apiEndpoint, identityEndpoint, hasIdentityService)
 	if err != nil {
 		// Check if the error is about missing required parameters
