@@ -447,6 +447,17 @@ You can either specify a new endpoint URL directly or use the service-based endp
 		}
 
 		if urlFlag != "" {
+			// Check if the URL starts with grpc:// or grpc+ssl://
+			if strings.HasPrefix(urlFlag, "grpc://") || strings.HasPrefix(urlFlag, "grpc+ssl://") {
+				appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), urlFlag)
+				if err := appV.WriteConfig(); err != nil {
+					pterm.Error.Printf("Failed to update setting.yaml: %v\n", err)
+					return
+				}
+				pterm.Success.Printf("Updated endpoint for '%s' to '%s'.\n", currentEnv, urlFlag)
+				return
+			}
+
 			if strings.HasSuffix(currentEnv, "-app") {
 				pterm.Error.Println("Direct URL endpoint update is not available for user environment.")
 				pterm.Info.Println("Please use the service flag (-s) instead.")
@@ -491,6 +502,12 @@ You can either specify a new endpoint URL directly or use the service-based endp
 
 		// If list flag is provided, only show available services
 		if listFlag {
+			// Check if environment is local
+			if currentEnv == "local" {
+				pterm.Error.Println("Service listing is not available in local environment.")
+				return
+			}
+
 			token, err := getToken(appV)
 			if err != nil {
 				if strings.HasSuffix(currentEnv, "-user") {
@@ -693,7 +710,9 @@ You can either specify a new endpoint URL directly or use the service-based endp
 		if service != "" {
 			var endpoints map[string]string
 
-			if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+			if strings.HasPrefix(endpoint, "grpc://") || strings.HasPrefix(endpoint, "grpc+ssl://") {
+				appV.Set(fmt.Sprintf("environments.%s.endpoint", currentEnv), endpoint)
+			} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
 				// HTTP/HTTPS endpoint case
 				client := &http.Client{}
 				req, err := http.NewRequest("POST", restIdentityEndpoint+"/endpoint/list", bytes.NewBuffer([]byte("{}")))
