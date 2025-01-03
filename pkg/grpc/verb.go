@@ -165,7 +165,7 @@ func AddVerbCommands(parentCmd *cobra.Command, serviceName string, groupID strin
 		verbCmd.Flags().BoolP("copy", "y", false, "Copy the output to the clipboard (copies any output format)")
 
 		// Set custom help function
-		verbCmd.SetHelpFunc(format.CustomVerbHelpFunc)
+		verbCmd.SetHelpFunc(format.SetVerbHelp)
 
 		// Update example for list command
 		if currentVerb == "list" {
