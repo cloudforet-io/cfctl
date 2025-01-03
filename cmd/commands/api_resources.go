@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cloudforet-io/cfctl/pkg/settings"
+	"github.com/cloudforet-io/cfctl/pkg/configs"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
@@ -34,7 +34,7 @@ func FetchApiResourcesCmd(serviceName string) *cobra.Command {
 }
 
 func listAPIResources(serviceName string) error {
-	setting, err := settings.LoadSetting()
+	setting, err := configs.LoadSetting()
 	if err != nil {
 		return fmt.Errorf("failed to load setting: %v", err)
 	}
@@ -63,7 +63,7 @@ func listAPIResources(serviceName string) error {
 	return nil
 }
 
-func getServiceEndpoint(config *settings.Config, serviceName string) (string, error) {
+func getServiceEndpoint(config *configs.Setting, serviceName string) (string, error) {
 	envConfig := config.Environments[config.Environment]
 	if envConfig.URL == "" {
 		return "", fmt.Errorf("URL not found in environment config")
@@ -113,7 +113,7 @@ func loadShortNames() (map[string]string, error) {
 	return shortNamesMap, nil
 }
 
-func fetchServiceResources(serviceName, endpoint string, shortNamesMap map[string]string, config *settings.Config) ([][]string, error) {
+func fetchServiceResources(serviceName, endpoint string, shortNamesMap map[string]string, config *configs.Setting) ([][]string, error) {
 	parts := strings.Split(endpoint, "://")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)

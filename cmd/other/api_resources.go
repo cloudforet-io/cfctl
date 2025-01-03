@@ -366,47 +366,6 @@ func FetchEndpointsMap(endpoint string) (map[string]string, error) {
 	}
 }
 
-func callGRPCMethod(hostPort, service, method string, requestPayload interface{}) ([]byte, error) {
-	// Configure gRPC connection
-	var opts []grpc.DialOption
-	if strings.HasPrefix(hostPort, "identity.api") {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: false, // Enable server certificate verification
-		}
-		creds := credentials.NewTLS(tlsConfig)
-		opts = append(opts, grpc.WithTransportCredentials(creds))
-	} else {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	}
-
-	// Connect to the gRPC server
-	conn, err := grpc.Dial(hostPort, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to gRPC server: %v", err)
-	}
-	defer conn.Close()
-
-	// Full method name (e.g., "/spaceone.api.identity.v2.Endpoint/List")
-	fullMethod := fmt.Sprintf("/%s/%s", service, method)
-
-	// Serialize the request payload to JSON
-	reqData, err := json.Marshal(requestPayload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request payload: %v", err)
-	}
-
-	// Prepare a generic response container
-	var respData json.RawMessage
-
-	// Invoke the gRPC method
-	err = conn.Invoke(context.Background(), fullMethod, reqData, &respData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to invoke method: %v", err)
-	}
-
-	return respData, nil
-}
-
 func fetchServiceResources(service, endpoint string, shortNamesMap map[string]string) ([][]string, error) {
 	// Configure gRPC connection based on TLS usage
 	parts := strings.Split(endpoint, "://")

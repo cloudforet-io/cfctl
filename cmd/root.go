@@ -9,6 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudforet-io/cfctl/cmd/commands"
+	"github.com/cloudforet-io/cfctl/pkg/format"
+	grpc2 "github.com/cloudforet-io/cfctl/pkg/grpc"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
@@ -17,7 +20,6 @@ import (
 
 	"github.com/spf13/viper"
 
-	"github.com/cloudforet-io/cfctl/cmd/common"
 	"github.com/cloudforet-io/cfctl/cmd/other"
 
 	"github.com/pterm/pterm"
@@ -574,13 +576,13 @@ func createServiceCommand(serviceName string) *cobra.Command {
 		Title: "Other Commands:",
 	})
 
-	cmd.SetHelpFunc(common.CustomParentHelpFunc)
+	cmd.SetHelpFunc(format.SetParentHelp)
 
-	apiResourcesCmd := common.FetchApiResourcesCmd(serviceName)
+	apiResourcesCmd := commands.FetchApiResourcesCmd(serviceName)
 	apiResourcesCmd.GroupID = "available"
 	cmd.AddCommand(apiResourcesCmd)
 
-	err := common.AddVerbCommands(cmd, serviceName, "other")
+	err := grpc2.AddVerbCommands(cmd, serviceName, "other")
 	if err != nil {
 		_, err2 := fmt.Fprintf(os.Stderr, "Error adding verb commands for %s: %v\n", serviceName, err)
 		if err2 != nil {

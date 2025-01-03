@@ -1430,38 +1430,6 @@ func convertToSlice(s []interface{}) []interface{} {
 	return result
 }
 
-// constructEndpoint generates the gRPC endpoint string from baseURL
-func constructEndpoint(baseURL string) (string, error) {
-	if !strings.Contains(baseURL, "://") {
-		baseURL = "https://" + baseURL
-	}
-	parsedURL, err := url.Parse(baseURL)
-	if err != nil {
-		return "", err
-	}
-	hostname := parsedURL.Hostname()
-
-	switch {
-	case strings.Contains(hostname, ".dev.spaceone.dev"):
-		return fmt.Sprintf("grpc+ssl://identity.api.dev.spaceone.dev:443"), nil
-	case strings.Contains(hostname, ".stg.spaceone.dev"):
-		return fmt.Sprintf("grpc+ssl://identity.api.stg.spaceone.dev:443"), nil
-	}
-
-	if strings.Contains(hostname, "spaceone.megazone.io") {
-		region := "kr1"
-		if strings.Contains(hostname, "jp1.") {
-			region = "jp1"
-		} else if strings.Contains(hostname, "us1.") {
-			region = "us1"
-		}
-
-		return fmt.Sprintf("https://console-v2.%s.api.spaceone.megazone.io/identity", region), nil
-	}
-
-	return "", fmt.Errorf("unknown environment in URL: %s", hostname)
-}
-
 func init() {
 	SettingCmd.AddCommand(settingInitCmd)
 	SettingCmd.AddCommand(settingEndpointCmd)
