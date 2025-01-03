@@ -15,17 +15,17 @@ import (
 	"sort"
 	"strings"
 
-	"google.golang.org/grpc/credentials/insecure"
-
+	"github.com/cloudforet-io/cfctl/pkg/rest"
 	"gopkg.in/yaml.v3"
 
-	"github.com/jhump/protoreflect/dynamic"
-
-	"github.com/jhump/protoreflect/grpcreflect"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 
+	pkggrpc "github.com/cloudforet-io/cfctl/pkg/grpc"
+	"github.com/jhump/protoreflect/dynamic"
+	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -55,7 +55,7 @@ var settingInitCmd = &cobra.Command{
 		staticFlag, _ := cmd.Flags().GetBool("static")
 
 		if !proxyFlag && !staticFlag {
-			pterm.Error.Println("You must specify either proxy or static command.")
+			pterm.Error.Println("You must specify either 'proxy' or 'static' command.")
 			cmd.Help()
 			return
 		}
@@ -69,9 +69,27 @@ var settingInitStaticCmd = &cobra.Command{
 	Long: `Initialize configuration with a static service endpoint.
 This is useful for development or when connecting directly to specific service endpoints.`,
 	Example: `  cfctl setting init static grpc://localhost:50051
-  cfctl setting init static grpc+ssl://inventory-`,
+  cfctl setting init static grpc[+ssl]://inventory-`,
 	Args: cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		// Get environment name from user input
+		result, err := pterm.DefaultInteractiveTextInput.
+			WithDefaultText("default").
+			WithDefaultValue("default").
+			WithMultiLine(false).
+			Show("Environment name")
+
+		if err != nil {
+			pterm.Error.Printf("Failed to get environment name: %v\n", err)
+			return
+		}
+
+		// If user didn't input anything, use default
+		envName := result
+		if envName == "" || envName == "default" {
+			envName = "default"
+		}
+
 		endpoint := args[0]
 		settingDir := GetSettingDir()
 		if err := os.MkdirAll(settingDir, 0755); err != nil {
@@ -84,11 +102,11 @@ This is useful for development or when connecting directly to specific service e
 		v.SetConfigFile(mainSettingPath)
 		v.SetConfigType("yaml")
 
-		envName, err := parseEnvNameFromURL(endpoint)
-		if err != nil {
-			pterm.Error.Printf("Failed to parse environment name: %v\n", err)
-			return
-		}
+		//envName, err := parseEnvNameFromURL(endpoint)
+		//if err != nil {
+		//	pterm.Error.Printf("Failed to parse environment name: %v\n", err)
+		//	return
+		//}
 
 		// Check if environment already exists
 		if err := v.ReadInConfig(); err == nil {
@@ -124,8 +142,15 @@ This is useful for development or when connecting directly to specific service e
 			}
 		}
 
-		updateSetting(envName, endpoint, "")
 		pterm.Success.Printf("Successfully initialized direct connection to %s\n", endpoint)
+		updateSetting(envName, endpoint, "")
+		if err := v.ReadInConfig(); err == nil {
+			v.Set(fmt.Sprintf("environments.%s.proxy", envName), false)
+			if err := v.WriteConfig(); err != nil {
+				pterm.Error.Printf("Failed to update proxy setting: %v\n", err)
+				return
+			}
+		}
 	},
 }
 
@@ -135,8 +160,8 @@ var settingInitProxyCmd = &cobra.Command{
 	Short: "Initialize configuration with a proxy URL",
 	Long:  `Specify a proxy URL to initialize the environment configuration.`,
 	Args:  cobra.ExactArgs(1),
-	Example: `  cfctl setting init proxy http(s)://example.com --app
-  cfctl setting init proxy http(s)://example.com --user`,
+	Example: `  cfctl setting init proxy http[s]://example.com --app
+  cfctl setting init proxy http[s]://example.com --user`,
 	Run: func(cmd *cobra.Command, args []string) {
 		endpointStr := args[0]
 		appFlag, _ := cmd.Flags().GetBool("app")
@@ -174,6 +199,13 @@ var settingInitProxyCmd = &cobra.Command{
 			envName = envPrefix + "-user"
 		}
 
+		var envSuffix string
+		if userFlag {
+			envSuffix = "user"
+		} else if appFlag {
+			envSuffix = "app"
+		}
+
 		settingDir := GetSettingDir()
 		if err := os.MkdirAll(settingDir, 0755); err != nil {
 			pterm.Error.Printf("Failed to create setting directory: %v\n", err)
@@ -186,7 +218,7 @@ var settingInitProxyCmd = &cobra.Command{
 		v.SetConfigType("yaml")
 
 		// Always set proxy to true
-		pterm.Success.Printf("Successfully initialized proxy connection to %s with environment '%s'\n", endpointStr, envName)
+		pterm.Success.Printf("Successfully initialized proxy connection to %s\n", endpointStr)
 
 		if err := v.ReadInConfig(); err == nil {
 			environments := v.GetStringMap("environments")
@@ -222,7 +254,7 @@ var settingInitProxyCmd = &cobra.Command{
 		}
 
 		// Update configuration
-		updateSetting(envName, endpointStr, "")
+		updateSetting(envName, endpointStr, envSuffix)
 	},
 }
 
@@ -356,18 +388,71 @@ var envCmd = &cobra.Command{
 				return
 			}
 
-			pterm.Println("Available Environments:")
+			tableData := pterm.TableData{
+				{"Environment", "Type", "Endpoint", "Proxy", "Current"},
+			}
 
-			// Print environments with their source and current status
+			var envNames []string
 			for envName := range allEnvs {
-				if envName == currentEnv {
-					pterm.FgGreen.Printf("%s (current)\n", envName)
+				envNames = append(envNames, envName)
+			}
+			sort.Strings(envNames)
+
+			for _, envName := range envNames {
+				envConfig := appV.GetStringMapString(fmt.Sprintf("environments.%s", envName))
+
+				var envType string
+				if strings.HasSuffix(envName, "-user") {
+					envType = "User"
+				} else if strings.HasSuffix(envName, "-app") {
+					envType = "App"
 				} else {
-					if _, isApp := appEnvMap[envName]; isApp {
-						pterm.Printf("%s\n", envName)
+					envType = "Static"
+				}
+
+				endpoint := envConfig["endpoint"]
+
+				proxyEnabled := appV.GetBool(fmt.Sprintf("environments.%s.proxy", envName))
+				proxyStatus := ""
+				if proxyEnabled {
+					proxyStatus = pterm.Sprint("enabled")
+				} else {
+					proxyStatus = pterm.Sprint("disabled")
+				}
+
+				if envName == currentEnv {
+					proxyText := "enabled"
+					if !proxyEnabled {
+						proxyText = "disabled"
 					}
+
+					tableData = append(tableData, []string{
+						pterm.FgYellow.Sprint(envName),
+						pterm.FgYellow.Sprint(envType),
+						pterm.FgYellow.Sprint(endpoint),
+						pterm.FgYellow.Sprint(proxyText),
+						"   " + pterm.FgYellow.Sprint("✓") + "   ",
+					})
+				} else {
+					tableData = append(tableData, []string{
+						envName,
+						envType,
+						endpoint,
+						proxyStatus,
+						"       ",
+					})
 				}
 			}
+
+			pterm.Info.Println("Available Environments")
+
+			pterm.DefaultTable.
+				WithHasHeader().
+				WithData(tableData).
+				WithBoxed(true).
+				WithHeaderStyle(pterm.NewStyle(pterm.FgLightCyan)).
+				Render()
+
 			return
 		}
 
@@ -503,13 +588,13 @@ You can either specify a new endpoint URL directly or use the service-based endp
 		var identityEndpoint, restIdentityEndpoint string
 		var hasIdentityService bool
 		if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-			apiEndpoint, err := GetAPIEndpoint(endpoint)
+			apiEndpoint, err := rest.GetAPIEndpoint(endpoint)
 			if err != nil {
 				pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
 				return
 			}
 
-			identityEndpoint, hasIdentityService, err = GetIdentityEndpoint(apiEndpoint)
+			identityEndpoint, hasIdentityService, err = rest.GetIdentityEndpoint(apiEndpoint)
 			if err != nil {
 				pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 				return
@@ -846,12 +931,12 @@ func invokeGRPCEndpointList(hostPort string, opts []grpc.DialOption) (map[string
 }
 
 // settingTokenCmd updates the token for the current environment
+// settingTokenCmd updates the token for the current environment
 var settingTokenCmd = &cobra.Command{
 	Use:   "token [token_value]",
 	Short: "Set the token for the current environment",
-	Long: `Update the token for the current environment.
-This command only works with app environments (-app suffix).`,
-	Args: cobra.ExactArgs(1),
+	Long:  `Update the token for the current environment.`,
+	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		// Load current environment configuration file
 		settingDir := GetSettingDir()
@@ -873,12 +958,6 @@ This command only works with app environments (-app suffix).`,
 			return
 		}
 
-		// Check if it's an app environment
-		if !strings.HasSuffix(currentEnv, "-app") {
-			pterm.Error.Println("Token can only be set for app environments (-app suffix).")
-			return
-		}
-
 		// Update token
 		tokenKey := fmt.Sprintf("environments.%s.token", currentEnv)
 		v.Set(tokenKey, args[0])
@@ -890,6 +969,7 @@ This command only works with app environments (-app suffix).`,
 		}
 
 		pterm.Success.Printf("Token updated for '%s' environment.\n", currentEnv)
+		pterm.Info.Printf("Configuration saved to: %s\n", settingPath)
 	},
 }
 
@@ -1264,7 +1344,7 @@ func isIPAddress(host string) bool {
 }
 
 // updateSetting updates the configuration files
-func updateSetting(envName, endpoint string, envSuffix string) {
+func updateSetting(envName, endpoint, envSuffix string) {
 	settingDir := GetSettingDir()
 	mainSettingPath := filepath.Join(settingDir, "setting.yaml")
 
@@ -1272,19 +1352,11 @@ func updateSetting(envName, endpoint string, envSuffix string) {
 	v.SetConfigFile(mainSettingPath)
 	v.SetConfigType("yaml")
 
-	// Create full environment name
-	var fullEnvName string
-	if envSuffix == "" {
-		fullEnvName = envName
-	} else {
-		fullEnvName = fmt.Sprintf("%s-%s", envName, envSuffix)
-	}
-
 	// Read existing config if it exists
 	_ = v.ReadInConfig()
 
 	// Set environment
-	v.Set("environment", fullEnvName)
+	v.Set("environment", envName)
 
 	// Handle protocol for endpoint
 	if !strings.Contains(endpoint, "://") {
@@ -1296,49 +1368,26 @@ func updateSetting(envName, endpoint string, envSuffix string) {
 	}
 
 	// Set endpoint in environments map
-	envKey := fmt.Sprintf("environments.%s.endpoint", fullEnvName)
+	envKey := fmt.Sprintf("environments.%s.endpoint", envName)
 	v.Set(envKey, endpoint)
 
-	// Set proxy based on endpoint type
-	proxyKey := fmt.Sprintf("environments.%s.proxy", fullEnvName)
+	proxyKey := fmt.Sprintf("environments.%s.proxy", envName)
 	if strings.HasPrefix(endpoint, "grpc://") || strings.HasPrefix(endpoint, "grpc+ssl://") {
-		// Check if endpoint contains 'identity'
-		if strings.Contains(strings.ToLower(endpoint), "identity") {
+		isProxy, err := pkggrpc.CheckIdentityProxyAvailable(endpoint)
+		if err != nil {
+			pterm.Warning.Printf("Failed to check gRPC endpoint: %v\n", err)
 			v.Set(proxyKey, true)
 		} else {
-			v.Set(proxyKey, false)
+			v.Set(proxyKey, isProxy)
 		}
 	} else {
 		v.Set(proxyKey, true)
 	}
 
-	// Set additional configurations based on environment type
-	if envName == "local" {
-		// Local environment settings (only for pure 'local', not 'local-user' or 'local-app')
-		if envSuffix == "" {
-			tokenKey := fmt.Sprintf("environments.%s.token", fullEnvName)
-			v.Set(tokenKey, "no_token")
-		} else {
-			// Set proxy for local-user and local-app
-			proxyKey := fmt.Sprintf("environments.%s.proxy", fullEnvName)
-			v.Set(proxyKey, true)
-
-			// Set token only for app environment
-			if envSuffix == "app" {
-				tokenKey := fmt.Sprintf("environments.%s.token", fullEnvName)
-				v.Set(tokenKey, "no_token")
-			}
-		}
-	} else {
-		// Non-local environment settings
-		proxyKey := fmt.Sprintf("environments.%s.proxy", fullEnvName)
-		v.Set(proxyKey, true)
-
-		// Only set token for app environment
-		if envSuffix == "app" {
-			tokenKey := fmt.Sprintf("environments.%s.token", fullEnvName)
-			v.Set(tokenKey, "no_token")
-		}
+	// Set token for non-user environments
+	if envSuffix != "user" {
+		tokenKey := fmt.Sprintf("environments.%s.token", envName)
+		v.Set(tokenKey, "no_token")
 	}
 
 	if err := v.WriteConfig(); err != nil {
@@ -1346,7 +1395,8 @@ func updateSetting(envName, endpoint string, envSuffix string) {
 		return
 	}
 
-	pterm.Success.Printf("Environment '%s' successfully initialized.\n", fullEnvName)
+	pterm.Success.Printf("Environment '%s' successfully initialized.\n", envName)
+	pterm.Info.Printf("Configuration saved to: %s\n", mainSettingPath)
 }
 
 // convertToStringMap converts map[interface{}]interface{} to map[string]interface{}
@@ -1381,42 +1431,11 @@ func convertToSlice(s []interface{}) []interface{} {
 	return result
 }
 
-// constructEndpoint generates the gRPC endpoint string from baseURL
-func constructEndpoint(baseURL string) (string, error) {
-	if !strings.Contains(baseURL, "://") {
-		baseURL = "https://" + baseURL
-	}
-	parsedURL, err := url.Parse(baseURL)
-	if err != nil {
-		return "", err
-	}
-	hostname := parsedURL.Hostname()
-
-	switch {
-	case strings.Contains(hostname, ".dev.spaceone.dev"):
-		return fmt.Sprintf("grpc+ssl://identity.api.dev.spaceone.dev:443"), nil
-	case strings.Contains(hostname, ".stg.spaceone.dev"):
-		return fmt.Sprintf("grpc+ssl://identity.api.stg.spaceone.dev:443"), nil
-	}
-
-	if strings.Contains(hostname, "spaceone.megazone.io") {
-		region := "kr1"
-		if strings.Contains(hostname, "jp1.") {
-			region = "jp1"
-		} else if strings.Contains(hostname, "us1.") {
-			region = "us1"
-		}
-
-		return fmt.Sprintf("https://console-v2.%s.api.spaceone.megazone.io/identity", region), nil
-	}
-
-	return "", fmt.Errorf("unknown environment in URL: %s", hostname)
-}
-
 func init() {
 	SettingCmd.AddCommand(settingInitCmd)
-	SettingCmd.AddCommand(envCmd)
 	SettingCmd.AddCommand(settingEndpointCmd)
+	SettingCmd.AddCommand(settingTokenCmd)
+	SettingCmd.AddCommand(envCmd)
 	SettingCmd.AddCommand(showCmd)
 	settingInitCmd.AddCommand(settingInitProxyCmd)
 	settingInitCmd.AddCommand(settingInitStaticCmd)

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/cloudforet-io/cfctl/pkg/rest"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -52,7 +53,7 @@ func validateServiceCommand(service, verb, resource string) error {
 	}
 
 	// Fetch endpoints map
-	endpointsMap, err := FetchEndpointsMap(endpoint)
+	endpointsMap, err := rest.FetchEndpointsMap(endpoint)
 	if err != nil {
 		return fmt.Errorf("failed to fetch endpoints: %v", err)
 	}

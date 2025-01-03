@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/AlecAivazis/survey/v2"
+	"github.com/cloudforet-io/cfctl/pkg/rest"
 	"github.com/eiannone/keyboard"
 
 	"google.golang.org/grpc/metadata"
@@ -82,7 +83,7 @@ func executeLogin(cmd *cobra.Command, args []string) {
 
 	// Check if config file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		pterm.Error.Println("No valid configuration found.")
+		pterm.Warning.Println("No valid configuration found.")
 		pterm.Info.Println("Please run 'cfctl setting init' to set up your configuration.")
 		pterm.Info.Println("After initialization, run 'cfctl login' to authenticate.")
 		return
@@ -425,7 +426,7 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	// Get console API endpoint
-	apiEndpoint, err := GetAPIEndpoint(baseUrl)
+	apiEndpoint, err := rest.GetAPIEndpoint(baseUrl)
 	if err != nil {
 		pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
 		exitWithError()
@@ -433,7 +434,7 @@ func executeUserLogin(currentEnv string) {
 	restIdentityEndpoint := apiEndpoint + "/identity"
 
 	// Get identity service endpoint
-	identityEndpoint, hasIdentityService, err := GetIdentityEndpoint(apiEndpoint)
+	identityEndpoint, hasIdentityService, err := rest.GetIdentityEndpoint(apiEndpoint)
 	if err != nil {
 		pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 		exitWithError()
@@ -724,50 +725,6 @@ func executeUserLogin(currentEnv string) {
 
 		pterm.Success.Println("Successfully logged in and saved token.")
 	}
-}
-
-// GetAPIEndpoint fetches the actual API endpoint from the config endpoint
-func GetAPIEndpoint(endpoint string) (string, error) {
-	// Handle gRPC+SSL protocol
-	if strings.HasPrefix(endpoint, "grpc+ssl://") {
-		// For gRPC+SSL endpoints, return as is since it's already in the correct format
-		return endpoint, nil
-	}
-
-	// Remove protocol prefix if exists
-	endpoint = strings.TrimPrefix(endpoint, "https://")
-	endpoint = strings.TrimPrefix(endpoint, "http://")
-
-	// Construct config endpoint
-	configURL := fmt.Sprintf("https://%s/config/production.json", endpoint)
-
-	// Make HTTP request
-	resp, err := http.Get(configURL)
-	if err != nil {
-		return "", fmt.Errorf("failed to fetch config: %v", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("failed to fetch config, status code: %d", resp.StatusCode)
-	}
-
-	// Parse JSON response
-	var config struct {
-		ConsoleAPIV2 struct {
-			Endpoint string `json:"ENDPOINT"`
-		} `json:"CONSOLE_API_V2"`
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(&config); err != nil {
-		return "", fmt.Errorf("failed to parse config: %v", err)
-	}
-
-	if config.ConsoleAPIV2.Endpoint == "" {
-		return "", fmt.Errorf("no API endpoint found in config")
-	}
-
-	return strings.TrimSuffix(config.ConsoleAPIV2.Endpoint, "/"), nil
 }
 
 // GetIdentityEndpoint fetches the identity service endpoint from the API endpoint

@@ -3,22 +3,17 @@
 package other
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 
-	"github.com/jhump/protoreflect/dynamic"
-	"github.com/jhump/protoreflect/grpcreflect"
-
+	"github.com/cloudforet-io/cfctl/pkg/rest"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v2"
@@ -83,7 +78,7 @@ var ApiResourcesCmd = &cobra.Command{
 		}
 
 		if envConfig == nil {
-			log.Fatalf("No configuration found for environment '%s'", currentEnv)
+			return
 		}
 
 		// Try to load endpoints from cache first
@@ -92,10 +87,10 @@ var ApiResourcesCmd = &cobra.Command{
 			// If cache loading fails, fall back to fetching from identity service
 			endpoint, ok := envConfig["endpoint"].(string)
 			if !ok || endpoint == "" {
-				log.Fatalf("No endpoint found for environment '%s'", currentEnv)
+				return
 			}
 
-			endpointsMap, err = FetchEndpointsMap(endpoint)
+			endpointsMap, err = rest.FetchEndpointsMap(endpoint)
 			if err != nil {
 				log.Fatalf("Failed to fetch endpointsMap from '%s': %v", endpoint, err)
 			}
@@ -188,223 +183,6 @@ var ApiResourcesCmd = &cobra.Command{
 
 		renderTable(allData)
 	},
-}
-
-func FetchEndpointsMap(endpoint string) (map[string]string, error) {
-	// Get identity service endpoint
-	identityEndpoint, hasIdentityService, err := GetIdentityEndpoint(endpoint)
-	listEndpointsUrl := endpoint + "/identity/endpoint/list"
-
-	if err != nil {
-		pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
-		exitWithError()
-	}
-
-	if !hasIdentityService {
-		// Handle gRPC+SSL protocol directly
-		if strings.HasPrefix(endpoint, "grpc+ssl://") {
-			// Parse the endpoint
-			parts := strings.Split(endpoint, "/")
-			endpoint = strings.Join(parts[:len(parts)-1], "/")
-			parts = strings.Split(endpoint, "://")
-			if len(parts) != 2 {
-				return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
-			}
-
-			hostParts := strings.Split(parts[1], ".")
-			svc := hostParts[0]
-			baseDomain := strings.Join(hostParts[1:], ".")
-
-			// Configure TLS
-			tlsConfig := &tls.Config{
-				InsecureSkipVerify: false,
-			}
-			opts := []grpc.DialOption{
-				grpc.WithTransportCredentials(credentials.NewTLS(tlsConfig)),
-			}
-
-			//If current service is not identity, modify hostPort to use identity service
-			if svc != "identity" {
-				hostPort := fmt.Sprintf("identity.%s", baseDomain)
-				endpoints, err := invokeGRPCEndpointList(hostPort, opts)
-				if err != nil {
-					return nil, fmt.Errorf("failed to get endpoints from gRPC: %v", err)
-				}
-				return endpoints, nil
-			}
-		}
-
-		payload := map[string]string{}
-		jsonPayload, err := json.Marshal(payload)
-		if err != nil {
-			return nil, err
-		}
-
-		req, err := http.NewRequest("POST", listEndpointsUrl, bytes.NewBuffer(jsonPayload))
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("accept", "application/json")
-		req.Header.Set("Content-Type", "application/json")
-
-		client := &http.Client{}
-		resp, err := client.Do(req)
-		if err != nil {
-			return nil, err
-		}
-		defer resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("failed to fetch endpoints, status code: %d", resp.StatusCode)
-		}
-
-		var result struct {
-			Results []struct {
-				Service  string `json:"service"`
-				Endpoint string `json:"endpoint"`
-			} `json:"results"`
-		}
-
-		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-			return nil, err
-		}
-
-		// Convert to endpointsMap format
-		endpointsMap := make(map[string]string)
-		for _, service := range result.Results {
-			endpointsMap[service.Service] = service.Endpoint
-		}
-
-		return endpointsMap, nil
-	} else {
-		// Parse the endpoint
-		parts := strings.Split(identityEndpoint, "://")
-		if len(parts) != 2 {
-			return nil, fmt.Errorf("invalid endpoint format: %s", identityEndpoint)
-		}
-
-		scheme := parts[0]
-		hostPort := parts[1]
-
-		// Configure gRPC connection based on scheme
-		var opts []grpc.DialOption
-		if scheme == "grpc+ssl" {
-			tlsConfig := &tls.Config{
-				InsecureSkipVerify: false, // Enable server certificate verification
-			}
-			creds := credentials.NewTLS(tlsConfig)
-			opts = append(opts, grpc.WithTransportCredentials(creds))
-		} else {
-			opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		}
-
-		// Establish the connection
-		conn, err := grpc.Dial(hostPort, opts...)
-		if err != nil {
-			return nil, fmt.Errorf("connection failed: unable to connect to %s: %v", identityEndpoint, err)
-		}
-		defer conn.Close()
-
-		// Use Reflection to discover services
-		refClient := grpcreflect.NewClient(context.Background(), grpc_reflection_v1alpha.NewServerReflectionClient(conn))
-		defer refClient.Reset()
-
-		// Resolve the service and method
-		serviceName := "spaceone.api.identity.v2.Endpoint"
-		methodName := "list"
-
-		serviceDesc, err := refClient.ResolveService(serviceName)
-		if err != nil {
-			return nil, fmt.Errorf("failed to resolve service %s: %v", serviceName, err)
-		}
-
-		methodDesc := serviceDesc.FindMethodByName(methodName)
-		if methodDesc == nil {
-			return nil, fmt.Errorf("method not found: %s", methodName)
-		}
-
-		// Dynamically create the request message
-		reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
-
-		// Set "query" field (optional)
-		queryField := methodDesc.GetInputType().FindFieldByName("query")
-		if queryField != nil && queryField.GetMessageType() != nil {
-			queryMsg := dynamic.NewMessage(queryField.GetMessageType())
-			// Set additional query fields here if needed
-			reqMsg.SetFieldByName("query", queryMsg)
-		}
-
-		// Prepare an empty response message
-		respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
-
-		// Full method name
-		fullMethod := fmt.Sprintf("/%s/%s", serviceName, methodName)
-
-		// Invoke the gRPC method
-		err = conn.Invoke(context.Background(), fullMethod, reqMsg, respMsg)
-		if err != nil {
-			return nil, fmt.Errorf("failed to invoke method %s: %v", fullMethod, err)
-		}
-
-		// Process the response to extract `service` and `endpoint`
-		endpointsMap := make(map[string]string)
-		resultsField := respMsg.FindFieldDescriptorByName("results")
-		if resultsField == nil {
-			return nil, fmt.Errorf("'results' field not found in response")
-		}
-
-		results := respMsg.GetField(resultsField).([]interface{})
-		for _, result := range results {
-			resultMsg := result.(*dynamic.Message)
-			serviceName := resultMsg.GetFieldByName("service").(string)
-			serviceEndpoint := resultMsg.GetFieldByName("endpoint").(string)
-			endpointsMap[serviceName] = serviceEndpoint
-		}
-
-		return endpointsMap, nil
-	}
-}
-
-func callGRPCMethod(hostPort, service, method string, requestPayload interface{}) ([]byte, error) {
-	// Configure gRPC connection
-	var opts []grpc.DialOption
-	if strings.HasPrefix(hostPort, "identity.api") {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: false, // Enable server certificate verification
-		}
-		creds := credentials.NewTLS(tlsConfig)
-		opts = append(opts, grpc.WithTransportCredentials(creds))
-	} else {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	}
-
-	// Connect to the gRPC server
-	conn, err := grpc.Dial(hostPort, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to connect to gRPC server: %v", err)
-	}
-	defer conn.Close()
-
-	// Full method name (e.g., "/spaceone.api.identity.v2.Endpoint/List")
-	fullMethod := fmt.Sprintf("/%s/%s", service, method)
-
-	// Serialize the request payload to JSON
-	reqData, err := json.Marshal(requestPayload)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request payload: %v", err)
-	}
-
-	// Prepare a generic response container
-	var respData json.RawMessage
-
-	// Invoke the gRPC method
-	err = conn.Invoke(context.Background(), fullMethod, reqData, &respData)
-	if err != nil {
-		return nil, fmt.Errorf("failed to invoke method: %v", err)
-	}
-
-	return respData, nil
 }
 
 func fetchServiceResources(service, endpoint string, shortNamesMap map[string]string) ([][]string, error) {
