@@ -15,17 +15,16 @@ import (
 	"sort"
 	"strings"
 
-	"google.golang.org/grpc/credentials/insecure"
-
 	"gopkg.in/yaml.v3"
 
-	"github.com/jhump/protoreflect/dynamic"
-
-	"github.com/jhump/protoreflect/grpcreflect"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 
+	pkggrpc "github.com/cloudforet-io/cfctl/pkg/grpc"
+	"github.com/jhump/protoreflect/dynamic"
+	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -199,6 +198,13 @@ var settingInitProxyCmd = &cobra.Command{
 			envName = envPrefix + "-user"
 		}
 
+		var envSuffix string
+		if userFlag {
+			envSuffix = "user"
+		} else if appFlag {
+			envSuffix = "app"
+		}
+
 		settingDir := GetSettingDir()
 		if err := os.MkdirAll(settingDir, 0755); err != nil {
 			pterm.Error.Printf("Failed to create setting directory: %v\n", err)
@@ -247,7 +253,7 @@ var settingInitProxyCmd = &cobra.Command{
 		}
 
 		// Update configuration
-		updateSetting(envName, endpointStr, "")
+		updateSetting(envName, endpointStr, envSuffix)
 	},
 }
 
@@ -1337,7 +1343,7 @@ func isIPAddress(host string) bool {
 }
 
 // updateSetting updates the configuration files
-func updateSetting(envName, endpoint string, envSuffix string) {
+func updateSetting(envName, endpoint, envSuffix string) {
 	settingDir := GetSettingDir()
 	mainSettingPath := filepath.Join(settingDir, "setting.yaml")
 
@@ -1345,19 +1351,11 @@ func updateSetting(envName, endpoint string, envSuffix string) {
 	v.SetConfigFile(mainSettingPath)
 	v.SetConfigType("yaml")
 
-	// Create full environment name
-	var fullEnvName string
-	if envSuffix == "" {
-		fullEnvName = envName
-	} else {
-		fullEnvName = fmt.Sprintf("%s-%s", envName, envSuffix)
-	}
-
 	// Read existing config if it exists
 	_ = v.ReadInConfig()
 
 	// Set environment
-	v.Set("environment", fullEnvName)
+	v.Set("environment", envName)
 
 	// Handle protocol for endpoint
 	if !strings.Contains(endpoint, "://") {
@@ -1369,15 +1367,17 @@ func updateSetting(envName, endpoint string, envSuffix string) {
 	}
 
 	// Set endpoint in environments map
-	envKey := fmt.Sprintf("environments.%s.endpoint", fullEnvName)
+	envKey := fmt.Sprintf("environments.%s.endpoint", envName)
 	v.Set(envKey, endpoint)
 
-	proxyKey := fmt.Sprintf("environments.%s.proxy", fullEnvName)
+	proxyKey := fmt.Sprintf("environments.%s.proxy", envName)
 	if strings.HasPrefix(endpoint, "grpc://") || strings.HasPrefix(endpoint, "grpc+ssl://") {
-		if strings.Contains(strings.ToLower(endpoint), "identity") {
+		isProxy, err := pkggrpc.CheckIdentityProxyAvailable(endpoint)
+		if err != nil {
+			pterm.Warning.Printf("Failed to check gRPC endpoint: %v\n", err)
 			v.Set(proxyKey, true)
 		} else {
-			v.Set(proxyKey, false)
+			v.Set(proxyKey, isProxy)
 		}
 	} else {
 		v.Set(proxyKey, true)
@@ -1385,7 +1385,7 @@ func updateSetting(envName, endpoint string, envSuffix string) {
 
 	// Set token for non-user environments
 	if envSuffix != "user" {
-		tokenKey := fmt.Sprintf("environments.%s.token", fullEnvName)
+		tokenKey := fmt.Sprintf("environments.%s.token", envName)
 		v.Set(tokenKey, "no_token")
 	}
 
@@ -1394,7 +1394,7 @@ func updateSetting(envName, endpoint string, envSuffix string) {
 		return
 	}
 
-	pterm.Success.Printf("Environment '%s' successfully initialized.\n", fullEnvName)
+	pterm.Success.Printf("Environment '%s' successfully initialized.\n", envName)
 	pterm.Info.Printf("Configuration saved to: %s\n", mainSettingPath)
 }
 
