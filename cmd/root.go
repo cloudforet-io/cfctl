@@ -11,7 +11,8 @@ import (
 
 	"github.com/cloudforet-io/cfctl/cmd/commands"
 	"github.com/cloudforet-io/cfctl/pkg/format"
-	grpc2 "github.com/cloudforet-io/cfctl/pkg/grpc"
+	pkggrpc "github.com/cloudforet-io/cfctl/pkg/grpc"
+	"github.com/cloudforet-io/cfctl/pkg/rest"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
@@ -341,7 +342,7 @@ func addDynamicServiceCommands() error {
 	if strings.HasPrefix(endpoint, "grpc+ssl://") {
 		apiEndpoint = endpoint
 	} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-		apiEndpoint, err = other.GetAPIEndpoint(endpoint)
+		apiEndpoint, err = rest.GetAPIEndpoint(endpoint)
 		if err != nil {
 			return fmt.Errorf("failed to get API endpoint: %v", err)
 		}
@@ -384,7 +385,7 @@ func addDynamicServiceCommands() error {
 		Start()
 
 	progressbar.UpdateTitle("Fetching available services")
-	endpointsMap, err := other.FetchEndpointsMap(apiEndpoint)
+	endpointsMap, err := rest.FetchEndpointsMap(apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("failed to fetch services: %v", err)
 	}
@@ -582,7 +583,7 @@ func createServiceCommand(serviceName string) *cobra.Command {
 	apiResourcesCmd.GroupID = "available"
 	cmd.AddCommand(apiResourcesCmd)
 
-	err := grpc2.AddVerbCommands(cmd, serviceName, "other")
+	err := pkggrpc.AddVerbCommands(cmd, serviceName, "other")
 	if err != nil {
 		_, err2 := fmt.Fprintf(os.Stderr, "Error adding verb commands for %s: %v\n", serviceName, err)
 		if err2 != nil {

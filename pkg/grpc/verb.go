@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloudforet-io/cfctl/cmd/other"
 	"github.com/cloudforet-io/cfctl/pkg/configs"
 	"github.com/cloudforet-io/cfctl/pkg/format"
+	"github.com/cloudforet-io/cfctl/pkg/rest"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pterm/pterm"
 	"google.golang.org/grpc"
@@ -323,12 +323,12 @@ func fetchVerbResourceMap(serviceName string, config *configs.Setting) (map[stri
 		tlsConfig := &tls.Config{
 			InsecureSkipVerify: false,
 		}
-		apiEndpoint, _ := other.GetAPIEndpoint(envConfig.Endpoint)
-		identityEndpoint, hasIdentityService, err := other.GetIdentityEndpoint(apiEndpoint)
+		apiEndpoint, _ := rest.GetAPIEndpoint(envConfig.Endpoint)
+		identityEndpoint, hasIdentityService, err := rest.GetIdentityEndpoint(apiEndpoint)
 
 		if !hasIdentityService {
 			// Get endpoints map first
-			endpointsMap, err := other.FetchEndpointsMap(apiEndpoint)
+			endpointsMap, err := rest.FetchEndpointsMap(apiEndpoint)
 			if err != nil {
 				return nil, fmt.Errorf("failed to fetch endpoints map: %v", err)
 			}

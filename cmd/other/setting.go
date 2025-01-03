@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cloudforet-io/cfctl/pkg/rest"
 	"gopkg.in/yaml.v3"
 
 	"google.golang.org/grpc"
@@ -587,13 +588,13 @@ You can either specify a new endpoint URL directly or use the service-based endp
 		var identityEndpoint, restIdentityEndpoint string
 		var hasIdentityService bool
 		if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-			apiEndpoint, err := GetAPIEndpoint(endpoint)
+			apiEndpoint, err := rest.GetAPIEndpoint(endpoint)
 			if err != nil {
 				pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
 				return
 			}
 
-			identityEndpoint, hasIdentityService, err = GetIdentityEndpoint(apiEndpoint)
+			identityEndpoint, hasIdentityService, err = rest.GetIdentityEndpoint(apiEndpoint)
 			if err != nil {
 				pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 				return
