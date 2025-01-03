@@ -191,7 +191,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 				return nil, fmt.Errorf("invalid domain format in API endpoint: %s", apiEndpoint)
 			}
 
-			domainParts[0] = format.ConvertServiceNameToEndpoint(serviceName)
+			domainParts[0] = format.ConvertServiceName(serviceName)
 			hostPort = strings.Join(domainParts, ".") + ":443"
 		} else {
 			trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
@@ -201,7 +201,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 			}
 
 			// Replace 'identity' with the converted service name
-			parts[0] = format.ConvertServiceNameToEndpoint(serviceName)
+			parts[0] = format.ConvertServiceName(serviceName)
 			hostPort = strings.Join(parts, ".")
 			fmt.Println(hostPort)
 		}
@@ -443,7 +443,7 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 				}
 
 				// Replace service name
-				hostParts[0] = format.ConvertServiceNameToEndpoint(serviceName)
+				hostParts[0] = format.ConvertServiceName(serviceName)
 				hostPort = strings.Join(hostParts, ".")
 			} else {
 				// Original HTTP/HTTPS handling
@@ -457,7 +457,7 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 					return nil, fmt.Errorf("invalid domain format in API endpoint: %s", apiEndpoint)
 				}
 
-				domainParts[0] = format.ConvertServiceNameToEndpoint(serviceName)
+				domainParts[0] = format.ConvertServiceName(serviceName)
 				hostPort = strings.Join(domainParts, ".") + ":443"
 			}
 		} else {
@@ -468,7 +468,7 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 			}
 
 			// Replace 'identity' with the converted service name
-			parts[0] = format.ConvertServiceNameToEndpoint(serviceName)
+			parts[0] = format.ConvertServiceName(serviceName)
 			hostPort = strings.Join(parts, ".")
 		}
 

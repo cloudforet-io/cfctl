@@ -14,8 +14,8 @@ import (
 	"time"
 
 	"github.com/cloudforet-io/cfctl/cmd/other"
+	"github.com/cloudforet-io/cfctl/pkg/configs"
 	"github.com/cloudforet-io/cfctl/pkg/format"
-	"github.com/cloudforet-io/cfctl/pkg/settings"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pterm/pterm"
 	"google.golang.org/grpc"
@@ -184,7 +184,7 @@ func buildVerbResourceMap(serviceName string) (map[string][]string, error) {
 		return nil, fmt.Errorf("failed to get home directory: %v", err)
 	}
 
-	config, err := settings.LoadSetting()
+	config, err := configs.LoadSetting()
 	if err != nil {
 		return nil, fmt.Errorf("failed to load config: %v", err)
 	}
@@ -304,7 +304,7 @@ func handleLocalEnvironment(serviceName string) (map[string][]string, error) {
 	return verbResourceMap, nil
 }
 
-func fetchVerbResourceMap(serviceName string, config *settings.Config) (map[string][]string, error) {
+func fetchVerbResourceMap(serviceName string, config *configs.Setting) (map[string][]string, error) {
 	envConfig := config.Environments[config.Environment]
 	if envConfig.Endpoint == "" {
 		return nil, fmt.Errorf("endpoint not found in environment config")
@@ -361,7 +361,7 @@ func fetchVerbResourceMap(serviceName string, config *settings.Config) (map[stri
 			}
 
 			// Replace 'identity' with the converted service name
-			parts[0] = format.ConvertServiceNameToEndpoint(serviceName)
+			parts[0] = format.ConvertServiceName(serviceName)
 			serviceEndpoint := strings.Join(parts, ".")
 
 			creds := credentials.NewTLS(tlsConfig)
