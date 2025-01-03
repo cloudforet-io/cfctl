@@ -1,4 +1,4 @@
-package common
+package grpc
 
 import (
 	"bytes"
@@ -15,7 +15,7 @@ import (
 	"strings"
 
 	"github.com/cloudforet-io/cfctl/cmd/other"
-
+	"github.com/cloudforet-io/cfctl/pkg/format"
 	"github.com/eiannone/keyboard"
 	"github.com/spf13/viper"
 
@@ -191,7 +191,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 				return nil, fmt.Errorf("invalid domain format in API endpoint: %s", apiEndpoint)
 			}
 
-			domainParts[0] = convertServiceNameToEndpoint(serviceName)
+			domainParts[0] = format.ConvertServiceNameToEndpoint(serviceName)
 			hostPort = strings.Join(domainParts, ".") + ":443"
 		} else {
 			trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
@@ -201,7 +201,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 			}
 
 			// Replace 'identity' with the converted service name
-			parts[0] = convertServiceNameToEndpoint(serviceName)
+			parts[0] = format.ConvertServiceNameToEndpoint(serviceName)
 			hostPort = strings.Join(parts, ".")
 			fmt.Println(hostPort)
 		}
@@ -443,7 +443,7 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 				}
 
 				// Replace service name
-				hostParts[0] = convertServiceNameToEndpoint(serviceName)
+				hostParts[0] = format.ConvertServiceNameToEndpoint(serviceName)
 				hostPort = strings.Join(hostParts, ".")
 			} else {
 				// Original HTTP/HTTPS handling
@@ -457,7 +457,7 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 					return nil, fmt.Errorf("invalid domain format in API endpoint: %s", apiEndpoint)
 				}
 
-				domainParts[0] = convertServiceNameToEndpoint(serviceName)
+				domainParts[0] = format.ConvertServiceNameToEndpoint(serviceName)
 				hostPort = strings.Join(domainParts, ".") + ":443"
 			}
 		} else {
@@ -468,7 +468,7 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 			}
 
 			// Replace 'identity' with the converted service name
-			parts[0] = convertServiceNameToEndpoint(serviceName)
+			parts[0] = format.ConvertServiceNameToEndpoint(serviceName)
 			hostPort = strings.Join(parts, ".")
 		}
 
@@ -887,7 +887,7 @@ func printTable(data map[string]interface{}, options *FetchOptions, serviceName,
 				if row, ok := result.(map[string]interface{}); ok {
 					rowData := make([]string, len(headerSlice))
 					for i, key := range headerSlice {
-						rowData[i] = formatTableValue(row[key])
+						rowData[i] = FormatTableValue(row[key])
 					}
 					tableData = append(tableData, rowData)
 				}
@@ -944,7 +944,7 @@ func printTable(data map[string]interface{}, options *FetchOptions, serviceName,
 	}
 
 	for _, header := range headers {
-		value := formatTableValue(data[header])
+		value := FormatTableValue(data[header])
 		tableData = append(tableData, []string{header, value})
 	}
 
@@ -970,7 +970,7 @@ func filterResults(results []interface{}, searchTerm string) []interface{} {
 	return filtered
 }
 
-func formatTableValue(val interface{}) string {
+func FormatTableValue(val interface{}) string {
 	switch v := val.(type) {
 	case nil:
 		return ""
@@ -1025,7 +1025,7 @@ func printCSV(data map[string]interface{}) string {
 			if row, ok := result.(map[string]interface{}); ok {
 				rowData := make([]string, len(headers))
 				for i, header := range headers {
-					rowData[i] = formatTableValue(row[header])
+					rowData[i] = FormatTableValue(row[header])
 				}
 				writer.Write(rowData)
 			}
@@ -1041,7 +1041,7 @@ func printCSV(data map[string]interface{}) string {
 		sort.Strings(fields)
 
 		for _, field := range fields {
-			row := []string{field, formatTableValue(data[field])}
+			row := []string{field, FormatTableValue(data[field])}
 			writer.Write(row)
 		}
 	}

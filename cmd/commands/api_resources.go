@@ -1,6 +1,4 @@
-// common/apiResources.go
-
-package common
+package commands
 
 import (
 	"context"
@@ -12,8 +10,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cloudforet-io/cfctl/pkg/settings"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pterm/pterm"
+	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -22,35 +22,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func loadShortNames() (map[string]string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("unable to find home directory: %v", err)
+// FetchApiResourcesCmd provides api-resources command for the given service
+func FetchApiResourcesCmd(serviceName string) *cobra.Command {
+	return &cobra.Command{
+		Use:   "api_resources",
+		Short: fmt.Sprintf("Displays supported API resources for the %s service", serviceName),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return listAPIResources(serviceName)
+		},
 	}
-	shortNamesFile := filepath.Join(home, ".cfctl", "short_names.yaml")
-	shortNamesMap := make(map[string]string)
-	if _, err := os.Stat(shortNamesFile); err == nil {
-		file, err := os.Open(shortNamesFile)
-		if err != nil {
-			return nil, fmt.Errorf("failed to open short_names.yaml file: %v", err)
-		}
-		defer file.Close()
-
-		err = yaml.NewDecoder(file).Decode(&shortNamesMap)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode short_names.yaml: %v", err)
-		}
-	}
-	return shortNamesMap, nil
 }
 
-func ListAPIResources(serviceName string) error {
-	config, err := loadConfig()
+func listAPIResources(serviceName string) error {
+	setting, err := settings.LoadSetting()
 	if err != nil {
-		return fmt.Errorf("failed to load config: %v", err)
+		return fmt.Errorf("failed to load setting: %v", err)
 	}
 
-	endpoint, err := getServiceEndpoint(config, serviceName)
+	endpoint, err := getServiceEndpoint(setting, serviceName)
 	if err != nil {
 		return fmt.Errorf("failed to get endpoint for service %s: %v", serviceName, err)
 	}
@@ -60,7 +49,7 @@ func ListAPIResources(serviceName string) error {
 		return fmt.Errorf("failed to load short names: %v", err)
 	}
 
-	data, err := fetchServiceResources(serviceName, endpoint, shortNamesMap, config)
+	data, err := fetchServiceResources(serviceName, endpoint, shortNamesMap, setting)
 	if err != nil {
 		return fmt.Errorf("failed to fetch resources for service %s: %v", serviceName, err)
 	}
@@ -74,7 +63,7 @@ func ListAPIResources(serviceName string) error {
 	return nil
 }
 
-func getServiceEndpoint(config *Config, serviceName string) (string, error) {
+func getServiceEndpoint(config *settings.Config, serviceName string) (string, error) {
 	envConfig := config.Environments[config.Environment]
 	if envConfig.URL == "" {
 		return "", fmt.Errorf("URL not found in environment config")
@@ -102,7 +91,29 @@ func getServiceEndpoint(config *Config, serviceName string) (string, error) {
 	return endpoint, nil
 }
 
-func fetchServiceResources(serviceName, endpoint string, shortNamesMap map[string]string, config *Config) ([][]string, error) {
+func loadShortNames() (map[string]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("unable to find home directory: %v", err)
+	}
+	shortNamesFile := filepath.Join(home, ".cfctl", "short_names.yaml")
+	shortNamesMap := make(map[string]string)
+	if _, err := os.Stat(shortNamesFile); err == nil {
+		file, err := os.Open(shortNamesFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open short_names.yaml file: %v", err)
+		}
+		defer file.Close()
+
+		err = yaml.NewDecoder(file).Decode(&shortNamesMap)
+		if err != nil {
+			return nil, fmt.Errorf("failed to decode short_names.yaml: %v", err)
+		}
+	}
+	return shortNamesMap, nil
+}
+
+func fetchServiceResources(serviceName, endpoint string, shortNamesMap map[string]string, config *settings.Config) ([][]string, error) {
 	parts := strings.Split(endpoint, "://")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
@@ -238,34 +249,4 @@ func renderAPITable(data [][]string) {
 
 	// Render the table
 	pterm.DefaultTable.WithHasHeader().WithData(table).Render()
-}
-
-// wordWrap function remains the same
-func wordWrap(text string, width int) string {
-	var wrappedText string
-	var line string
-	words := strings.Fields(text) // Split on spaces only
-
-	for _, word := range words {
-		if len(line)+len(word)+1 > width {
-			if wrappedText != "" {
-				wrappedText += "\n"
-			}
-			wrappedText += line
-			line = word
-		} else {
-			if line != "" {
-				line += " "
-			}
-			line += word
-		}
-	}
-	if line != "" {
-		if wrappedText != "" {
-			wrappedText += "\n"
-		}
-		wrappedText += line
-	}
-
-	return wrappedText
 }
