@@ -82,7 +82,7 @@ func executeLogin(cmd *cobra.Command, args []string) {
 
 	// Check if config file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		pterm.Error.Println("No valid configuration found.")
+		pterm.Warning.Println("No valid configuration found.")
 		pterm.Info.Println("Please run 'cfctl setting init' to set up your configuration.")
 		pterm.Info.Println("After initialization, run 'cfctl login' to authenticate.")
 		return

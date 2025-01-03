@@ -83,7 +83,7 @@ var ApiResourcesCmd = &cobra.Command{
 		}
 
 		if envConfig == nil {
-			log.Fatalf("No configuration found for environment '%s'", currentEnv)
+			return
 		}
 
 		// Try to load endpoints from cache first
@@ -92,7 +92,7 @@ var ApiResourcesCmd = &cobra.Command{
 			// If cache loading fails, fall back to fetching from identity service
 			endpoint, ok := envConfig["endpoint"].(string)
 			if !ok || endpoint == "" {
-				log.Fatalf("No endpoint found for environment '%s'", currentEnv)
+				return
 			}
 
 			endpointsMap, err = FetchEndpointsMap(endpoint)
