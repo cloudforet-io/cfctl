@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/cloudforet-io/cfctl/pkg/configs"
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pterm/pterm"
@@ -124,6 +125,42 @@ func GetIdentityEndpoint(apiEndpoint string) (string, bool, error) {
 	}
 
 	return "", false, nil
+}
+
+func GetServiceEndpoint(config *configs.Setting, serviceName string) (string, error) {
+	envConfig := config.Environments[config.Environment]
+	if envConfig.Endpoint == "" {
+		return "", fmt.Errorf("endpoint not found in environment config")
+	}
+
+	// Get console API endpoint
+	apiEndpoint, err := GetAPIEndpoint(envConfig.Endpoint)
+	if err != nil {
+		pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Get identity endpoint
+	identityEndpoint, _, err := GetIdentityEndpoint(apiEndpoint)
+
+	// Fetch endpoints map
+	endpointsMap, err := FetchEndpointsMap(identityEndpoint)
+	if err != nil {
+		return "", fmt.Errorf("failed to fetch endpoints map: %v", err)
+	}
+
+	// Get endpoint for the requested service
+	endpoint, exists := endpointsMap[serviceName]
+	if !exists {
+		return "", fmt.Errorf("no endpoint found for service: %s", serviceName)
+	}
+
+	// Remove /v1 suffix if present
+	if idx := strings.Index(endpoint, "/v"); idx != -1 {
+		endpoint = endpoint[:idx]
+	}
+
+	return endpoint, nil
 }
 
 func FetchEndpointsMap(endpoint string) (map[string]string, error) {

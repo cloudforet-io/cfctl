@@ -12,6 +12,7 @@ import (
 
 	"github.com/cloudforet-io/cfctl/pkg/configs"
 	"github.com/cloudforet-io/cfctl/pkg/format"
+	"github.com/cloudforet-io/cfctl/pkg/transport"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -39,7 +40,8 @@ func ListAPIResources(serviceName string) error {
 		return fmt.Errorf("failed to load setting: %v", err)
 	}
 
-	endpoint, err := getServiceEndpoint(setting, serviceName)
+	//endpoint, err := getServiceEndpoint(setting, serviceName)
+	endpoint, err := transport.GetServiceEndpoint(setting, serviceName)
 	if err != nil {
 		return fmt.Errorf("failed to get endpoint for service %s: %v", serviceName, err)
 	}
@@ -61,34 +63,6 @@ func ListAPIResources(serviceName string) error {
 	format.RenderTable(data)
 
 	return nil
-}
-
-func getServiceEndpoint(config *configs.Setting, serviceName string) (string, error) {
-	envConfig := config.Environments[config.Environment]
-	if envConfig.Endpoint == "" {
-		return "", fmt.Errorf("endpoint not found in environment config")
-	}
-
-	// Parse endpoint to get environment
-	endpointParts := strings.Split(envConfig.Endpoint, ".")
-	if len(endpointParts) < 4 {
-		return "", fmt.Errorf("invalid endpoint format: %s", envConfig.Endpoint)
-	}
-
-	var envPrefix string
-	for i, part := range endpointParts {
-		if part == "console" && i+1 < len(endpointParts) {
-			envPrefix = endpointParts[i+1] // Get the part after "console" (dev or stg)
-			break
-		}
-	}
-
-	if envPrefix == "" {
-		return "", fmt.Errorf("environment prefix not found in endpoint: %s", envConfig.Endpoint)
-	}
-
-	endpoint := fmt.Sprintf("grpc+ssl://%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
-	return endpoint, nil
 }
 
 func loadShortNames() (map[string]string, error) {
