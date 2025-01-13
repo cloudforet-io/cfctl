@@ -3,6 +3,7 @@
 package format
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -179,4 +180,82 @@ func splitIntoLinesWithComma(text string, maxWidth int) []string {
 	}
 
 	return lines
+}
+
+func GenerateIdentifier(item map[string]interface{}) string {
+	if id, ok := item["job_task_id"]; ok {
+		return fmt.Sprintf("%v", id)
+	}
+
+	var keys []string
+	for k := range item {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var parts []string
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%v=%v", k, item[k]))
+	}
+	return strings.Join(parts, ",")
+}
+
+func PrintNewItems(items []map[string]interface{}) {
+	if len(items) == 0 {
+		return
+	}
+
+	tableData := pterm.TableData{}
+
+	headers := make([]string, 0)
+	for key := range items[0] {
+		headers = append(headers, key)
+	}
+	sort.Strings(headers)
+	tableData = append(tableData, headers)
+
+	for _, item := range items {
+		row := make([]string, len(headers))
+		for i, header := range headers {
+			if val, ok := item[header]; ok {
+				row[i] = formatTableValue(val)
+			}
+		}
+		tableData = append(tableData, row)
+	}
+
+	pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
+}
+
+func formatTableValue(val interface{}) string {
+	switch v := val.(type) {
+	case nil:
+		return ""
+	case string:
+		// Add colors for status values
+		switch strings.ToUpper(v) {
+		case "SUCCESS":
+			return pterm.FgGreen.Sprint(v)
+		case "FAILURE":
+			return pterm.FgRed.Sprint(v)
+		case "PENDING":
+			return pterm.FgYellow.Sprint(v)
+		case "RUNNING":
+			return pterm.FgBlue.Sprint(v)
+		default:
+			return v
+		}
+	case float64, float32, int, int32, int64, uint, uint32, uint64:
+		return fmt.Sprintf("%v", v)
+	case bool:
+		return fmt.Sprintf("%v", v)
+	case map[string]interface{}, []interface{}:
+		jsonBytes, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(jsonBytes)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }

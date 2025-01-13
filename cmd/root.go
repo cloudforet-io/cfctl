@@ -487,7 +487,10 @@ func createServiceCommand(serviceName string) *cobra.Command {
 			if len(args) == 0 {
 				pterm.Info.Println("To see available API resources, run:")
 				pterm.Info.Printf("  cfctl %s api_resources\n", serviceName)
-				cmd.Help()
+				err := cmd.Help()
+				if err != nil {
+					return err
+				}
 				fmt.Println() // Add newline
 				return nil
 			}
@@ -508,12 +511,38 @@ func createServiceCommand(serviceName string) *cobra.Command {
 			outputFormat, _ := cmd.Flags().GetString("output")
 			copyToClipboard, _ := cmd.Flags().GetBool("copy")
 
+			sortBy := ""
+			columns := ""
+			limit := 0
+			pageSize := 100 // 기본 페이지 크기
+
+			if verb == "list" {
+				sortBy, _ = cmd.Flags().GetString("sort")
+				columns, _ = cmd.Flags().GetString("columns")
+				limit, _ = cmd.Flags().GetInt("limit")
+				pageSize, _ = cmd.Flags().GetInt("page-size")
+			}
+
 			options := &transport.FetchOptions{
 				Parameters:      parameters,
 				JSONParameter:   jsonParameter,
 				FileParameter:   fileParameter,
 				OutputFormat:    outputFormat,
 				CopyToClipboard: copyToClipboard,
+				SortBy:          sortBy,
+				MinimalColumns:  verb == "list" && cmd.Flag("minimal") != nil && cmd.Flag("minimal").Changed,
+				Columns:         columns,
+				Limit:           limit,
+				PageSize:        pageSize,
+			}
+
+			if verb == "list" && !cmd.Flags().Changed("output") {
+				options.OutputFormat = "table"
+			}
+
+			watch, _ := cmd.Flags().GetBool("watch")
+			if watch && verb == "list" {
+				return transport.WatchResource(serviceName, verb, resource, options)
 			}
 
 			_, err := transport.FetchService(serviceName, verb, resource, options)
@@ -527,6 +556,14 @@ func createServiceCommand(serviceName string) *cobra.Command {
 
 	// Add api_resources subcommand
 	cmd.AddCommand(commands.FetchApiResourcesCmd(serviceName))
+
+	// Add list-specific flags
+	cmd.Flags().BoolP("watch", "w", false, "Watch for changes")
+	cmd.Flags().StringP("sort", "s", "", "Sort by field (e.g. 'name', 'created_at')")
+	cmd.Flags().BoolP("minimal", "m", false, "Show minimal columns")
+	cmd.Flags().StringP("columns", "c", "", "Specific columns (-c id,name)")
+	cmd.Flags().IntP("limit", "l", 0, "Number of rows")
+	cmd.Flags().IntP("page-size", "n", 15, "Number of items per page")
 
 	// Add existing flags
 	cmd.Flags().StringArrayP("parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")

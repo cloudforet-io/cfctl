@@ -10,9 +10,11 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/cloudforet-io/cfctl/pkg/format"
 	"github.com/eiannone/keyboard"
@@ -42,6 +44,22 @@ type Environment struct {
 type Config struct {
 	Environment  string                 `yaml:"environment"`
 	Environments map[string]Environment `yaml:"environments"`
+}
+
+// FetchOptions holds the flag values for a command
+type FetchOptions struct {
+	Parameters      []string
+	JSONParameter   string
+	FileParameter   string
+	APIVersion      string
+	OutputFormat    string
+	CopyToClipboard bool
+	SortBy          string
+	MinimalColumns  bool
+	Columns         string
+	Limit           int
+	Page            int
+	PageSize        int
 }
 
 // FetchService handles the execution of gRPC commands for all services
@@ -668,6 +686,95 @@ func discoverService(refClient *grpcreflect.Client, serviceName string, resource
 	}
 
 	return "", fmt.Errorf("service not found for %s.%s", serviceName, resourceName)
+}
+
+// WatchResource monitors a resource for changes and prints updates
+func WatchResource(serviceName, verb, resource string, options *FetchOptions) error {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+
+	seenItems := make(map[string]bool)
+
+	initialData, err := FetchService(serviceName, verb, resource, &FetchOptions{
+		Parameters:      options.Parameters,
+		JSONParameter:   options.JSONParameter,
+		FileParameter:   options.FileParameter,
+		APIVersion:      options.APIVersion,
+		OutputFormat:    "",
+		CopyToClipboard: false,
+	})
+	if err != nil {
+		return err
+	}
+
+	if results, ok := initialData["results"].([]interface{}); ok {
+		var recentItems []map[string]interface{}
+
+		for _, item := range results {
+			if m, ok := item.(map[string]interface{}); ok {
+				identifier := format.GenerateIdentifier(m)
+				seenItems[identifier] = true
+
+				recentItems = append(recentItems, m)
+				if len(recentItems) > 20 {
+					recentItems = recentItems[1:]
+				}
+			}
+		}
+
+		if len(recentItems) > 0 {
+			fmt.Printf("Recent items:\n")
+			format.PrintNewItems(recentItems)
+		}
+	}
+
+	fmt.Printf("\nWatching for changes... (Ctrl+C to quit)\n\n")
+
+	for {
+		select {
+		case <-ticker.C:
+			newData, err := FetchService(serviceName, verb, resource, &FetchOptions{
+				Parameters:      options.Parameters,
+				JSONParameter:   options.JSONParameter,
+				FileParameter:   options.FileParameter,
+				APIVersion:      options.APIVersion,
+				OutputFormat:    "",
+				CopyToClipboard: false,
+			})
+			if err != nil {
+				continue
+			}
+
+			var newItems []map[string]interface{}
+			if results, ok := newData["results"].([]interface{}); ok {
+				for _, item := range results {
+					if m, ok := item.(map[string]interface{}); ok {
+						identifier := format.GenerateIdentifier(m)
+						if !seenItems[identifier] {
+							newItems = append(newItems, m)
+							seenItems[identifier] = true
+						}
+					}
+				}
+			}
+
+			if len(newItems) > 0 {
+				fmt.Printf("Found %d new items at %s:\n",
+					len(newItems),
+					time.Now().Format("2006-01-02 15:04:05"))
+
+				format.PrintNewItems(newItems)
+				fmt.Println()
+			}
+
+		case <-sigChan:
+			fmt.Println("\nStopping watch...")
+			return nil
+		}
+	}
 }
 
 func printData(data map[string]interface{}, options *FetchOptions, serviceName, verbName, resourceName string, refClient *grpcreflect.Client) {
