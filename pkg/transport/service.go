@@ -202,7 +202,6 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 			// Replace 'identity' with the converted service name
 			parts[0] = format.ConvertServiceName(serviceName)
 			hostPort = strings.Join(parts, ".")
-			fmt.Println(hostPort)
 		}
 	}
 
@@ -321,7 +320,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 			}
 		}
 
-		printData(respMap, options, serviceName, resourceName, refClient)
+		printData(respMap, options, serviceName, verb, resourceName, refClient)
 	}
 
 	return respMap, nil
@@ -671,7 +670,7 @@ func discoverService(refClient *grpcreflect.Client, serviceName string, resource
 	return "", fmt.Errorf("service not found for %s.%s", serviceName, resourceName)
 }
 
-func printData(data map[string]interface{}, options *FetchOptions, serviceName, resourceName string, refClient *grpcreflect.Client) {
+func printData(data map[string]interface{}, options *FetchOptions, serviceName, verbName, resourceName string, refClient *grpcreflect.Client) {
 	var output string
 
 	switch options.OutputFormat {
@@ -686,21 +685,26 @@ func printData(data map[string]interface{}, options *FetchOptions, serviceName, 
 	case "yaml":
 		if results, ok := data["results"].([]interface{}); ok && len(results) > 0 {
 			var sb strings.Builder
-			for i, item := range results {
-				if i > 0 {
-					sb.WriteString("---\n")
+
+			if verbName == "list" {
+				output = printTable(data, options, serviceName, verbName, resourceName, refClient)
+			} else {
+				for i, item := range results {
+					if i > 0 {
+						sb.WriteString("---\n")
+					}
+					sb.WriteString(printYAMLDoc(item))
 				}
-				sb.WriteString(printYAMLDoc(item))
+				output = sb.String()
+				fmt.Print(output)
 			}
-			output = sb.String()
-			fmt.Print(output)
 		} else {
 			output = printYAMLDoc(data)
 			fmt.Print(output)
 		}
 
 	case "table":
-		output = printTable(data, options, serviceName, resourceName, refClient)
+		output = printTable(data, options, serviceName, verbName, resourceName, refClient)
 
 	case "csv":
 		output = printCSV(data)
@@ -805,7 +809,7 @@ func getMinimalFields(serviceName, resourceName string, refClient *grpcreflect.C
 	return minimalFields
 }
 
-func printTable(data map[string]interface{}, options *FetchOptions, serviceName, resourceName string, refClient *grpcreflect.Client) string {
+func printTable(data map[string]interface{}, options *FetchOptions, serviceName, verbName, resourceName string, refClient *grpcreflect.Client) string {
 	if results, ok := data["results"].([]interface{}); ok {
 		// Set default page size if not specified
 		if options.PageSize == 0 {
