@@ -480,13 +480,17 @@ func loadConfig() (*Config, error) {
 
 func createServiceCommand(serviceName string) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     serviceName + " [verb] [resource] [flags]",
+		Use:     serviceName + " [verb] [resource]",
 		Short:   fmt.Sprintf("Interact with the %s service", serviceName),
 		Long:    fmt.Sprintf("Use this command to interact with the %s service.", serviceName),
 		GroupID: "available",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if len(args) == 0 {
-				return cmd.Help()
+				pterm.Info.Println("To see available API resources, run:")
+				pterm.Info.Printf("  cfctl %s api_resources\n", serviceName)
+				cmd.Help()
+				fmt.Println() // Add newline
+				return nil
 			}
 
 			verb := args[0]
@@ -520,16 +524,12 @@ func createServiceCommand(serviceName string) *cobra.Command {
 			}
 			return nil
 		},
-		Example: fmt.Sprintf(`  # List available API resources
-  cfctl %[1]s api_resources
-
-  # List resources
-  cfctl %[1]s list User
-  
-  # Create a resource
-  cfctl %[1]s create Project -p name=test`, serviceName),
 	}
 
+	// Add api_resources subcommand
+	cmd.AddCommand(commands.FetchApiResourcesCmd(serviceName))
+
+	// Add existing flags
 	cmd.Flags().StringArrayP("parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")
 	cmd.Flags().StringP("json-parameter", "j", "", "JSON type parameter")
 	cmd.Flags().StringP("file-parameter", "f", "", "YAML file parameter")
