@@ -793,18 +793,14 @@ func printData(data map[string]interface{}, options *FetchOptions, serviceName, 
 		if results, ok := data["results"].([]interface{}); ok && len(results) > 0 {
 			var sb strings.Builder
 
-			if verbName == "list" {
-				output = printTable(data, options, serviceName, verbName, resourceName, refClient)
-			} else {
-				for i, item := range results {
-					if i > 0 {
-						sb.WriteString("---\n")
-					}
-					sb.WriteString(printYAMLDoc(item))
+			for i, item := range results {
+				if i > 0 {
+					sb.WriteString("---\n")
 				}
-				output = sb.String()
-				fmt.Print(output)
+				sb.WriteString(printYAMLDoc(item))
 			}
+			output = sb.String()
+			fmt.Print(output)
 		} else {
 			output = printYAMLDoc(data)
 			fmt.Print(output)
