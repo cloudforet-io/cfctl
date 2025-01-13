@@ -345,6 +345,7 @@ func addDynamicServiceCommands() error {
 	progressbar.Increment()
 
 	fmt.Println() // Add newline after progress bar
+
 	return nil
 }
 

@@ -83,7 +83,7 @@ var listAliasCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all aliases",
 	Run: func(cmd *cobra.Command, args []string) {
-		aliases, err := listAliases()
+		aliases, err := ListAliases()
 		if err != nil {
 			pterm.Error.Printf("Failed to list aliases: %v\n", err)
 			return
@@ -165,9 +165,9 @@ func validateServiceCommand(service, verb, resource string) error {
 	verbFound := false
 
 	for _, row := range resources {
-		if row[1] == resource { // row[1] is the resource name
+		if row[2] == resource {
 			resourceFound = true
-			verbs := strings.Split(row[3], ", ") // row[3] contains the verbs
+			verbs := strings.Split(row[1], ", ")
 			for _, v := range verbs {
 				if v == verb {
 					verbFound = true
@@ -187,194 +187,6 @@ func validateServiceCommand(service, verb, resource string) error {
 	}
 
 	return nil
-}
-
-//var addShortNameCmd = &cobra.Command{
-//	Use:   "add",
-//	Short: "Add a new short name",
-//	Example: `  $ cfctl short_name -s inventory add -n job -c "list Job"
-//
-//  Then use them as:
-//  $ cfctl inventory job     # This command is same as $ cfctl inventory list Job`,
-//	Run: func(cmd *cobra.Command, args []string) {
-//		// Show example if no flags are provided
-//		if !cmd.Flags().Changed("name") || !cmd.Flags().Changed("command") || !cmd.Flags().Changed("service") {
-//			pterm.DefaultBox.
-//				WithTitle("Short Name Examples").
-//				WithTitleTopCenter().
-//				WithBoxStyle(pterm.NewStyle(pterm.FgLightBlue)).
-//				Println(`Example:
-//  $ cfctl short_name -s inventory add -n job -c "list Job"
-//
-//Then use them as:
-//  $ cfctl inventory job     # This command is same as $ cfctl inventory list Job`)
-//			return
-//		}
-//
-//		shortName, _ := cmd.Flags().GetString("name")
-//		command, _ := cmd.Flags().GetString("command")
-//		service, _ := cmd.Flags().GetString("service")
-//
-//		// Parse command to get verb and resource
-//		parts := strings.Fields(command)
-//		if len(parts) < 2 {
-//			pterm.Error.Printf("Invalid command format. Expected '<verb> <resource>', got '%s'\n", command)
-//			return
-//		}
-//
-//		verb := parts[0]
-//		resource := parts[1]
-//
-//		// Validate the command
-//		if err := validateServiceCommand(service, verb, resource); err != nil {
-//			pterm.Error.Printf("Invalid command: %v\n", err)
-//			return
-//		}
-//
-//		if err := addShortName(service, shortName, command); err != nil {
-//			pterm.Error.Printf("Failed to add short name: %v\n", err)
-//			return
-//		}
-//
-//		pterm.Success.Printf("Successfully added short name '%s' for service '%s' command '%s'\n", shortName, service, command)
-//	},
-//}
-
-var removeShortNameCmd = &cobra.Command{
-	Use:   "remove",
-	Short: "Remove a short name",
-	Run: func(cmd *cobra.Command, args []string) {
-		shortName, err := cmd.Flags().GetString("name")
-		service, _ := cmd.Flags().GetString("service")
-		if err != nil || shortName == "" || service == "" {
-			pterm.Error.Println("The --name (-n) and --service (-s) flags are required")
-			cmd.Help()
-			return
-		}
-
-		if err := removeShortName(service, shortName); err != nil {
-			pterm.Error.Printf("Failed to remove short name: %v\n", err)
-			return
-		}
-
-		pterm.Success.Printf("Successfully removed short name '%s' from service '%s'\n", shortName, service)
-	},
-}
-
-var listShortNameCmd = &cobra.Command{
-	Use:   "list",
-	Short: "List all short names",
-	Run: func(cmd *cobra.Command, args []string) {
-		shortNames, err := listShortNames()
-		if err != nil {
-			pterm.Error.Printf("Failed to list short names: %v\n", err)
-			return
-		}
-
-		if len(shortNames) == 0 {
-			pterm.Info.Println("No short names found")
-			return
-		}
-
-		// Create table
-		table := pterm.TableData{
-			{"Service", "Short Name", "Command"},
-		}
-
-		// Add short names to table
-		for service, serviceShortNames := range shortNames {
-			for name, command := range serviceShortNames.(map[string]interface{}) {
-				table = append(table, []string{service, name, command.(string)})
-			}
-		}
-
-		// Print table
-		pterm.DefaultTable.WithHasHeader().WithData(table).Render()
-	},
-}
-
-func addShortName(service, shortName, command string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("failed to get home directory: %v", err)
-	}
-
-	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
-	v := viper.New()
-	v.SetConfigFile(settingPath)
-	v.SetConfigType("yaml")
-
-	if err := v.ReadInConfig(); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to read config: %v", err)
-	}
-
-	v.Set(fmt.Sprintf("short_names.%s.%s", service, shortName), command)
-
-	if err := v.WriteConfig(); err != nil {
-		return fmt.Errorf("failed to write config: %v", err)
-	}
-
-	return nil
-}
-
-func removeShortName(service, shortName string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("failed to get home directory: %v", err)
-	}
-
-	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
-	v := viper.New()
-	v.SetConfigFile(settingPath)
-	v.SetConfigType("yaml")
-
-	if err := v.ReadInConfig(); err != nil {
-		return fmt.Errorf("failed to read config: %v", err)
-	}
-
-	// Check if service and short name exist
-	if !v.IsSet(fmt.Sprintf("short_names.%s.%s", service, shortName)) {
-		return fmt.Errorf("short name '%s' not found in service '%s'", shortName, service)
-	}
-
-	// Get all short names for the service
-	serviceShortNames := v.GetStringMap(fmt.Sprintf("short_names.%s", service))
-	delete(serviceShortNames, shortName)
-
-	// Update config with removed short name
-	v.Set(fmt.Sprintf("short_names.%s", service), serviceShortNames)
-
-	if err := v.WriteConfig(); err != nil {
-		return fmt.Errorf("failed to write config: %v", err)
-	}
-
-	return nil
-}
-
-func listShortNames() (map[string]interface{}, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %v", err)
-	}
-
-	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
-	v := viper.New()
-	v.SetConfigFile(settingPath)
-	v.SetConfigType("yaml")
-
-	if err := v.ReadInConfig(); err != nil {
-		if os.IsNotExist(err) {
-			return make(map[string]interface{}), nil
-		}
-		return nil, fmt.Errorf("failed to read config: %v", err)
-	}
-
-	shortNames := v.GetStringMap("short_names")
-	if shortNames == nil {
-		return make(map[string]interface{}), nil
-	}
-
-	return shortNames, nil
 }
 
 func addAlias(key, value string) error {
@@ -470,8 +282,7 @@ func removeAlias(key string) error {
 	return nil
 }
 
-// Function to list all aliases
-func listAliases() (map[string]string, error) {
+func ListAliases() (map[string]string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get home directory: %v", err)

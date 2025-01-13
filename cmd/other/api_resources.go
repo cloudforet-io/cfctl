@@ -53,6 +53,14 @@ func loadEndpointsFromCache(currentEnv string) (map[string]string, error) {
 var ApiResourcesCmd = &cobra.Command{
 	Use:   "api_resources",
 	Short: "Displays supported API resources",
+	Example: `  # List all API resources for all services
+  $ cfctl api_resources
+
+  # List API resources for a specific service
+  $ cfctl api_resources -s identity
+
+  # List API resources for multiple services
+  $ cfctl api_resources -s identity,inventory,repository`,
 	Run: func(cmd *cobra.Command, args []string) {
 		home, err := os.UserHomeDir()
 		if err != nil {
@@ -185,8 +193,33 @@ var ApiResourcesCmd = &cobra.Command{
 	},
 }
 
+func loadAliases() (map[string]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("unable to find home directory: %v", err)
+	}
+
+	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
+	v := viper.New()
+	v.SetConfigFile(settingPath)
+	v.SetConfigType("yaml")
+
+	if err := v.ReadInConfig(); err != nil {
+		if os.IsNotExist(err) {
+			return make(map[string]string), nil
+		}
+		return nil, fmt.Errorf("failed to read config: %v", err)
+	}
+
+	aliases := v.GetStringMapString("aliases")
+	if aliases == nil {
+		return make(map[string]string), nil
+	}
+
+	return aliases, nil
+}
+
 func fetchServiceResources(service, endpoint string, shortNamesMap map[string]string) ([][]string, error) {
-	// Configure gRPC connection based on TLS usage
 	parts := strings.Split(endpoint, "://")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
@@ -198,7 +231,7 @@ func fetchServiceResources(service, endpoint string, shortNamesMap map[string]st
 	var opts []grpc.DialOption
 	if scheme == "grpc+ssl" {
 		tlsConfig := &tls.Config{
-			InsecureSkipVerify: false, // Enable server certificate verification
+			InsecureSkipVerify: false,
 		}
 		creds := credentials.NewTLS(tlsConfig)
 		opts = append(opts, grpc.WithTransportCredentials(creds))
@@ -218,7 +251,6 @@ func fetchServiceResources(service, endpoint string, shortNamesMap map[string]st
 		return nil, fmt.Errorf("failed to create reflection client: %v", err)
 	}
 
-	// List all services
 	req := &grpc_reflection_v1alpha.ServerReflectionRequest{
 		MessageRequest: &grpc_reflection_v1alpha.ServerReflectionRequest_ListServices{ListServices: ""},
 	}
@@ -233,9 +265,11 @@ func fetchServiceResources(service, endpoint string, shortNamesMap map[string]st
 	}
 
 	services := resp.GetListServicesResponse().Service
-	registeredShortNames, err := listShortNames()
+
+	// Load aliases
+	aliases, err := loadAliases()
 	if err != nil {
-		return nil, fmt.Errorf("failed to load short names: %v", err)
+		return nil, fmt.Errorf("failed to load aliases: %v", err)
 	}
 
 	data := [][]string{}
@@ -246,38 +280,36 @@ func fetchServiceResources(service, endpoint string, shortNamesMap map[string]st
 		resourceName := s.Name[strings.LastIndex(s.Name, ".")+1:]
 		verbs := getServiceMethods(client, s.Name)
 
-		// Find all matching short names for this resource
-		verbsWithShortNames := make(map[string]string)
+		// Group verbs by alias
+		verbsWithAlias := make(map[string]string)
 		remainingVerbs := make([]string, 0)
 
-		// Get service-specific short names
-		serviceShortNames := registeredShortNames[service]
-		if serviceMap, ok := serviceShortNames.(map[string]interface{}); ok {
-			for _, verb := range verbs {
-				hasShortName := false
-				for sn, cmd := range serviceMap {
-					if strings.Contains(cmd.(string), fmt.Sprintf("%s %s", verb, resourceName)) {
-						verbsWithShortNames[verb] = sn
-						hasShortName = true
-						break
-					}
-				}
-				if !hasShortName {
-					remainingVerbs = append(remainingVerbs, verb)
+		for _, verb := range verbs {
+			hasAlias := false
+			for alias, cmd := range aliases {
+				cmdParts := strings.Fields(cmd)
+				if len(cmdParts) >= 3 &&
+					cmdParts[0] == service &&
+					cmdParts[1] == verb &&
+					cmdParts[2] == resourceName {
+					verbsWithAlias[verb] = alias
+					hasAlias = true
+					break
 				}
 			}
-		} else {
-			remainingVerbs = verbs
+			if !hasAlias {
+				remainingVerbs = append(remainingVerbs, verb)
+			}
 		}
 
-		// Add row for verbs without short names
+		// Add row for verbs without aliases
 		if len(remainingVerbs) > 0 {
-			data = append(data, []string{service, resourceName, "", strings.Join(remainingVerbs, ", ")})
+			data = append(data, []string{service, strings.Join(remainingVerbs, ", "), resourceName, ""})
 		}
 
-		// Add separate rows for each verb with a short name
-		for verb, shortName := range verbsWithShortNames {
-			data = append(data, []string{service, resourceName, shortName, verb})
+		// Add separate rows for each verb with an alias
+		for verb, alias := range verbsWithAlias {
+			data = append(data, []string{service, verb, resourceName, alias})
 		}
 	}
 
@@ -329,7 +361,7 @@ func getServiceMethods(client grpc_reflection_v1alpha.ServerReflectionClient, se
 func renderTable(data [][]string) {
 	// Calculate the dynamic width for the "Verb" column
 	terminalWidth := pterm.GetTerminalWidth()
-	usedWidth := 30 + 20 + 15 // Estimated widths for Service, Resource, and Short Names
+	usedWidth := 30 + 20 + 15 // Estimated widths for Service, Resource, and Alias columns
 	verbColumnWidth := terminalWidth - usedWidth
 	if verbColumnWidth < 20 {
 		verbColumnWidth = 20 // Minimum width for Verb column
@@ -337,43 +369,51 @@ func renderTable(data [][]string) {
 
 	// Use two distinct colors for alternating services
 	alternateColors := []pterm.Color{
-		pterm.FgLightBlue, pterm.FgLightYellow, pterm.FgLightMagenta, pterm.FgGreen, pterm.FgLightRed, pterm.FgBlue, pterm.FgLightGreen,
+		pterm.FgLightBlue, pterm.FgLightYellow, pterm.FgLightMagenta,
+		pterm.FgGreen, pterm.FgLightRed, pterm.FgBlue, pterm.FgLightGreen,
 	}
 
 	currentColorIndex := 0
 	previousService := ""
 
-	table := pterm.TableData{{"Service", "Verb", "Resource", "Short Names"}} // Column order updated
+	table := pterm.TableData{{"Service", "Verb", "Resource", "Alias"}}
 
 	for _, row := range data {
 		service := row[0]
 
-		// Switch color if the service name changes
 		if service != previousService {
 			currentColorIndex = (currentColorIndex + 1) % len(alternateColors)
 			previousService = service
 		}
 
-		// Apply the current color
 		color := alternateColors[currentColorIndex]
 		coloredStyle := pterm.NewStyle(color)
 
-		// Color the entire row (Service, Resource, Short Names, Verb)
-		serviceColored := coloredStyle.Sprint(service)
-		resourceColored := coloredStyle.Sprint(row[1])
-		shortNamesColored := coloredStyle.Sprint(row[2])
+		serviceColored := coloredStyle.Sprint(row[0])
+		resourceColored := coloredStyle.Sprint(row[2])
+		aliasColored := coloredStyle.Sprint(row[3])
 
-		verbs := splitIntoLinesWithComma(row[3], verbColumnWidth)
+		// Split verbs into multiple lines if needed
+		verbs := splitIntoLinesWithComma(row[1], verbColumnWidth)
 		for i, line := range verbs {
 			if i == 0 {
-				table = append(table, []string{serviceColored, coloredStyle.Sprint(line), resourceColored, shortNamesColored})
+				table = append(table, []string{
+					serviceColored,
+					coloredStyle.Sprint(line),
+					resourceColored,
+					aliasColored,
+				})
 			} else {
-				table = append(table, []string{"", coloredStyle.Sprint(line), "", ""})
+				table = append(table, []string{
+					"",
+					coloredStyle.Sprint(line),
+					"",
+					"",
+				})
 			}
 		}
 	}
 
-	// Render the table using pterm
 	pterm.DefaultTable.WithHasHeader().WithData(table).Render()
 }
 
