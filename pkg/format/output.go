@@ -3,6 +3,7 @@
 package format
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -104,4 +105,157 @@ func printSortedBulletList(cmd *cobra.Command, sectionTitle string) {
 
 	pterm.DefaultBulletList.WithItems(listItems).Render()
 	cmd.Println()
+}
+
+func RenderTable(data [][]string) {
+	// Get terminal width
+	terminalWidth := pterm.GetTerminalWidth()
+
+	// Calculate verb column width based on terminal width
+	verbColumnWidth := terminalWidth / 2
+
+	// Define alternating colors for better readability
+	alternateColors := []pterm.Color{
+		pterm.FgDefault,
+		pterm.FgYellow,
+	}
+	currentColorIndex := 0
+	previousService := ""
+
+	// Create table with headers
+	table := pterm.TableData{{"Service", "Verb", "Resource", "Short Names"}}
+
+	for _, row := range data {
+		service := row[0]
+
+		// Switch color if the service name changes
+		if service != previousService {
+			currentColorIndex = (currentColorIndex + 1) % len(alternateColors)
+			previousService = service
+		}
+
+		// Apply the current color
+		color := alternateColors[currentColorIndex]
+		coloredStyle := pterm.NewStyle(color)
+
+		// Color the entire row
+		serviceColored := coloredStyle.Sprint(service)
+		resourceColored := coloredStyle.Sprint(row[2])
+		shortNamesColored := coloredStyle.Sprint(row[3])
+
+		// Split verbs into multiple lines if needed
+		verbs := splitIntoLinesWithComma(row[1], verbColumnWidth)
+		for i, line := range verbs {
+			if i == 0 {
+				table = append(table, []string{serviceColored, coloredStyle.Sprint(line), resourceColored, shortNamesColored})
+			} else {
+				table = append(table, []string{"", coloredStyle.Sprint(line), "", ""})
+			}
+		}
+	}
+
+	// Render the table
+	pterm.DefaultTable.WithHasHeader().WithData(table).Render()
+}
+
+func splitIntoLinesWithComma(text string, maxWidth int) []string {
+	words := strings.Split(text, ", ")
+	var lines []string
+	var currentLine string
+
+	for _, word := range words {
+		if len(currentLine)+len(word)+2 > maxWidth && currentLine != "" {
+			lines = append(lines, strings.TrimSuffix(currentLine, ", "))
+			currentLine = word
+		} else {
+			if currentLine != "" {
+				currentLine += ", "
+			}
+			currentLine += word
+		}
+	}
+
+	if currentLine != "" {
+		lines = append(lines, strings.TrimSuffix(currentLine, ", "))
+	}
+
+	return lines
+}
+
+func GenerateIdentifier(item map[string]interface{}) string {
+	if id, ok := item["job_task_id"]; ok {
+		return fmt.Sprintf("%v", id)
+	}
+
+	var keys []string
+	for k := range item {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var parts []string
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%v=%v", k, item[k]))
+	}
+	return strings.Join(parts, ",")
+}
+
+func PrintNewItems(items []map[string]interface{}) {
+	if len(items) == 0 {
+		return
+	}
+
+	tableData := pterm.TableData{}
+
+	headers := make([]string, 0)
+	for key := range items[0] {
+		headers = append(headers, key)
+	}
+	sort.Strings(headers)
+	tableData = append(tableData, headers)
+
+	for _, item := range items {
+		row := make([]string, len(headers))
+		for i, header := range headers {
+			if val, ok := item[header]; ok {
+				row[i] = formatTableValue(val)
+			}
+		}
+		tableData = append(tableData, row)
+	}
+
+	pterm.DefaultTable.WithHasHeader().WithData(tableData).Render()
+}
+
+func formatTableValue(val interface{}) string {
+	switch v := val.(type) {
+	case nil:
+		return ""
+	case string:
+		// Add colors for status values
+		switch strings.ToUpper(v) {
+		case "SUCCESS":
+			return pterm.FgGreen.Sprint(v)
+		case "FAILURE":
+			return pterm.FgRed.Sprint(v)
+		case "PENDING":
+			return pterm.FgYellow.Sprint(v)
+		case "RUNNING":
+			return pterm.FgBlue.Sprint(v)
+		default:
+			return v
+		}
+	case float64, float32, int, int32, int64, uint, uint32, uint64:
+		return fmt.Sprintf("%v", v)
+	case bool:
+		return fmt.Sprintf("%v", v)
+	case map[string]interface{}, []interface{}:
+		jsonBytes, err := json.Marshal(v)
+		if err != nil {
+			return fmt.Sprintf("%v", v)
+		}
+		return string(jsonBytes)
+	default:
+		return fmt.Sprintf("%v", v)
+	}
 }

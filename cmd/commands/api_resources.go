@@ -11,8 +11,9 @@ import (
 	"strings"
 
 	"github.com/cloudforet-io/cfctl/pkg/configs"
+	"github.com/cloudforet-io/cfctl/pkg/format"
+	"github.com/cloudforet-io/cfctl/pkg/transport"
 	"github.com/jhump/protoreflect/grpcreflect"
-	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
@@ -28,18 +29,19 @@ func FetchApiResourcesCmd(serviceName string) *cobra.Command {
 		Use:   "api_resources",
 		Short: fmt.Sprintf("Displays supported API resources for the %s service", serviceName),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return listAPIResources(serviceName)
+			return ListAPIResources(serviceName)
 		},
 	}
 }
 
-func listAPIResources(serviceName string) error {
+func ListAPIResources(serviceName string) error {
 	setting, err := configs.LoadSetting()
 	if err != nil {
 		return fmt.Errorf("failed to load setting: %v", err)
 	}
 
-	endpoint, err := getServiceEndpoint(setting, serviceName)
+	//endpoint, err := getServiceEndpoint(setting, serviceName)
+	endpoint, err := transport.GetServiceEndpoint(setting, serviceName)
 	if err != nil {
 		return fmt.Errorf("failed to get endpoint for service %s: %v", serviceName, err)
 	}
@@ -58,37 +60,9 @@ func listAPIResources(serviceName string) error {
 		return data[i][0] < data[j][0]
 	})
 
-	renderAPITable(data)
+	format.RenderTable(data)
 
 	return nil
-}
-
-func getServiceEndpoint(config *configs.Setting, serviceName string) (string, error) {
-	envConfig := config.Environments[config.Environment]
-	if envConfig.URL == "" {
-		return "", fmt.Errorf("URL not found in environment config")
-	}
-
-	// Parse URL to get environment
-	urlParts := strings.Split(envConfig.URL, ".")
-	if len(urlParts) < 4 {
-		return "", fmt.Errorf("invalid URL format: %s", envConfig.URL)
-	}
-
-	var envPrefix string
-	for i, part := range urlParts {
-		if part == "console" && i+1 < len(urlParts) {
-			envPrefix = urlParts[i+1] // Get the part after "console" (dev or stg)
-			break
-		}
-	}
-
-	if envPrefix == "" {
-		return "", fmt.Errorf("environment prefix not found in URL: %s", envConfig.URL)
-	}
-
-	endpoint := fmt.Sprintf("grpc+ssl://%s.api.%s.spaceone.dev:443", serviceName, envPrefix)
-	return endpoint, nil
 }
 
 func loadShortNames() (map[string]string, error) {
@@ -236,17 +210,4 @@ func fetchServiceResources(serviceName, endpoint string, shortNamesMap map[strin
 	}
 
 	return data, nil
-}
-
-func renderAPITable(data [][]string) {
-	// Create table header
-	table := pterm.TableData{
-		{"Service", "Verb", "Resource", "Short Names"},
-	}
-
-	// Add data rows
-	table = append(table, data...)
-
-	// Render the table
-	pterm.DefaultTable.WithHasHeader().WithData(table).Render()
 }

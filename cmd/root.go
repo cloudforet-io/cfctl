@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -10,13 +9,7 @@ import (
 	"time"
 
 	"github.com/cloudforet-io/cfctl/cmd/commands"
-	"github.com/cloudforet-io/cfctl/pkg/format"
-	pkggrpc "github.com/cloudforet-io/cfctl/pkg/grpc"
-	"github.com/cloudforet-io/cfctl/pkg/rest"
-	"github.com/jhump/protoreflect/grpcreflect"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
-
+	"github.com/cloudforet-io/cfctl/pkg/transport"
 	"gopkg.in/yaml.v3"
 
 	"github.com/spf13/viper"
@@ -53,32 +46,28 @@ var rootCmd = &cobra.Command{
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	args := os.Args[1:]
-
-	if len(args) > 1 {
-		// Check if the first argument is a service name and second is a short name
-		v := viper.New()
-		if home, err := os.UserHomeDir(); err == nil {
-			settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
-			v.SetConfigFile(settingPath)
-			v.SetConfigType("yaml")
-
-			if err := v.ReadInConfig(); err == nil {
-				serviceName := args[0]
-				shortName := args[1]
-				if command := v.GetString(fmt.Sprintf("short_names.%s.%s", serviceName, shortName)); command != "" {
-					// Replace the short name with the actual command
-					newArgs := append([]string{args[0]}, strings.Fields(command)...)
-					newArgs = append(newArgs, args[2:]...)
-					os.Args = append([]string{os.Args[0]}, newArgs...)
-				}
-			}
+	if len(os.Args) == 2 {
+		alias := os.Args[1]
+		if cmd := getAliasCommand(alias); cmd != "" {
+			os.Args = append([]string{os.Args[0]}, strings.Fields(cmd)...)
 		}
 	}
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+func getAliasCommand(alias string) string {
+	v := viper.New()
+	home, _ := os.UserHomeDir()
+	v.SetConfigFile(filepath.Join(home, ".cfctl", "setting.yaml"))
+
+	if err := v.ReadInConfig(); err != nil {
+		return ""
+	}
+
+	return v.GetString(fmt.Sprintf("aliases.%s", alias))
 }
 
 func init() {
@@ -132,7 +121,7 @@ func init() {
 	rootCmd.AddCommand(other.ApiResourcesCmd)
 	rootCmd.AddCommand(other.SettingCmd)
 	rootCmd.AddCommand(other.LoginCmd)
-	rootCmd.AddCommand(other.ShortNameCmd)
+	rootCmd.AddCommand(other.AliasCmd)
 
 	// Set default group for commands without a group
 	for _, cmd := range rootCmd.Commands() {
@@ -262,79 +251,6 @@ func addDynamicServiceCommands() error {
 		return err
 	}
 
-	// For local environment
-	if config.Environment == "local" {
-		endpoint := strings.TrimPrefix(config.Endpoint, "grpc://")
-
-		conn, err := grpc.Dial(endpoint, grpc.WithInsecure(), grpc.WithBlock(), grpc.WithTimeout(time.Second))
-		if err != nil {
-			pterm.DefaultBox.WithTitle("Local gRPC Server Not Found").
-				WithTitleTopCenter().
-				WithBoxStyle(pterm.NewStyle(pterm.FgYellow)).
-				Printfln("Unable to connect to local gRPC server.\nPlease make sure your gRPC server is running on %s", config.Endpoint)
-			return nil
-		}
-		defer func(conn *grpc.ClientConn) {
-			err := conn.Close()
-			if err != nil {
-
-			}
-		}(conn)
-
-		ctx := context.Background()
-		refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
-		defer refClient.Reset()
-
-		services, err := refClient.ListServices()
-		if err != nil {
-			return err
-		}
-
-		// Check if plugin service exists
-		hasPlugin := false
-		microservices := make(map[string]bool)
-
-		for _, service := range services {
-			// Skip grpc reflection and health check services
-			if strings.HasPrefix(service, "grpc.") {
-				continue
-			}
-
-			// Handle plugin service
-			if strings.Contains(service, ".plugin.") {
-				hasPlugin = true
-				continue
-			}
-
-			// Handle SpaceONE microservices
-			if strings.Contains(service, "spaceone.api.") {
-				parts := strings.Split(service, ".")
-				if len(parts) >= 4 {
-					serviceName := parts[2]
-					// Skip core service and version prefixes
-					if serviceName != "core" && !strings.HasPrefix(serviceName, "v") {
-						microservices[serviceName] = true
-					}
-				}
-			}
-		}
-
-		if hasPlugin {
-			cmd := createServiceCommand("plugin")
-			cmd.GroupID = "available"
-			rootCmd.AddCommand(cmd)
-		}
-
-		// Add commands for other microservices
-		for serviceName := range microservices {
-			cmd := createServiceCommand(serviceName)
-			cmd.GroupID = "available"
-			rootCmd.AddCommand(cmd)
-		}
-
-		return nil
-	}
-
 	// For non-local environments
 	endpoint := config.Endpoint
 	var apiEndpoint string
@@ -342,7 +258,7 @@ func addDynamicServiceCommands() error {
 	if strings.HasPrefix(endpoint, "grpc+ssl://") {
 		apiEndpoint = endpoint
 	} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-		apiEndpoint, err = rest.GetAPIEndpoint(endpoint)
+		apiEndpoint, err = transport.GetAPIEndpoint(endpoint)
 		if err != nil {
 			return fmt.Errorf("failed to get API endpoint: %v", err)
 		}
@@ -378,35 +294,27 @@ func addDynamicServiceCommands() error {
 		return nil
 	}
 
-	// If no cached endpoints, fetch them
+	// If no cached endpoints, show progress with detailed messages
 	progressbar, _ := pterm.DefaultProgressbar.
 		WithTotal(4).
-		WithTitle("Initializing services").
+		WithTitle(fmt.Sprintf("Setting up %s environment", config.Environment)).
 		Start()
 
-	progressbar.UpdateTitle("Fetching available services")
-	endpointsMap, err := rest.FetchEndpointsMap(apiEndpoint)
+	progressbar.UpdateTitle("Fetching available service endpoints from the API server")
+	endpointsMap, err := transport.FetchEndpointsMap(apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("failed to fetch services: %v", err)
 	}
-
 	progressbar.Increment()
-	time.Sleep(time.Millisecond * 300)
 
-	progressbar.UpdateTitle("Creating cache for faster subsequent runs")
+	progressbar.UpdateTitle(fmt.Sprintf("Caching endpoints to %s/.cfctl/cache for faster access", os.Getenv("HOME")))
 	cachedEndpointsMap = endpointsMap
 	if err := saveEndpointsCache(endpointsMap); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: Failed to cache endpoints: %v\n", err)
 	}
-
 	progressbar.Increment()
-	time.Sleep(time.Millisecond * 300)
 
-	//progressbar.UpdateTitle("Finalizing")
-	progressbar.Increment()
-	time.Sleep(time.Millisecond * 300)
-
-	fmt.Println()
+	progressbar.UpdateTitle("Registering available service commands")
 	// Add commands based on the current service
 	currentService := ""
 	if strings.HasPrefix(endpoint, "grpc+ssl://") {
@@ -431,8 +339,13 @@ func addDynamicServiceCommands() error {
 			rootCmd.AddCommand(cmd)
 		}
 	}
-
 	progressbar.Increment()
+
+	progressbar.UpdateTitle("Setup completed successfully!")
+	progressbar.Increment()
+
+	fmt.Println() // Add newline after progress bar
+
 	return nil
 }
 
@@ -563,33 +476,98 @@ func loadConfig() (*Config, error) {
 
 func createServiceCommand(serviceName string) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     serviceName,
+		Use:     serviceName + " [verb] [resource]",
 		Short:   fmt.Sprintf("Interact with the %s service", serviceName),
 		Long:    fmt.Sprintf("Use this command to interact with the %s service.", serviceName),
 		GroupID: "available",
-	}
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				pterm.Info.Println("To see available API resources, run:")
+				pterm.Info.Printf("  cfctl %s api_resources\n", serviceName)
+				err := cmd.Help()
+				if err != nil {
+					return err
+				}
+				fmt.Println() // Add newline
+				return nil
+			}
 
-	cmd.AddGroup(&cobra.Group{
-		ID:    "available",
-		Title: "Available Commands:",
-	}, &cobra.Group{
-		ID:    "other",
-		Title: "Other Commands:",
-	})
+			verb := args[0]
+			resource := ""
+			if len(args) > 1 {
+				resource = args[1]
+			}
 
-	cmd.SetHelpFunc(format.SetParentHelp)
+			if verb == "api_resources" {
+				return commands.ListAPIResources(serviceName)
+			}
 
-	apiResourcesCmd := commands.FetchApiResourcesCmd(serviceName)
-	apiResourcesCmd.GroupID = "available"
-	cmd.AddCommand(apiResourcesCmd)
+			parameters, _ := cmd.Flags().GetStringArray("parameter")
+			jsonParameter, _ := cmd.Flags().GetString("json-parameter")
+			fileParameter, _ := cmd.Flags().GetString("file-parameter")
+			outputFormat, _ := cmd.Flags().GetString("output")
+			copyToClipboard, _ := cmd.Flags().GetBool("copy")
 
-	err := pkggrpc.AddVerbCommands(cmd, serviceName, "other")
-	if err != nil {
-		_, err2 := fmt.Fprintf(os.Stderr, "Error adding verb commands for %s: %v\n", serviceName, err)
-		if err2 != nil {
+			sortBy := ""
+			columns := ""
+			limit := 0
+			pageSize := 100 // 기본 페이지 크기
+
+			if verb == "list" {
+				sortBy, _ = cmd.Flags().GetString("sort")
+				columns, _ = cmd.Flags().GetString("columns")
+				limit, _ = cmd.Flags().GetInt("limit")
+				pageSize, _ = cmd.Flags().GetInt("page-size")
+			}
+
+			options := &transport.FetchOptions{
+				Parameters:      parameters,
+				JSONParameter:   jsonParameter,
+				FileParameter:   fileParameter,
+				OutputFormat:    outputFormat,
+				CopyToClipboard: copyToClipboard,
+				SortBy:          sortBy,
+				MinimalColumns:  verb == "list" && cmd.Flag("minimal") != nil && cmd.Flag("minimal").Changed,
+				Columns:         columns,
+				Limit:           limit,
+				PageSize:        pageSize,
+			}
+
+			if verb == "list" && !cmd.Flags().Changed("output") {
+				options.OutputFormat = "table"
+			}
+
+			watch, _ := cmd.Flags().GetBool("watch")
+			if watch && verb == "list" {
+				return transport.WatchResource(serviceName, verb, resource, options)
+			}
+
+			_, err := transport.FetchService(serviceName, verb, resource, options)
+			if err != nil {
+				pterm.Error.Println(err.Error())
+				return nil
+			}
 			return nil
-		}
+		},
 	}
+
+	// Add api_resources subcommand
+	cmd.AddCommand(commands.FetchApiResourcesCmd(serviceName))
+
+	// Add list-specific flags
+	cmd.Flags().BoolP("watch", "w", false, "Watch for changes")
+	cmd.Flags().StringP("sort", "s", "", "Sort by field (e.g. 'name', 'created_at')")
+	cmd.Flags().BoolP("minimal", "m", false, "Show minimal columns")
+	cmd.Flags().StringP("columns", "c", "", "Specific columns (-c id,name)")
+	cmd.Flags().IntP("limit", "l", 0, "Number of rows")
+	cmd.Flags().IntP("page-size", "n", 15, "Number of items per page")
+
+	// Add existing flags
+	cmd.Flags().StringArrayP("parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")
+	cmd.Flags().StringP("json-parameter", "j", "", "JSON type parameter")
+	cmd.Flags().StringP("file-parameter", "f", "", "YAML file parameter")
+	cmd.Flags().StringP("output", "o", "yaml", "Output format (yaml, json, table, csv)")
+	cmd.Flags().BoolP("copy", "y", false, "Copy the output to the clipboard")
 
 	return cmd
 }

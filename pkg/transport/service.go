@@ -1,4 +1,4 @@
-package grpc
+package transport
 
 import (
 	"bytes"
@@ -10,12 +10,13 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/cloudforet-io/cfctl/pkg/format"
-	"github.com/cloudforet-io/cfctl/pkg/rest"
 	"github.com/eiannone/keyboard"
 	"github.com/spf13/viper"
 
@@ -43,6 +44,22 @@ type Environment struct {
 type Config struct {
 	Environment  string                 `yaml:"environment"`
 	Environments map[string]Environment `yaml:"environments"`
+}
+
+// FetchOptions holds the flag values for a command
+type FetchOptions struct {
+	Parameters      []string
+	JSONParameter   string
+	FileParameter   string
+	APIVersion      string
+	OutputFormat    string
+	CopyToClipboard bool
+	SortBy          string
+	MinimalColumns  bool
+	Columns         string
+	Limit           int
+	Page            int
+	PageSize        int
 }
 
 // FetchService handles the execution of gRPC commands for all services
@@ -168,13 +185,13 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	if config.Environment == "local" {
 		hostPort = strings.TrimPrefix(config.Environments[config.Environment].Endpoint, "grpc://")
 	} else {
-		apiEndpoint, err = rest.GetAPIEndpoint(config.Environments[config.Environment].Endpoint)
+		apiEndpoint, err = GetAPIEndpoint(config.Environments[config.Environment].Endpoint)
 		if err != nil {
 			pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
 			os.Exit(1)
 		}
 		// Get identity service endpoint
-		identityEndpoint, hasIdentityService, err = rest.GetIdentityEndpoint(apiEndpoint)
+		identityEndpoint, hasIdentityService, err = GetIdentityEndpoint(apiEndpoint)
 		if err != nil {
 			pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 			os.Exit(1)
@@ -203,7 +220,6 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 			// Replace 'identity' with the converted service name
 			parts[0] = format.ConvertServiceName(serviceName)
 			hostPort = strings.Join(parts, ".")
-			fmt.Println(hostPort)
 		}
 	}
 
@@ -322,7 +338,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 			}
 		}
 
-		printData(respMap, options, serviceName, resourceName, refClient)
+		printData(respMap, options, serviceName, verb, resourceName, refClient)
 	}
 
 	return respMap, nil
@@ -672,7 +688,96 @@ func discoverService(refClient *grpcreflect.Client, serviceName string, resource
 	return "", fmt.Errorf("service not found for %s.%s", serviceName, resourceName)
 }
 
-func printData(data map[string]interface{}, options *FetchOptions, serviceName, resourceName string, refClient *grpcreflect.Client) {
+// WatchResource monitors a resource for changes and prints updates
+func WatchResource(serviceName, verb, resource string, options *FetchOptions) error {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt)
+
+	seenItems := make(map[string]bool)
+
+	initialData, err := FetchService(serviceName, verb, resource, &FetchOptions{
+		Parameters:      options.Parameters,
+		JSONParameter:   options.JSONParameter,
+		FileParameter:   options.FileParameter,
+		APIVersion:      options.APIVersion,
+		OutputFormat:    "",
+		CopyToClipboard: false,
+	})
+	if err != nil {
+		return err
+	}
+
+	if results, ok := initialData["results"].([]interface{}); ok {
+		var recentItems []map[string]interface{}
+
+		for _, item := range results {
+			if m, ok := item.(map[string]interface{}); ok {
+				identifier := format.GenerateIdentifier(m)
+				seenItems[identifier] = true
+
+				recentItems = append(recentItems, m)
+				if len(recentItems) > 20 {
+					recentItems = recentItems[1:]
+				}
+			}
+		}
+
+		if len(recentItems) > 0 {
+			fmt.Printf("Recent items:\n")
+			format.PrintNewItems(recentItems)
+		}
+	}
+
+	fmt.Printf("\nWatching for changes... (Ctrl+C to quit)\n\n")
+
+	for {
+		select {
+		case <-ticker.C:
+			newData, err := FetchService(serviceName, verb, resource, &FetchOptions{
+				Parameters:      options.Parameters,
+				JSONParameter:   options.JSONParameter,
+				FileParameter:   options.FileParameter,
+				APIVersion:      options.APIVersion,
+				OutputFormat:    "",
+				CopyToClipboard: false,
+			})
+			if err != nil {
+				continue
+			}
+
+			var newItems []map[string]interface{}
+			if results, ok := newData["results"].([]interface{}); ok {
+				for _, item := range results {
+					if m, ok := item.(map[string]interface{}); ok {
+						identifier := format.GenerateIdentifier(m)
+						if !seenItems[identifier] {
+							newItems = append(newItems, m)
+							seenItems[identifier] = true
+						}
+					}
+				}
+			}
+
+			if len(newItems) > 0 {
+				fmt.Printf("Found %d new items at %s:\n",
+					len(newItems),
+					time.Now().Format("2006-01-02 15:04:05"))
+
+				format.PrintNewItems(newItems)
+				fmt.Println()
+			}
+
+		case <-sigChan:
+			fmt.Println("\nStopping watch...")
+			return nil
+		}
+	}
+}
+
+func printData(data map[string]interface{}, options *FetchOptions, serviceName, verbName, resourceName string, refClient *grpcreflect.Client) {
 	var output string
 
 	switch options.OutputFormat {
@@ -687,6 +792,7 @@ func printData(data map[string]interface{}, options *FetchOptions, serviceName, 
 	case "yaml":
 		if results, ok := data["results"].([]interface{}); ok && len(results) > 0 {
 			var sb strings.Builder
+
 			for i, item := range results {
 				if i > 0 {
 					sb.WriteString("---\n")
@@ -701,7 +807,7 @@ func printData(data map[string]interface{}, options *FetchOptions, serviceName, 
 		}
 
 	case "table":
-		output = printTable(data, options, serviceName, resourceName, refClient)
+		output = printTable(data, options, serviceName, verbName, resourceName, refClient)
 
 	case "csv":
 		output = printCSV(data)
@@ -806,11 +912,11 @@ func getMinimalFields(serviceName, resourceName string, refClient *grpcreflect.C
 	return minimalFields
 }
 
-func printTable(data map[string]interface{}, options *FetchOptions, serviceName, resourceName string, refClient *grpcreflect.Client) string {
+func printTable(data map[string]interface{}, options *FetchOptions, serviceName, verbName, resourceName string, refClient *grpcreflect.Client) string {
 	if results, ok := data["results"].([]interface{}); ok {
 		// Set default page size if not specified
 		if options.PageSize == 0 {
-			options.PageSize = 100
+			options.PageSize = 10
 		}
 
 		// Initialize keyboard
@@ -908,13 +1014,9 @@ func printTable(data map[string]interface{}, options *FetchOptions, serviceName,
 
 			switch char {
 			case 'l', 'L':
-				if currentPage < totalPages-1 {
-					currentPage++
-				}
+				currentPage = (currentPage + 1) % totalPages
 			case 'h', 'H':
-				if currentPage > 0 {
-					currentPage--
-				}
+				currentPage = (currentPage - 1 + totalPages) % totalPages
 			case 'q', 'Q':
 				return ""
 			case 'c', 'C':
