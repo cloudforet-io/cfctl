@@ -46,32 +46,28 @@ var rootCmd = &cobra.Command{
 // Execute adds all child commands to the root command and sets flags appropriately.
 // This is called by main.main(). It only needs to happen once to the rootCmd.
 func Execute() {
-	args := os.Args[1:]
-
-	if len(args) > 1 {
-		// Check if the first argument is a service name and second is a short name
-		v := viper.New()
-		if home, err := os.UserHomeDir(); err == nil {
-			settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
-			v.SetConfigFile(settingPath)
-			v.SetConfigType("yaml")
-
-			if err := v.ReadInConfig(); err == nil {
-				serviceName := args[0]
-				shortName := args[1]
-				if command := v.GetString(fmt.Sprintf("short_names.%s.%s", serviceName, shortName)); command != "" {
-					// Replace the short name with the actual command
-					newArgs := append([]string{args[0]}, strings.Fields(command)...)
-					newArgs = append(newArgs, args[2:]...)
-					os.Args = append([]string{os.Args[0]}, newArgs...)
-				}
-			}
+	if len(os.Args) == 2 {
+		alias := os.Args[1]
+		if cmd := getAliasCommand(alias); cmd != "" {
+			os.Args = append([]string{os.Args[0]}, strings.Fields(cmd)...)
 		}
 	}
 
 	if err := rootCmd.Execute(); err != nil {
 		os.Exit(1)
 	}
+}
+
+func getAliasCommand(alias string) string {
+	v := viper.New()
+	home, _ := os.UserHomeDir()
+	v.SetConfigFile(filepath.Join(home, ".cfctl", "setting.yaml"))
+
+	if err := v.ReadInConfig(); err != nil {
+		return ""
+	}
+
+	return v.GetString(fmt.Sprintf("aliases.%s", alias))
 }
 
 func init() {
@@ -125,7 +121,7 @@ func init() {
 	rootCmd.AddCommand(other.ApiResourcesCmd)
 	rootCmd.AddCommand(other.SettingCmd)
 	rootCmd.AddCommand(other.LoginCmd)
-	rootCmd.AddCommand(other.ShortNameCmd)
+	rootCmd.AddCommand(other.AliasCmd)
 
 	// Set default group for commands without a group
 	for _, cmd := range rootCmd.Commands() {
