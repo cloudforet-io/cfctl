@@ -13,7 +13,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cloudforet-io/cfctl/pkg/rest"
+	"github.com/cloudforet-io/cfctl/pkg/transport"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v2"
@@ -90,7 +90,7 @@ var ApiResourcesCmd = &cobra.Command{
 				return
 			}
 
-			endpointsMap, err = rest.FetchEndpointsMap(endpoint)
+			endpointsMap, err = transport.FetchEndpointsMap(endpoint)
 			if err != nil {
 				log.Fatalf("Failed to fetch endpointsMap from '%s': %v", endpoint, err)
 			}

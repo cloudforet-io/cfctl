@@ -15,7 +15,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/cloudforet-io/cfctl/pkg/rest"
+	"github.com/cloudforet-io/cfctl/pkg/transport"
 	"gopkg.in/yaml.v3"
 
 	"google.golang.org/grpc"
@@ -23,7 +23,6 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 
-	pkggrpc "github.com/cloudforet-io/cfctl/pkg/grpc"
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pterm/pterm"
@@ -588,13 +587,13 @@ You can either specify a new endpoint URL directly or use the service-based endp
 		var identityEndpoint, restIdentityEndpoint string
 		var hasIdentityService bool
 		if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-			apiEndpoint, err := rest.GetAPIEndpoint(endpoint)
+			apiEndpoint, err := transport.GetAPIEndpoint(endpoint)
 			if err != nil {
 				pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
 				return
 			}
 
-			identityEndpoint, hasIdentityService, err = rest.GetIdentityEndpoint(apiEndpoint)
+			identityEndpoint, hasIdentityService, err = transport.GetIdentityEndpoint(apiEndpoint)
 			if err != nil {
 				pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 				return
@@ -1373,7 +1372,7 @@ func updateSetting(envName, endpoint, envSuffix string) {
 
 	proxyKey := fmt.Sprintf("environments.%s.proxy", envName)
 	if strings.HasPrefix(endpoint, "grpc://") || strings.HasPrefix(endpoint, "grpc+ssl://") {
-		isProxy, err := pkggrpc.CheckIdentityProxyAvailable(endpoint)
+		isProxy, err := transport.CheckIdentityProxyAvailable(endpoint)
 		if err != nil {
 			pterm.Warning.Printf("Failed to check gRPC endpoint: %v\n", err)
 			v.Set(proxyKey, true)

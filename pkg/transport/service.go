@@ -1,4 +1,4 @@
-package grpc
+package transport
 
 import (
 	"bytes"
@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"github.com/cloudforet-io/cfctl/pkg/format"
-	"github.com/cloudforet-io/cfctl/pkg/rest"
 	"github.com/eiannone/keyboard"
 	"github.com/spf13/viper"
 
@@ -168,13 +167,13 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	if config.Environment == "local" {
 		hostPort = strings.TrimPrefix(config.Environments[config.Environment].Endpoint, "grpc://")
 	} else {
-		apiEndpoint, err = rest.GetAPIEndpoint(config.Environments[config.Environment].Endpoint)
+		apiEndpoint, err = GetAPIEndpoint(config.Environments[config.Environment].Endpoint)
 		if err != nil {
 			pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
 			os.Exit(1)
 		}
 		// Get identity service endpoint
-		identityEndpoint, hasIdentityService, err = rest.GetIdentityEndpoint(apiEndpoint)
+		identityEndpoint, hasIdentityService, err = GetIdentityEndpoint(apiEndpoint)
 		if err != nil {
 			pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 			os.Exit(1)

@@ -9,8 +9,7 @@ import (
 	"time"
 
 	"github.com/cloudforet-io/cfctl/cmd/commands"
-	pkggrpc "github.com/cloudforet-io/cfctl/pkg/grpc"
-	"github.com/cloudforet-io/cfctl/pkg/rest"
+	"github.com/cloudforet-io/cfctl/pkg/transport"
 	"gopkg.in/yaml.v3"
 
 	"github.com/spf13/viper"
@@ -263,7 +262,7 @@ func addDynamicServiceCommands() error {
 	if strings.HasPrefix(endpoint, "grpc+ssl://") {
 		apiEndpoint = endpoint
 	} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-		apiEndpoint, err = rest.GetAPIEndpoint(endpoint)
+		apiEndpoint, err = transport.GetAPIEndpoint(endpoint)
 		if err != nil {
 			return fmt.Errorf("failed to get API endpoint: %v", err)
 		}
@@ -306,7 +305,7 @@ func addDynamicServiceCommands() error {
 		Start()
 
 	progressbar.UpdateTitle("Fetching available service endpoints from the API server")
-	endpointsMap, err := rest.FetchEndpointsMap(apiEndpoint)
+	endpointsMap, err := transport.FetchEndpointsMap(apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("failed to fetch services: %v", err)
 	}
@@ -509,7 +508,7 @@ func createServiceCommand(serviceName string) *cobra.Command {
 			outputFormat, _ := cmd.Flags().GetString("output")
 			copyToClipboard, _ := cmd.Flags().GetBool("copy")
 
-			options := &pkggrpc.FetchOptions{
+			options := &transport.FetchOptions{
 				Parameters:      parameters,
 				JSONParameter:   jsonParameter,
 				FileParameter:   fileParameter,
@@ -517,7 +516,7 @@ func createServiceCommand(serviceName string) *cobra.Command {
 				CopyToClipboard: copyToClipboard,
 			}
 
-			_, err := pkggrpc.FetchService(serviceName, verb, resource, options)
+			_, err := transport.FetchService(serviceName, verb, resource, options)
 			if err != nil {
 				pterm.Error.Println(err.Error())
 				return nil
