@@ -813,7 +813,7 @@ func printTable(data map[string]interface{}, options *FetchOptions, serviceName,
 	if results, ok := data["results"].([]interface{}); ok {
 		// Set default page size if not specified
 		if options.PageSize == 0 {
-			options.PageSize = 100
+			options.PageSize = 10
 		}
 
 		// Initialize keyboard
@@ -911,13 +911,9 @@ func printTable(data map[string]interface{}, options *FetchOptions, serviceName,
 
 			switch char {
 			case 'l', 'L':
-				if currentPage < totalPages-1 {
-					currentPage++
-				}
+				currentPage = (currentPage + 1) % totalPages
 			case 'h', 'H':
-				if currentPage > 0 {
-					currentPage--
-				}
+				currentPage = (currentPage - 1 + totalPages) % totalPages
 			case 'q', 'Q':
 				return ""
 			case 'c', 'C':
