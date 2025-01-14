@@ -1,4 +1,4 @@
-package commands
+package common
 
 import (
 	"context"
@@ -12,7 +12,6 @@ import (
 
 	"github.com/cloudforet-io/cfctl/pkg/configs"
 	"github.com/cloudforet-io/cfctl/pkg/format"
-	"github.com/cloudforet-io/cfctl/pkg/transport"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -41,7 +40,7 @@ func ListAPIResources(serviceName string) error {
 	}
 
 	//endpoint, err := getServiceEndpoint(setting, serviceName)
-	endpoint, err := transport.GetServiceEndpoint(setting, serviceName)
+	endpoint, err := configs.GetServiceEndpoint(setting, serviceName)
 	if err != nil {
 		return fmt.Errorf("failed to get endpoint for service %s: %v", serviceName, err)
 	}
@@ -51,7 +50,7 @@ func ListAPIResources(serviceName string) error {
 		return fmt.Errorf("failed to load short names: %v", err)
 	}
 
-	data, err := fetchServiceResources(serviceName, endpoint, shortNamesMap, setting)
+	data, err := FetchServiceResources(serviceName, endpoint, shortNamesMap, setting)
 	if err != nil {
 		return fmt.Errorf("failed to fetch resources for service %s: %v", serviceName, err)
 	}
@@ -87,7 +86,7 @@ func loadShortNames() (map[string]string, error) {
 	return shortNamesMap, nil
 }
 
-func fetchServiceResources(serviceName, endpoint string, shortNamesMap map[string]string, config *configs.Setting) ([][]string, error) {
+func FetchServiceResources(serviceName, endpoint string, shortNamesMap map[string]string, config *configs.Setting) ([][]string, error) {
 	parts := strings.Split(endpoint, "://")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)

@@ -20,7 +20,7 @@ import (
 	"time"
 
 	"github.com/AlecAivazis/survey/v2"
-	"github.com/cloudforet-io/cfctl/pkg/transport"
+	"github.com/cloudforet-io/cfctl/pkg/configs"
 	"github.com/eiannone/keyboard"
 
 	"google.golang.org/grpc/metadata"
@@ -426,7 +426,7 @@ func executeUserLogin(currentEnv string) {
 	}
 
 	// Get console API endpoint
-	apiEndpoint, err := transport.GetAPIEndpoint(baseUrl)
+	apiEndpoint, err := configs.GetAPIEndpoint(baseUrl)
 	if err != nil {
 		pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
 		exitWithError()
@@ -434,7 +434,7 @@ func executeUserLogin(currentEnv string) {
 	restIdentityEndpoint := apiEndpoint + "/identity"
 
 	// Get identity service endpoint
-	identityEndpoint, hasIdentityService, err := transport.GetIdentityEndpoint(apiEndpoint)
+	identityEndpoint, hasIdentityService, err := configs.GetIdentityEndpoint(apiEndpoint)
 	if err != nil {
 		pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 		exitWithError()

@@ -1,4 +1,4 @@
-package transport
+package configs
 
 import (
 	"bytes"
@@ -10,7 +10,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/cloudforet-io/cfctl/pkg/configs"
 	"github.com/jhump/protoreflect/dynamic"
 	"github.com/jhump/protoreflect/grpcreflect"
 	"github.com/pterm/pterm"
@@ -127,7 +126,7 @@ func GetIdentityEndpoint(apiEndpoint string) (string, bool, error) {
 	return "", false, nil
 }
 
-func GetServiceEndpoint(config *configs.Setting, serviceName string) (string, error) {
+func GetServiceEndpoint(config *Setting, serviceName string) (string, error) {
 	envConfig := config.Environments[config.Environment]
 	if envConfig.Endpoint == "" {
 		return "", fmt.Errorf("endpoint not found in environment config")

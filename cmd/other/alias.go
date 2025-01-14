@@ -1,19 +1,13 @@
 package other
 
 import (
-	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 
-	"github.com/cloudforet-io/cfctl/pkg/transport"
+	"github.com/cloudforet-io/cfctl/pkg/configs"
+	"github.com/cloudforet-io/cfctl/pkg/format"
 	"github.com/pterm/pterm"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
-	"gopkg.in/yaml.v3"
 )
-
-var service string
 
 // AliasCmd represents the alias command
 var AliasCmd = &cobra.Command{
@@ -25,57 +19,54 @@ var AliasCmd = &cobra.Command{
 var addAliasCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add a new alias",
-	Example: `  $ cfctl alias add -k user -v "identity list User"
+	Example: `  $ cfctl alias add -s identity -k user -v "list User"
     
 Then use it as:
-  $ cfctl user     # This command is same as $ cfctl identity list User`,
+  $ cfctl identity user     # This command is same as $ cfctl identity list User`,
 	Run: func(cmd *cobra.Command, args []string) {
+		service, _ := cmd.Flags().GetString("service")
 		key, _ := cmd.Flags().GetString("key")
 		value, _ := cmd.Flags().GetString("value")
 
 		// Parse command to validate
 		parts := strings.Fields(value)
-		if len(parts) < 3 {
-			pterm.Error.Printf("Invalid command format. Expected '<service> <verb> <resource>', got '%s'\n", value)
+		if len(parts) < 2 {
+			pterm.Error.Printf("Invalid command format. Expected '<verb> <resource>', got '%s'\n", value)
 			return
 		}
 
-		service := parts[0]
-		verb := parts[1]
-		resource := parts[2]
+		verb := parts[0]
+		resource := parts[1]
 
-		if err := validateServiceCommand(service, verb, resource); err != nil {
+		if err := format.ValidateServiceCommand(service, verb, resource); err != nil {
 			pterm.Error.Printf("Invalid command: %v\n", err)
 			return
 		}
 
-		if err := addAlias(key, value); err != nil {
+		if err := configs.AddAlias(service, key, value); err != nil {
 			pterm.Error.Printf("Failed to add alias: %v\n", err)
 			return
 		}
 
-		pterm.Success.Printf("Successfully added alias '%s' for command '%s'\n", key, value)
+		pterm.Success.Printf("Successfully added alias '%s' for command '%s' in service '%s'\n", key, value, service)
 	},
 }
 
 var removeAliasCmd = &cobra.Command{
-	Use:     "remove",
-	Short:   "Remove an alias",
-	Example: `  $ cfctl alias remove -k user`,
+	Use:   "remove",
+	Short: "Remove an alias",
+	Example: `  # Remove an alias from a specific service
+  $ cfctl alias remove -s identity -k user`,
 	Run: func(cmd *cobra.Command, args []string) {
+		service, _ := cmd.Flags().GetString("service")
 		key, _ := cmd.Flags().GetString("key")
-		if key == "" {
-			pterm.Error.Println("The --key (-k) flag is required")
-			cmd.Help()
-			return
-		}
 
-		if err := removeAlias(key); err != nil {
+		if err := configs.RemoveAlias(service, key); err != nil {
 			pterm.Error.Printf("Failed to remove alias: %v\n", err)
 			return
 		}
 
-		pterm.Success.Printf("Successfully removed alias '%s'\n", key)
+		pterm.Success.Printf("Successfully removed alias '%s' from service '%s'\n", key, service)
 	},
 }
 
@@ -83,7 +74,7 @@ var listAliasCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List all aliases",
 	Run: func(cmd *cobra.Command, args []string) {
-		aliases, err := ListAliases()
+		aliases, err := configs.ListAliases()
 		if err != nil {
 			pterm.Error.Printf("Failed to list aliases: %v\n", err)
 			return
@@ -96,12 +87,18 @@ var listAliasCmd = &cobra.Command{
 
 		// Create table
 		table := pterm.TableData{
-			{"Alias", "Command"},
+			{"Service", "Alias", "Command"},
 		}
 
 		// Add aliases to table
-		for alias, command := range aliases {
-			table = append(table, []string{alias, command})
+		for service, serviceAliases := range aliases {
+			if serviceMap, ok := serviceAliases.(map[string]interface{}); ok {
+				for alias, command := range serviceMap {
+					if cmdStr, ok := command.(string); ok {
+						table = append(table, []string{service, alias, cmdStr})
+					}
+				}
+			}
 		}
 
 		// Print table
@@ -109,216 +106,20 @@ var listAliasCmd = &cobra.Command{
 	},
 }
 
-// validateServiceCommand checks if the given verb and resource are valid for the service
-func validateServiceCommand(service, verb, resource string) error {
-	// Get current environment from main setting file
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("failed to get home directory: %v", err)
-	}
-
-	mainV := viper.New()
-	mainV.SetConfigFile(filepath.Join(home, ".cfctl", "setting.yaml"))
-	mainV.SetConfigType("yaml")
-	if err := mainV.ReadInConfig(); err != nil {
-		return fmt.Errorf("failed to read config: %v", err)
-	}
-
-	currentEnv := mainV.GetString("environment")
-	if currentEnv == "" {
-		return fmt.Errorf("no environment set")
-	}
-
-	// Get environment config
-	envConfig := mainV.Sub(fmt.Sprintf("environments.%s", currentEnv))
-	if envConfig == nil {
-		return fmt.Errorf("environment %s not found", currentEnv)
-	}
-
-	endpoint := envConfig.GetString("endpoint")
-	if endpoint == "" {
-		return fmt.Errorf("no endpoint found in configuration")
-	}
-
-	endpoint, _ = transport.GetAPIEndpoint(endpoint)
-
-	// Fetch endpoints map
-	endpointsMap, err := transport.FetchEndpointsMap(endpoint)
-	if err != nil {
-		return fmt.Errorf("failed to fetch endpoints: %v", err)
-	}
-
-	// Check if service exists
-	serviceEndpoint, ok := endpointsMap[service]
-	if !ok {
-		return fmt.Errorf("service '%s' not found", service)
-	}
-
-	// Fetch service resources
-	resources, err := fetchServiceResources(service, serviceEndpoint, nil)
-	if err != nil {
-		return fmt.Errorf("failed to fetch service resources: %v", err)
-	}
-
-	// Find the resource and check if the verb is valid
-	resourceFound := false
-	verbFound := false
-
-	for _, row := range resources {
-		if row[2] == resource {
-			resourceFound = true
-			verbs := strings.Split(row[1], ", ")
-			for _, v := range verbs {
-				if v == verb {
-					verbFound = true
-					break
-				}
-			}
-			break
-		}
-	}
-
-	if !resourceFound {
-		return fmt.Errorf("resource '%s' not found in service '%s'", resource, service)
-	}
-
-	if !verbFound {
-		return fmt.Errorf("verb '%s' not found for resource '%s' in service '%s'", verb, resource, service)
-	}
-
-	return nil
-}
-
-func addAlias(key, value string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("failed to get home directory: %v", err)
-	}
-
-	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
-
-	data, err := os.ReadFile(settingPath)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("failed to read config: %v", err)
-	}
-
-	var config map[string]interface{}
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return fmt.Errorf("failed to parse config: %v", err)
-	}
-
-	aliases, ok := config["aliases"].(map[string]interface{})
-	if !ok {
-		aliases = make(map[string]interface{})
-	}
-
-	delete(config, "aliases")
-	aliases[key] = value
-
-	newData, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to encode config: %v", err)
-	}
-
-	aliasData, err := yaml.Marshal(map[string]interface{}{"aliases": aliases})
-	if err != nil {
-		return fmt.Errorf("failed to encode aliases: %v", err)
-	}
-
-	finalData := append(newData, aliasData...)
-
-	if err := os.WriteFile(settingPath, finalData, 0644); err != nil {
-		return fmt.Errorf("failed to write config: %v", err)
-	}
-
-	return nil
-}
-
-// Function to remove an alias
-func removeAlias(key string) error {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("failed to get home directory: %v", err)
-	}
-
-	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
-
-	data, err := os.ReadFile(settingPath)
-	if err != nil {
-		return fmt.Errorf("failed to read config: %v", err)
-	}
-
-	var config map[string]interface{}
-	if err := yaml.Unmarshal(data, &config); err != nil {
-		return fmt.Errorf("failed to parse config: %v", err)
-	}
-
-	aliases, ok := config["aliases"].(map[string]interface{})
-	if !ok || aliases[key] == nil {
-		return fmt.Errorf("alias '%s' not found", key)
-	}
-
-	delete(aliases, key)
-	delete(config, "aliases")
-
-	// YAML 인코딩
-	newData, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to encode config: %v", err)
-	}
-
-	if len(aliases) > 0 {
-		aliasData, err := yaml.Marshal(map[string]interface{}{"aliases": aliases})
-		if err != nil {
-			return fmt.Errorf("failed to encode aliases: %v", err)
-		}
-		newData = append(newData, aliasData...)
-	}
-
-	if err := os.WriteFile(settingPath, newData, 0644); err != nil {
-		return fmt.Errorf("failed to write config: %v", err)
-	}
-
-	return nil
-}
-
-func ListAliases() (map[string]string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %v", err)
-	}
-
-	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
-	v := viper.New()
-	v.SetConfigFile(settingPath)
-	v.SetConfigType("yaml")
-
-	if err := v.ReadInConfig(); err != nil {
-		if os.IsNotExist(err) {
-			return make(map[string]string), nil
-		}
-		return nil, fmt.Errorf("failed to read config: %v", err)
-	}
-
-	aliases := v.GetStringMapString("aliases")
-	if aliases == nil {
-		return make(map[string]string), nil
-	}
-
-	return aliases, nil
-}
-
 func init() {
 	AliasCmd.AddCommand(addAliasCmd)
 	AliasCmd.AddCommand(removeAliasCmd)
 	AliasCmd.AddCommand(listAliasCmd)
 
-	// Remove service flag as it's no longer needed
+	addAliasCmd.Flags().StringP("service", "s", "", "Service to add alias for")
 	addAliasCmd.Flags().StringP("key", "k", "", "Alias key to add")
-	addAliasCmd.Flags().StringP("value", "v", "", "Command to execute (e.g., \"identity list User\")")
+	addAliasCmd.Flags().StringP("value", "v", "", "Command to execute (e.g., \"list User\")")
+	addAliasCmd.MarkFlagRequired("service")
 	addAliasCmd.MarkFlagRequired("key")
 	addAliasCmd.MarkFlagRequired("value")
 
+	removeAliasCmd.Flags().StringP("service", "s", "", "Service to remove alias from")
 	removeAliasCmd.Flags().StringP("key", "k", "", "Alias key to remove")
+	removeAliasCmd.MarkFlagRequired("service")
 	removeAliasCmd.MarkFlagRequired("key")
 }

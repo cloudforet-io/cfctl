@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cloudforet-io/cfctl/pkg/configs"
 	"github.com/cloudforet-io/cfctl/pkg/transport"
 	"gopkg.in/yaml.v3"
 
@@ -543,7 +544,7 @@ You can either specify a new endpoint URL directly or use the service-based endp
 			return
 		}
 
-		endpoint, err := getEndpoint(appV)
+		endpointName, err := getEndpoint(appV)
 		if err != nil {
 			pterm.Error.Printf("Failed to get endpoint: %v\n", err)
 			return
@@ -586,14 +587,14 @@ You can either specify a new endpoint URL directly or use the service-based endp
 
 		var identityEndpoint, restIdentityEndpoint string
 		var hasIdentityService bool
-		if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-			apiEndpoint, err := transport.GetAPIEndpoint(endpoint)
+		if strings.HasPrefix(endpointName, "http://") || strings.HasPrefix(endpointName, "https://") {
+			apiEndpoint, err := configs.GetAPIEndpoint(endpointName)
 			if err != nil {
 				pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
 				return
 			}
 
-			identityEndpoint, hasIdentityService, err = transport.GetIdentityEndpoint(apiEndpoint)
+			identityEndpoint, hasIdentityService, err = configs.GetIdentityEndpoint(apiEndpoint)
 			if err != nil {
 				pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 				return
@@ -628,7 +629,7 @@ You can either specify a new endpoint URL directly or use the service-based endp
 
 			isProxy := appV.GetBool(fmt.Sprintf("environments.%s.proxy", currentEnv))
 
-			if strings.HasPrefix(endpoint, "grpc://") || strings.HasPrefix(endpoint, "grpc+ssl://") {
+			if strings.HasPrefix(endpointName, "grpc://") || strings.HasPrefix(endpointName, "grpc+ssl://") {
 				if !isProxy {
 					pterm.Error.Println("Service listing is only available when proxy is enabled.")
 					pterm.DefaultBox.WithTitle("Available Options").
@@ -645,11 +646,11 @@ You can either specify a new endpoint URL directly or use the service-based endp
 				}
 
 				var endpoints map[string]string
-				parts := strings.Split(endpoint, "/")
-				endpoint = strings.Join(parts[:len(parts)-1], "/")
-				parts = strings.Split(endpoint, "://")
+				parts := strings.Split(endpointName, "/")
+				endpointName = strings.Join(parts[:len(parts)-1], "/")
+				parts = strings.Split(endpointName, "://")
 				if len(parts) != 2 {
-					fmt.Errorf("invalid endpoint format: %s", endpoint)
+					fmt.Errorf("invalid endpoint format: %s", endpointName)
 				}
 
 				scheme := parts[0]
@@ -670,7 +671,7 @@ You can either specify a new endpoint URL directly or use the service-based endp
 				// Establish the connection
 				conn, err := grpc.Dial(hostPort, opts...)
 				if err != nil {
-					fmt.Errorf("connection failed: unable to connect to %s: %v", endpoint, err)
+					fmt.Errorf("connection failed: unable to connect to %s: %v", endpointName, err)
 				}
 				defer conn.Close()
 
@@ -770,7 +771,7 @@ You can either specify a new endpoint URL directly or use the service-based endp
 					WithData(tableData).
 					WithBoxed(true).
 					Render()
-			} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
+			} else if strings.HasPrefix(endpointName, "http://") || strings.HasPrefix(endpointName, "https://") {
 				var formattedServices []string
 				endpoints, err := fetchAvailableServices(identityEndpoint, restIdentityEndpoint, hasIdentityService, token)
 				if err != nil {

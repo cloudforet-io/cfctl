@@ -16,12 +16,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
+	"github.com/cloudforet-io/cfctl/pkg/configs"
 	"github.com/cloudforet-io/cfctl/pkg/format"
 	"github.com/eiannone/keyboard"
-	"github.com/spf13/viper"
-
-	"github.com/atotto/clipboard"
 	"github.com/pterm/pterm"
+	"github.com/spf13/viper"
 
 	"google.golang.org/grpc/metadata"
 
@@ -48,18 +48,19 @@ type Config struct {
 
 // FetchOptions holds the flag values for a command
 type FetchOptions struct {
-	Parameters      []string
-	JSONParameter   string
-	FileParameter   string
-	APIVersion      string
-	OutputFormat    string
-	CopyToClipboard bool
-	SortBy          string
-	MinimalColumns  bool
-	Columns         string
-	Limit           int
-	Page            int
-	PageSize        int
+	Parameters           []string
+	JSONParameter        string
+	FileParameter        string
+	APIVersion           string
+	OutputFormat         string
+	OutputFormatExplicit bool
+	CopyToClipboard      bool
+	SortBy               string
+	MinimalColumns       bool
+	Columns              string
+	Limit                int
+	Page                 int
+	PageSize             int
 }
 
 // FetchService handles the execution of gRPC commands for all services
@@ -185,13 +186,13 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	if config.Environment == "local" {
 		hostPort = strings.TrimPrefix(config.Environments[config.Environment].Endpoint, "grpc://")
 	} else {
-		apiEndpoint, err = GetAPIEndpoint(config.Environments[config.Environment].Endpoint)
+		apiEndpoint, err = configs.GetAPIEndpoint(config.Environments[config.Environment].Endpoint)
 		if err != nil {
 			pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
 			os.Exit(1)
 		}
 		// Get identity service endpoint
-		identityEndpoint, hasIdentityService, err = GetIdentityEndpoint(apiEndpoint)
+		identityEndpoint, hasIdentityService, err = configs.GetIdentityEndpoint(apiEndpoint)
 		if err != nil {
 			pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 			os.Exit(1)
@@ -250,6 +251,46 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	ctx := metadata.AppendToOutgoingContext(context.Background(), "token", config.Environments[config.Environment].Token)
 	refClient := grpcreflect.NewClient(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
 	defer refClient.Reset()
+
+	// Check for alias
+	aliases, err := configs.ListAliases()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load aliases: %v", err)
+	}
+
+	// Check if the verb is an alias
+	if serviceAliases, ok := aliases[serviceName].(map[string]interface{}); ok {
+		if cmd, ok := serviceAliases[verb].(string); ok {
+			// Split the alias command
+			parts := strings.Fields(cmd)
+			if len(parts) >= 2 {
+				verb = parts[0]
+				resourceName = parts[1]
+
+				// If the command from alias is 'list'
+				if verb == "list" {
+					if !options.OutputFormatExplicit {
+						options.OutputFormat = "table"
+					}
+
+					// Create new options for list command
+					newOptions := &FetchOptions{
+						Parameters:           options.Parameters,
+						JSONParameter:        options.JSONParameter,
+						FileParameter:        options.FileParameter,
+						APIVersion:           options.APIVersion,
+						OutputFormat:         options.OutputFormat,
+						OutputFormatExplicit: options.OutputFormatExplicit,
+						CopyToClipboard:      options.CopyToClipboard,
+						MinimalColumns:       false, // Always show all columns for alias
+						PageSize:             15,    // Default page size
+					}
+
+					options = newOptions
+				}
+			}
+		}
+	}
 
 	// Call the service
 	jsonBytes, err := fetchJSONResponse(config, serviceName, verb, resourceName, options, apiEndpoint, identityEndpoint, hasIdentityService)
@@ -604,6 +645,36 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 	// Regular unary call
 	err = conn.Invoke(ctx, fullMethod, reqMsg, respMsg)
 	if err != nil {
+		if strings.Contains(err.Error(), "ERROR_AUTHENTICATE_FAILURE") ||
+			strings.Contains(err.Error(), "Token is invalid or expired") {
+			// Create a styled error message box
+			headerBox := pterm.DefaultBox.WithTitle("Authentication Error").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4).
+				WithBoxStyle(pterm.NewStyle(pterm.FgLightRed))
+
+			errorExplain := "Your authentication token has expired or is invalid.\n" +
+				"Please login again to refresh your credentials."
+
+			headerBox.Println(errorExplain)
+			fmt.Println()
+
+			steps := []string{
+				"1. Run 'cfctl login'",
+				"2. Enter your credentials when prompted",
+				"3. Try your command again",
+			}
+
+			instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4)
+
+			instructionBox.Println(strings.Join(steps, "\n\n"))
+
+			return nil, fmt.Errorf("authentication required")
+		}
 		return nil, fmt.Errorf("failed to invoke method %s: %v", fullMethod, err)
 	}
 
