@@ -95,22 +95,45 @@ func RemoveAlias(service, key string) error {
 		return fmt.Errorf("alias '%s' not found in service '%s'", key, service)
 	}
 
+	// Delete the specific alias
 	delete(serviceAliases, key)
+
+	// If service has no more aliases, remove the service
 	if len(serviceAliases) == 0 {
 		delete(aliases, service)
 	} else {
 		aliases[service] = serviceAliases
 	}
 
-	config["aliases"] = aliases
+	// Only remove aliases section if there are no services left
+	if len(aliases) == 0 {
+		delete(config, "aliases")
+		newData, err := yaml.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("failed to encode config: %v", err)
+		}
+		if err := os.WriteFile(settingPath, newData, 0644); err != nil {
+			return fmt.Errorf("failed to write config: %v", err)
+		}
+	} else {
+		// Keep aliases and write at the end
+		delete(config, "aliases")
+		newData, err := yaml.Marshal(config)
+		if err != nil {
+			return fmt.Errorf("failed to encode config: %v", err)
+		}
 
-	newData, err := yaml.Marshal(config)
-	if err != nil {
-		return fmt.Errorf("failed to encode config: %v", err)
-	}
+		aliasData, err := yaml.Marshal(map[string]interface{}{
+			"aliases": aliases,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to encode aliases: %v", err)
+		}
 
-	if err := os.WriteFile(settingPath, newData, 0644); err != nil {
-		return fmt.Errorf("failed to write config: %v", err)
+		finalData := append(newData, aliasData...)
+		if err := os.WriteFile(settingPath, finalData, 0644); err != nil {
+			return fmt.Errorf("failed to write config: %v", err)
+		}
 	}
 
 	return nil
