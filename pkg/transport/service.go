@@ -60,6 +60,7 @@ type FetchOptions struct {
 	Rows                 int
 	Page                 int
 	PageSize             int
+	NoPaging             bool
 }
 
 // FetchService handles the execution of gRPC commands for all services
@@ -1007,9 +1008,14 @@ func getMinimalFields(serviceName, resourceName string, refClient *grpcreflect.C
 
 func printTable(data map[string]interface{}, options *FetchOptions, serviceName, verbName, resourceName string, refClient *grpcreflect.Client) string {
 	if results, ok := data["results"].([]interface{}); ok {
-		// Set default page size if not specified
-		if options.PageSize == 0 {
-			options.PageSize = 10
+		// Set default page size if not specified and paging is enabled
+		if !options.NoPaging {
+			if options.PageSize == 0 {
+				options.PageSize = 15
+			}
+		} else {
+			// Show all results when no-paging is true
+			options.PageSize = len(results)
 		}
 
 		// Initialize keyboard

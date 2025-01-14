@@ -512,13 +512,15 @@ func createServiceCommand(serviceName string) *cobra.Command {
 			sortBy := ""
 			columns := ""
 			rows := 0
-			pageSize := 100 // 기본 페이지 크기
+			pageSize := 100
+			noPaging := false
 
 			if verb == "list" {
 				sortBy, _ = cmd.Flags().GetString("sort")
 				columns, _ = cmd.Flags().GetString("columns")
 				rows, _ = cmd.Flags().GetInt("rows")
 				pageSize, _ = cmd.Flags().GetInt("rows-per-page")
+				noPaging, _ = cmd.Flags().GetBool("no-paging")
 			}
 
 			options := &transport.FetchOptions{
@@ -533,6 +535,7 @@ func createServiceCommand(serviceName string) *cobra.Command {
 				Columns:              columns,
 				Rows:                 rows,
 				PageSize:             pageSize,
+				NoPaging:             noPaging,
 			}
 
 			if verb == "list" && !cmd.Flags().Changed("output") {
@@ -563,6 +566,7 @@ func createServiceCommand(serviceName string) *cobra.Command {
 	cmd.Flags().StringP("columns", "c", "", "Specific columns (-c id,name)")
 	cmd.Flags().IntP("rows", "r", 0, "Number of rows")
 	cmd.Flags().IntP("rows-per-page", "n", 15, "Number of rows per page")
+	cmd.Flags().BoolP("no-paging", "", false, "Disable pagination and show all results")
 
 	// Add existing flags
 	cmd.Flags().StringArrayP("parameter", "p", []string{}, "Input Parameter (-p <key>=<value> -p ...)")
