@@ -22,7 +22,7 @@ import (
 // GetAPIEndpoint fetches the actual API endpoint from the config endpoint
 func GetAPIEndpoint(endpoint string) (string, error) {
 	// Handle gRPC+SSL protocol
-	if strings.HasPrefix(endpoint, "grpc+ssl://") {
+	if strings.HasPrefix(endpoint, "grpc+ssl://") || strings.HasPrefix(endpoint, "grpc://") {
 		// For gRPC+SSL endpoints, return as is since it's already in the correct format
 		return endpoint, nil
 	}
@@ -66,7 +66,7 @@ func GetAPIEndpoint(endpoint string) (string, error) {
 // GetIdentityEndpoint fetches the identity service endpoint from the API endpoint
 func GetIdentityEndpoint(apiEndpoint string) (string, bool, error) {
 	// If the endpoint is already gRPC+SSL
-	if strings.HasPrefix(apiEndpoint, "grpc+ssl://") {
+	if strings.HasPrefix(apiEndpoint, "grpc+ssl://") || strings.HasPrefix(apiEndpoint, "grpc://") {
 		// Check if it contains 'identity'
 		containsIdentity := strings.Contains(apiEndpoint, "identity")
 
