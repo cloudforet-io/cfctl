@@ -25,57 +25,54 @@ var AliasCmd = &cobra.Command{
 var addAliasCmd = &cobra.Command{
 	Use:   "add",
 	Short: "Add a new alias",
-	Example: `  $ cfctl alias add -k user -v "identity list User"
+	Example: `  $ cfctl alias add -s identity -k user -v "list User"
     
 Then use it as:
-  $ cfctl user     # This command is same as $ cfctl identity list User`,
+  $ cfctl identity user     # This command is same as $ cfctl identity list User`,
 	Run: func(cmd *cobra.Command, args []string) {
+		service, _ := cmd.Flags().GetString("service")
 		key, _ := cmd.Flags().GetString("key")
 		value, _ := cmd.Flags().GetString("value")
 
 		// Parse command to validate
 		parts := strings.Fields(value)
-		if len(parts) < 3 {
-			pterm.Error.Printf("Invalid command format. Expected '<service> <verb> <resource>', got '%s'\n", value)
+		if len(parts) < 2 {
+			pterm.Error.Printf("Invalid command format. Expected '<verb> <resource>', got '%s'\n", value)
 			return
 		}
 
-		service := parts[0]
-		verb := parts[1]
-		resource := parts[2]
+		verb := parts[0]
+		resource := parts[1]
 
 		if err := validateServiceCommand(service, verb, resource); err != nil {
 			pterm.Error.Printf("Invalid command: %v\n", err)
 			return
 		}
 
-		if err := addAlias(key, value); err != nil {
+		if err := addAlias(service, key, value); err != nil {
 			pterm.Error.Printf("Failed to add alias: %v\n", err)
 			return
 		}
 
-		pterm.Success.Printf("Successfully added alias '%s' for command '%s'\n", key, value)
+		pterm.Success.Printf("Successfully added alias '%s' for command '%s' in service '%s'\n", key, value, service)
 	},
 }
 
 var removeAliasCmd = &cobra.Command{
-	Use:     "remove",
-	Short:   "Remove an alias",
-	Example: `  $ cfctl alias remove -k user`,
+	Use:   "remove",
+	Short: "Remove an alias",
+	Example: `  # Remove an alias from a specific service
+  $ cfctl alias remove -s identity -k user`,
 	Run: func(cmd *cobra.Command, args []string) {
+		service, _ := cmd.Flags().GetString("service")
 		key, _ := cmd.Flags().GetString("key")
-		if key == "" {
-			pterm.Error.Println("The --key (-k) flag is required")
-			cmd.Help()
-			return
-		}
 
-		if err := removeAlias(key); err != nil {
+		if err := removeAlias(service, key); err != nil {
 			pterm.Error.Printf("Failed to remove alias: %v\n", err)
 			return
 		}
 
-		pterm.Success.Printf("Successfully removed alias '%s'\n", key)
+		pterm.Success.Printf("Successfully removed alias '%s' from service '%s'\n", key, service)
 	},
 }
 
@@ -96,12 +93,18 @@ var listAliasCmd = &cobra.Command{
 
 		// Create table
 		table := pterm.TableData{
-			{"Alias", "Command"},
+			{"Service", "Alias", "Command"},
 		}
 
 		// Add aliases to table
-		for alias, command := range aliases {
-			table = append(table, []string{alias, command})
+		for service, serviceAliases := range aliases {
+			if serviceMap, ok := serviceAliases.(map[string]interface{}); ok {
+				for alias, command := range serviceMap {
+					if cmdStr, ok := command.(string); ok {
+						table = append(table, []string{service, alias, cmdStr})
+					}
+				}
+			}
 		}
 
 		// Print table
@@ -189,7 +192,7 @@ func validateServiceCommand(service, verb, resource string) error {
 	return nil
 }
 
-func addAlias(key, value string) error {
+func addAlias(service, key, value string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %v", err)
@@ -212,15 +215,24 @@ func addAlias(key, value string) error {
 		aliases = make(map[string]interface{})
 	}
 
+	serviceAliases, ok := aliases[service].(map[string]interface{})
+	if !ok {
+		serviceAliases = make(map[string]interface{})
+	}
+
+	serviceAliases[key] = value
+	aliases[service] = serviceAliases
+
 	delete(config, "aliases")
-	aliases[key] = value
 
 	newData, err := yaml.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to encode config: %v", err)
 	}
 
-	aliasData, err := yaml.Marshal(map[string]interface{}{"aliases": aliases})
+	aliasData, err := yaml.Marshal(map[string]interface{}{
+		"aliases": aliases,
+	})
 	if err != nil {
 		return fmt.Errorf("failed to encode aliases: %v", err)
 	}
@@ -235,7 +247,7 @@ func addAlias(key, value string) error {
 }
 
 // Function to remove an alias
-func removeAlias(key string) error {
+func removeAlias(service, key string) error {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %v", err)
@@ -254,25 +266,31 @@ func removeAlias(key string) error {
 	}
 
 	aliases, ok := config["aliases"].(map[string]interface{})
-	if !ok || aliases[key] == nil {
-		return fmt.Errorf("alias '%s' not found", key)
+	if !ok {
+		return fmt.Errorf("no aliases found")
 	}
 
-	delete(aliases, key)
-	delete(config, "aliases")
+	serviceAliases, ok := aliases[service].(map[string]interface{})
+	if !ok {
+		return fmt.Errorf("no aliases found for service '%s'", service)
+	}
 
-	// YAML 인코딩
+	if _, exists := serviceAliases[key]; !exists {
+		return fmt.Errorf("alias '%s' not found in service '%s'", key, service)
+	}
+
+	delete(serviceAliases, key)
+	if len(serviceAliases) == 0 {
+		delete(aliases, service)
+	} else {
+		aliases[service] = serviceAliases
+	}
+
+	config["aliases"] = aliases
+
 	newData, err := yaml.Marshal(config)
 	if err != nil {
 		return fmt.Errorf("failed to encode config: %v", err)
-	}
-
-	if len(aliases) > 0 {
-		aliasData, err := yaml.Marshal(map[string]interface{}{"aliases": aliases})
-		if err != nil {
-			return fmt.Errorf("failed to encode aliases: %v", err)
-		}
-		newData = append(newData, aliasData...)
 	}
 
 	if err := os.WriteFile(settingPath, newData, 0644); err != nil {
@@ -282,7 +300,7 @@ func removeAlias(key string) error {
 	return nil
 }
 
-func ListAliases() (map[string]string, error) {
+func ListAliases() (map[string]interface{}, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get home directory: %v", err)
@@ -295,17 +313,22 @@ func ListAliases() (map[string]string, error) {
 
 	if err := v.ReadInConfig(); err != nil {
 		if os.IsNotExist(err) {
-			return make(map[string]string), nil
+			return make(map[string]interface{}), nil
 		}
 		return nil, fmt.Errorf("failed to read config: %v", err)
 	}
 
-	aliases := v.GetStringMapString("aliases")
+	aliases := v.Get("aliases")
 	if aliases == nil {
-		return make(map[string]string), nil
+		return make(map[string]interface{}), nil
 	}
 
-	return aliases, nil
+	aliasesMap, ok := aliases.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid aliases format")
+	}
+
+	return aliasesMap, nil
 }
 
 func init() {
@@ -313,12 +336,15 @@ func init() {
 	AliasCmd.AddCommand(removeAliasCmd)
 	AliasCmd.AddCommand(listAliasCmd)
 
-	// Remove service flag as it's no longer needed
+	addAliasCmd.Flags().StringP("service", "s", "", "Service to add alias for")
 	addAliasCmd.Flags().StringP("key", "k", "", "Alias key to add")
-	addAliasCmd.Flags().StringP("value", "v", "", "Command to execute (e.g., \"identity list User\")")
+	addAliasCmd.Flags().StringP("value", "v", "", "Command to execute (e.g., \"list User\")")
+	addAliasCmd.MarkFlagRequired("service")
 	addAliasCmd.MarkFlagRequired("key")
 	addAliasCmd.MarkFlagRequired("value")
 
+	removeAliasCmd.Flags().StringP("service", "s", "", "Service to remove alias from")
 	removeAliasCmd.Flags().StringP("key", "k", "", "Alias key to remove")
+	removeAliasCmd.MarkFlagRequired("service")
 	removeAliasCmd.MarkFlagRequired("key")
 }
