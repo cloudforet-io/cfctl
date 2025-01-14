@@ -38,7 +38,6 @@ type Environment struct {
 	Endpoint string `yaml:"endpoint"`
 	Proxy    string `yaml:"proxy"`
 	Token    string `yaml:"token"`
-	URL      string `yaml:"url"`
 }
 
 type Config struct {
@@ -205,12 +204,16 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 			}
 
 			domainParts := strings.Split(urlParts[1], ".")
-			if len(domainParts) < 4 {
-				return nil, fmt.Errorf("invalid domain format in API endpoint: %s", apiEndpoint)
-			}
+			if len(domainParts) > 0 {
+				port := extractPortFromParts(domainParts)
+				if strings.Contains(domainParts[len(domainParts)-1], ":") {
+					parts := strings.Split(domainParts[len(domainParts)-1], ":")
+					domainParts[len(domainParts)-1] = parts[0]
+				}
 
-			domainParts[0] = format.ConvertServiceName(serviceName)
-			hostPort = strings.Join(domainParts, ".") + ":443"
+				domainParts[0] = format.ConvertServiceName(serviceName)
+				hostPort = strings.Join(domainParts, ".") + port
+			}
 		} else {
 			trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
 			parts := strings.Split(trimmedEndpoint, ".")
@@ -397,6 +400,22 @@ func extractParameterName(errMsg string) string {
 	return ""
 }
 
+func extractPortFromParts(parts []string) string {
+	if len(parts) == 0 {
+		return ":443"
+	}
+
+	lastPart := parts[len(parts)-1]
+	if strings.Contains(lastPart, ":") {
+		portParts := strings.Split(lastPart, ":")
+		if len(portParts) == 2 {
+			return ":" + portParts[1]
+		}
+	}
+
+	return ":443"
+}
+
 // promptForParameter prompts the user to enter a value for the given parameter
 func promptForParameter(paramName string) (string, error) {
 	prompt := fmt.Sprintf("Please enter value for '%s'", paramName)
@@ -431,7 +450,7 @@ func loadConfig() (*Config, error) {
 	envConfig := &Environment{
 		Endpoint: mainV.GetString(fmt.Sprintf("environments.%s.endpoint", currentEnv)),
 		Proxy:    mainV.GetString(fmt.Sprintf("environments.%s.proxy", currentEnv)),
-		URL:      mainV.GetString(fmt.Sprintf("environments.%s.url", currentEnv)),
+		Token:    mainV.GetString(fmt.Sprintf("environments.%s.token", currentEnv)),
 	}
 
 	// Handle token based on environment type
@@ -510,12 +529,16 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 				}
 
 				domainParts := strings.Split(urlParts[1], ".")
-				if len(domainParts) < 4 {
-					return nil, fmt.Errorf("invalid domain format in API endpoint: %s", apiEndpoint)
-				}
+				if len(domainParts) > 0 {
+					port := extractPortFromParts(domainParts)
+					if strings.Contains(domainParts[len(domainParts)-1], ":") {
+						parts := strings.Split(domainParts[len(domainParts)-1], ":")
+						domainParts[len(domainParts)-1] = parts[0]
+					}
 
-				domainParts[0] = format.ConvertServiceName(serviceName)
-				hostPort = strings.Join(domainParts, ".") + ":443"
+					domainParts[0] = format.ConvertServiceName(serviceName)
+					hostPort = strings.Join(domainParts, ".") + port
+				}
 			}
 		} else {
 			trimmedEndpoint := strings.TrimPrefix(identityEndpoint, "grpc+ssl://")
