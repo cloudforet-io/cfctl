@@ -8,7 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cloudforet-io/cfctl/cmd/commands"
+	"github.com/cloudforet-io/cfctl/cmd/common"
+	"github.com/cloudforet-io/cfctl/pkg/configs"
 	"github.com/cloudforet-io/cfctl/pkg/transport"
 	"gopkg.in/yaml.v3"
 
@@ -232,10 +233,10 @@ func showInitializationGuide() {
 			return
 		}
 
-		endpoint := envConfig.GetString("endpoint")
+		endpointName := envConfig.GetString("endpoint")
 
 		// Skip authentication warning for gRPC+SSL endpoints
-		if strings.HasPrefix(endpoint, "grpc+ssl://") {
+		if strings.HasPrefix(endpointName, "grpc+ssl://") {
 			return
 		}
 
@@ -252,13 +253,13 @@ func addDynamicServiceCommands() error {
 	}
 
 	// For non-local environments
-	endpoint := config.Endpoint
+	endpointName := config.Endpoint
 	var apiEndpoint string
 
-	if strings.HasPrefix(endpoint, "grpc+ssl://") {
-		apiEndpoint = endpoint
-	} else if strings.HasPrefix(endpoint, "http://") || strings.HasPrefix(endpoint, "https://") {
-		apiEndpoint, err = transport.GetAPIEndpoint(endpoint)
+	if strings.HasPrefix(endpointName, "grpc+ssl://") {
+		apiEndpoint = endpointName
+	} else if strings.HasPrefix(endpointName, "http://") || strings.HasPrefix(endpointName, "https://") {
+		apiEndpoint, err = configs.GetAPIEndpoint(endpointName)
 		if err != nil {
 			return fmt.Errorf("failed to get API endpoint: %v", err)
 		}
@@ -267,8 +268,8 @@ func addDynamicServiceCommands() error {
 	// Try to use cached endpoints first
 	if cachedEndpointsMap != nil {
 		currentService := ""
-		if strings.HasPrefix(endpoint, "grpc+ssl://") {
-			parts := strings.Split(endpoint, "://")
+		if strings.HasPrefix(endpointName, "grpc+ssl://") {
+			parts := strings.Split(endpointName, "://")
 			if len(parts) == 2 {
 				hostParts := strings.Split(parts[1], ".")
 				if len(hostParts) > 0 {
@@ -301,7 +302,7 @@ func addDynamicServiceCommands() error {
 		Start()
 
 	progressbar.UpdateTitle("Fetching available service endpoints from the API server")
-	endpointsMap, err := transport.FetchEndpointsMap(apiEndpoint)
+	endpointsMap, err := configs.FetchEndpointsMap(apiEndpoint)
 	if err != nil {
 		return fmt.Errorf("failed to fetch services: %v", err)
 	}
@@ -317,8 +318,8 @@ func addDynamicServiceCommands() error {
 	progressbar.UpdateTitle("Registering available service commands")
 	// Add commands based on the current service
 	currentService := ""
-	if strings.HasPrefix(endpoint, "grpc+ssl://") {
-		parts := strings.Split(endpoint, "://")
+	if strings.HasPrefix(endpointName, "grpc+ssl://") {
+		parts := strings.Split(endpointName, "://")
 		if len(parts) == 2 {
 			hostParts := strings.Split(parts[1], ".")
 			if len(hostParts) > 0 {
@@ -457,14 +458,14 @@ func loadConfig() (*Config, error) {
 		return nil, fmt.Errorf("environment %s not found", currentEnv)
 	}
 
-	endpoint := envConfig.GetString("endpoint")
-	if endpoint == "" {
+	endpointName := envConfig.GetString("endpoint")
+	if endpointName == "" {
 		return nil, fmt.Errorf("no endpoint found in configuration")
 	}
 
 	config := &Config{
 		Environment: currentEnv,
-		Endpoint:    endpoint,
+		Endpoint:    endpointName,
 	}
 
 	if strings.HasSuffix(currentEnv, "-app") {
@@ -499,7 +500,7 @@ func createServiceCommand(serviceName string) *cobra.Command {
 			}
 
 			if verb == "api_resources" {
-				return commands.ListAPIResources(serviceName)
+				return common.ListAPIResources(serviceName)
 			}
 
 			parameters, _ := cmd.Flags().GetStringArray("parameter")
@@ -521,16 +522,17 @@ func createServiceCommand(serviceName string) *cobra.Command {
 			}
 
 			options := &transport.FetchOptions{
-				Parameters:      parameters,
-				JSONParameter:   jsonParameter,
-				FileParameter:   fileParameter,
-				OutputFormat:    outputFormat,
-				CopyToClipboard: copyToClipboard,
-				SortBy:          sortBy,
-				MinimalColumns:  verb == "list" && cmd.Flag("minimal") != nil && cmd.Flag("minimal").Changed,
-				Columns:         columns,
-				Limit:           limit,
-				PageSize:        pageSize,
+				Parameters:           parameters,
+				JSONParameter:        jsonParameter,
+				FileParameter:        fileParameter,
+				OutputFormat:         outputFormat,
+				OutputFormatExplicit: cmd.Flags().Changed("output"),
+				CopyToClipboard:      copyToClipboard,
+				SortBy:               sortBy,
+				MinimalColumns:       verb == "list" && cmd.Flag("minimal") != nil && cmd.Flag("minimal").Changed,
+				Columns:              columns,
+				Limit:                limit,
+				PageSize:             pageSize,
 			}
 
 			if verb == "list" && !cmd.Flags().Changed("output") {
@@ -552,7 +554,7 @@ func createServiceCommand(serviceName string) *cobra.Command {
 	}
 
 	// Add api_resources subcommand
-	cmd.AddCommand(commands.FetchApiResourcesCmd(serviceName))
+	cmd.AddCommand(common.FetchApiResourcesCmd(serviceName))
 
 	// Add list-specific flags
 	cmd.Flags().BoolP("watch", "w", false, "Watch for changes")

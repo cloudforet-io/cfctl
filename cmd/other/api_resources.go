@@ -3,8 +3,6 @@
 package other
 
 import (
-	"context"
-	"crypto/tls"
 	"fmt"
 	"log"
 	"os"
@@ -13,18 +11,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/cloudforet-io/cfctl/pkg/transport"
+	"github.com/cloudforet-io/cfctl/pkg/configs"
+	"github.com/cloudforet-io/cfctl/pkg/format"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v2"
 
 	"github.com/pterm/pterm"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
-	"google.golang.org/protobuf/proto"
-	"google.golang.org/protobuf/types/descriptorpb"
 )
 
 var endpoints string
@@ -93,14 +86,14 @@ var ApiResourcesCmd = &cobra.Command{
 		endpointsMap, err := loadEndpointsFromCache(currentEnv)
 		if err != nil {
 			// If cache loading fails, fall back to fetching from identity service
-			endpoint, ok := envConfig["endpoint"].(string)
-			if !ok || endpoint == "" {
+			endpointName, ok := envConfig["endpoint"].(string)
+			if !ok || endpointName == "" {
 				return
 			}
 
-			endpointsMap, err = transport.FetchEndpointsMap(endpoint)
+			endpointsMap, err = configs.FetchEndpointsMap(endpointName)
 			if err != nil {
-				log.Fatalf("Failed to fetch endpointsMap from '%s': %v", endpoint, err)
+				log.Fatalf("Failed to fetch endpointsMap from '%s': %v", endpointName, err)
 			}
 		}
 
@@ -135,7 +128,7 @@ var ApiResourcesCmd = &cobra.Command{
 					continue
 				}
 
-				result, err := fetchServiceResources(endpointName, serviceEndpoint, shortNamesMap)
+				result, err := format.FetchServiceResources(endpointName, serviceEndpoint, shortNamesMap)
 				if err != nil {
 					log.Printf("Error processing service %s: %v", endpointName, err)
 					continue
@@ -161,7 +154,7 @@ var ApiResourcesCmd = &cobra.Command{
 			wg.Add(1)
 			go func(service, endpoint string) {
 				defer wg.Done()
-				result, err := fetchServiceResources(service, endpoint, shortNamesMap)
+				result, err := format.FetchServiceResources(service, endpoint, shortNamesMap)
 				if err != nil {
 					errorChan <- fmt.Errorf("Error processing service %s: %v", service, err)
 					return
@@ -191,171 +184,6 @@ var ApiResourcesCmd = &cobra.Command{
 
 		renderTable(allData)
 	},
-}
-
-func loadAliases() (map[string]string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("unable to find home directory: %v", err)
-	}
-
-	settingPath := filepath.Join(home, ".cfctl", "setting.yaml")
-	v := viper.New()
-	v.SetConfigFile(settingPath)
-	v.SetConfigType("yaml")
-
-	if err := v.ReadInConfig(); err != nil {
-		if os.IsNotExist(err) {
-			return make(map[string]string), nil
-		}
-		return nil, fmt.Errorf("failed to read config: %v", err)
-	}
-
-	aliases := v.GetStringMapString("aliases")
-	if aliases == nil {
-		return make(map[string]string), nil
-	}
-
-	return aliases, nil
-}
-
-func fetchServiceResources(service, endpoint string, shortNamesMap map[string]string) ([][]string, error) {
-	parts := strings.Split(endpoint, "://")
-	if len(parts) != 2 {
-		return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
-	}
-
-	scheme := parts[0]
-	hostPort := strings.SplitN(parts[1], "/", 2)[0]
-
-	var opts []grpc.DialOption
-	if scheme == "grpc+ssl" {
-		tlsConfig := &tls.Config{
-			InsecureSkipVerify: false,
-		}
-		creds := credentials.NewTLS(tlsConfig)
-		opts = append(opts, grpc.WithTransportCredentials(creds))
-	} else {
-		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	}
-
-	conn, err := grpc.Dial(hostPort, opts...)
-	if err != nil {
-		return nil, fmt.Errorf("connection failed: unable to connect to %s: %v", endpoint, err)
-	}
-	defer conn.Close()
-
-	client := grpc_reflection_v1alpha.NewServerReflectionClient(conn)
-	stream, err := client.ServerReflectionInfo(context.Background())
-	if err != nil {
-		return nil, fmt.Errorf("failed to create reflection client: %v", err)
-	}
-
-	req := &grpc_reflection_v1alpha.ServerReflectionRequest{
-		MessageRequest: &grpc_reflection_v1alpha.ServerReflectionRequest_ListServices{ListServices: ""},
-	}
-
-	if err := stream.Send(req); err != nil {
-		return nil, fmt.Errorf("failed to send reflection request: %v", err)
-	}
-
-	resp, err := stream.Recv()
-	if err != nil {
-		return nil, fmt.Errorf("failed to receive reflection response: %v", err)
-	}
-
-	services := resp.GetListServicesResponse().Service
-
-	// Load aliases
-	aliases, err := loadAliases()
-	if err != nil {
-		return nil, fmt.Errorf("failed to load aliases: %v", err)
-	}
-
-	data := [][]string{}
-	for _, s := range services {
-		if strings.HasPrefix(s.Name, "grpc.reflection.v1alpha.") {
-			continue
-		}
-		resourceName := s.Name[strings.LastIndex(s.Name, ".")+1:]
-		verbs := getServiceMethods(client, s.Name)
-
-		// Group verbs by alias
-		verbsWithAlias := make(map[string]string)
-		remainingVerbs := make([]string, 0)
-
-		for _, verb := range verbs {
-			hasAlias := false
-			for alias, cmd := range aliases {
-				cmdParts := strings.Fields(cmd)
-				if len(cmdParts) >= 3 &&
-					cmdParts[0] == service &&
-					cmdParts[1] == verb &&
-					cmdParts[2] == resourceName {
-					verbsWithAlias[verb] = alias
-					hasAlias = true
-					break
-				}
-			}
-			if !hasAlias {
-				remainingVerbs = append(remainingVerbs, verb)
-			}
-		}
-
-		// Add row for verbs without aliases
-		if len(remainingVerbs) > 0 {
-			data = append(data, []string{service, strings.Join(remainingVerbs, ", "), resourceName, ""})
-		}
-
-		// Add separate rows for each verb with an alias
-		for verb, alias := range verbsWithAlias {
-			data = append(data, []string{service, verb, resourceName, alias})
-		}
-	}
-
-	return data, nil
-}
-
-func getServiceMethods(client grpc_reflection_v1alpha.ServerReflectionClient, serviceName string) []string {
-	stream, err := client.ServerReflectionInfo(context.Background())
-	if err != nil {
-		log.Fatalf("Failed to create reflection client: %v", err)
-	}
-
-	req := &grpc_reflection_v1alpha.ServerReflectionRequest{
-		MessageRequest: &grpc_reflection_v1alpha.ServerReflectionRequest_FileContainingSymbol{FileContainingSymbol: serviceName},
-	}
-
-	if err := stream.Send(req); err != nil {
-		log.Fatalf("Failed to send reflection request: %v", err)
-	}
-
-	resp, err := stream.Recv()
-	if err != nil {
-		log.Fatalf("Failed to receive reflection response: %v", err)
-	}
-
-	fileDescriptor := resp.GetFileDescriptorResponse()
-	if fileDescriptor == nil {
-		return []string{}
-	}
-
-	methods := []string{}
-	for _, fdBytes := range fileDescriptor.FileDescriptorProto {
-		fd := &descriptorpb.FileDescriptorProto{}
-		if err := proto.Unmarshal(fdBytes, fd); err != nil {
-			log.Fatalf("Failed to unmarshal file descriptor: %v", err)
-		}
-		for _, service := range fd.GetService() {
-			if service.GetName() == serviceName[strings.LastIndex(serviceName, ".")+1:] {
-				for _, method := range service.GetMethod() {
-					methods = append(methods, method.GetName())
-				}
-			}
-		}
-	}
-
-	return methods
 }
 
 func renderTable(data [][]string) {
