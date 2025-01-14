@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -11,6 +12,9 @@ import (
 	"github.com/cloudforet-io/cfctl/cmd/common"
 	"github.com/cloudforet-io/cfctl/pkg/configs"
 	"github.com/cloudforet-io/cfctl/pkg/transport"
+	"github.com/jhump/protoreflect/grpcreflect"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"gopkg.in/yaml.v3"
 
 	"github.com/spf13/viper"
@@ -256,6 +260,79 @@ func addDynamicServiceCommands() error {
 	// For non-local environments
 	endpointName := config.Endpoint
 	var apiEndpoint string
+
+	// For local environment
+	if strings.HasPrefix(config.Endpoint, "grpc://") {
+		endpoint := strings.TrimPrefix(config.Endpoint, "grpc://")
+
+		conn, err := grpc.Dial(endpoint, grpc.WithInsecure(), grpc.WithBlock(), grpc.WithTimeout(time.Second))
+		if err != nil {
+			pterm.DefaultBox.WithTitle("Local gRPC Server Not Found").
+				WithTitleTopCenter().
+				WithBoxStyle(pterm.NewStyle(pterm.FgYellow)).
+				Printfln("Unable to connect to local gRPC server.\nPlease make sure your gRPC server is running on %s", config.Endpoint)
+			return nil
+		}
+		defer func(conn *grpc.ClientConn) {
+			err := conn.Close()
+			if err != nil {
+
+			}
+		}(conn)
+
+		ctx := context.Background()
+		refClient := grpcreflect.NewClientV1Alpha(ctx, grpc_reflection_v1alpha.NewServerReflectionClient(conn))
+		defer refClient.Reset()
+
+		services, err := refClient.ListServices()
+		if err != nil {
+			return err
+		}
+
+		// Check if plugin service exists
+		hasPlugin := false
+		microservices := make(map[string]bool)
+
+		for _, service := range services {
+			// Skip grpc reflection and health check services
+			if strings.HasPrefix(service, "grpc.") {
+				continue
+			}
+
+			// Handle plugin service
+			if strings.Contains(service, ".plugin.") {
+				hasPlugin = true
+				continue
+			}
+
+			// Handle SpaceONE microservices
+			if strings.Contains(service, "spaceone.api.") {
+				parts := strings.Split(service, ".")
+				if len(parts) >= 4 {
+					serviceName := parts[2]
+					// Skip core service and version prefixes
+					if serviceName != "core" && !strings.HasPrefix(serviceName, "v") {
+						microservices[serviceName] = true
+					}
+				}
+			}
+		}
+
+		if hasPlugin {
+			cmd := createServiceCommand(config.Environment)
+			cmd.GroupID = "available"
+			rootCmd.AddCommand(cmd)
+		}
+
+		// Add commands for other microservices
+		for serviceName := range microservices {
+			cmd := createServiceCommand(serviceName)
+			cmd.GroupID = "available"
+			rootCmd.AddCommand(cmd)
+		}
+
+		return nil
+	}
 
 	if strings.HasPrefix(endpointName, "grpc+ssl://") {
 		apiEndpoint = endpointName

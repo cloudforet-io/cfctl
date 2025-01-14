@@ -183,7 +183,7 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 	var apiEndpoint string
 	var identityEndpoint string
 	var hasIdentityService bool
-	if config.Environment == "local" {
+	if strings.HasPrefix(config.Environments[config.Environment].Endpoint, "grpc://") {
 		hostPort = strings.TrimPrefix(config.Environments[config.Environment].Endpoint, "grpc://")
 	} else {
 		apiEndpoint, err = configs.GetAPIEndpoint(config.Environments[config.Environment].Endpoint)
@@ -768,12 +768,13 @@ func discoverService(refClient *grpcreflect.Client, serviceName string, resource
 	}
 
 	for _, service := range services {
-		if strings.Contains(service, fmt.Sprintf("spaceone.api.%s", serviceName)) &&
-			strings.HasSuffix(service, resourceName) {
+		if strings.Contains(service, ".plugin.") && strings.HasSuffix(service, resourceName) {
 			return service, nil
 		}
+	}
 
-		if strings.Contains(service, serviceName) &&
+	for _, service := range services {
+		if strings.Contains(service, fmt.Sprintf("spaceone.api.%s", serviceName)) &&
 			strings.HasSuffix(service, resourceName) {
 			return service, nil
 		}

@@ -132,6 +132,12 @@ func GetServiceEndpoint(config *Setting, serviceName string) (string, error) {
 		return "", fmt.Errorf("endpoint not found in environment config")
 	}
 
+	if strings.HasPrefix(envConfig.Endpoint, "grpc://") {
+		if strings.Contains(envConfig.Endpoint, "localhost") {
+			return envConfig.Endpoint, nil
+		}
+	}
+
 	// Get console API endpoint
 	apiEndpoint, err := GetAPIEndpoint(envConfig.Endpoint)
 	if err != nil {
@@ -163,6 +169,12 @@ func GetServiceEndpoint(config *Setting, serviceName string) (string, error) {
 }
 
 func FetchEndpointsMap(endpoint string) (map[string]string, error) {
+	if strings.HasPrefix(endpoint, "grpc://") {
+		endpointsMap := make(map[string]string)
+		endpointsMap["local"] = endpoint
+		return endpointsMap, nil
+	}
+
 	// Get identity service endpoint
 	identityEndpoint, hasIdentityService, err := GetIdentityEndpoint(endpoint)
 	listEndpointsUrl := endpoint + "/identity/endpoint/list"

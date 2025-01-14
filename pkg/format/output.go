@@ -123,7 +123,7 @@ func RenderTable(data [][]string) {
 	previousService := ""
 
 	// Create table with headers
-	table := pterm.TableData{{"Service", "Verb", "Resource", "Short Names"}}
+	table := pterm.TableData{{"Service", "Verb", "Resource", "Alias"}}
 
 	for _, row := range data {
 		service := row[0]

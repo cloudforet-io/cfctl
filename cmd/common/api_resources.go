@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/viper"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"gopkg.in/yaml.v3"
@@ -101,6 +102,8 @@ func FetchServiceResources(serviceName, endpoint string, shortNamesMap map[strin
 		}
 		creds := credentials.NewTLS(tlsConfig)
 		opts = append(opts, grpc.WithTransportCredentials(creds))
+	} else if scheme == "grpc" {
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	} else {
 		return nil, fmt.Errorf("unsupported scheme: %s", scheme)
 	}
@@ -150,7 +153,33 @@ func FetchServiceResources(serviceName, endpoint string, shortNamesMap map[strin
 		if strings.HasPrefix(s, "grpc.reflection.") {
 			continue
 		}
-		if !strings.Contains(s, fmt.Sprintf(".%s.", serviceName)) {
+
+		displayServiceName := serviceName
+		if strings.HasPrefix(endpoint, "grpc://") && (strings.Contains(endpoint, "localhost") || strings.Contains(endpoint, "127.0.0.1")) {
+			parts := strings.Split(s, ".")
+			if len(parts) > 2 {
+				serviceDesc, err := refClient.ResolveService(s)
+				if err != nil {
+					log.Printf("Failed to resolve service %s: %v", s, err)
+					continue
+				}
+
+				resourceName := s[strings.LastIndex(s, ".")+1:]
+				verbs := []string{}
+				for _, method := range serviceDesc.GetMethods() {
+					verbs = append(verbs, method.GetName())
+				}
+
+				sort.Strings(verbs)
+				data = append(data, []string{
+					displayServiceName,
+					strings.Join(verbs, ", "),
+					resourceName,
+					"",
+				})
+				continue
+			}
+		} else if !strings.Contains(s, fmt.Sprintf(".%s.", serviceName)) {
 			continue
 		}
 
