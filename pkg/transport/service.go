@@ -57,7 +57,7 @@ type FetchOptions struct {
 	SortBy               string
 	MinimalColumns       bool
 	Columns              string
-	Limit                int
+	Rows                 int
 	Page                 int
 	PageSize             int
 }
@@ -352,11 +352,10 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 			}
 		}
 
-		// Apply limit if specified
-		if options.Limit > 0 && verb == "list" {
+		if options.Rows > 0 && verb == "list" {
 			if results, ok := respMap["results"].([]interface{}); ok {
-				if len(results) > options.Limit {
-					respMap["results"] = results[:options.Limit]
+				if len(results) > options.Rows {
+					respMap["results"] = results[:options.Rows]
 				}
 			}
 		}
