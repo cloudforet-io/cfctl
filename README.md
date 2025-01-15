@@ -26,7 +26,7 @@ brew install cfctl
 **For Intel Mac**
 
 ```bash
-curl -LO "https://github.com/cloudforet-io/cfctl/releases/latest/download/cfctl_Darwin_x86_64.tar.gz"
+wget -LO "https://github.com/cloudforet-io/cfctl/releases/latest/download/cfctl_Darwin_x86_64.tar.gz"
 ```
 
 ```
@@ -38,7 +38,7 @@ sudo mv cfctl /usr/local/bin/
 **For Apple Silicon Mac**
 
 ```bash
-curl -LO "https://github.com/cloudforet-io/cfctl/releases/latest/download/cfctl_Darwin_arm64.tar.gz"
+wget -LO "https://github.com/cloudforet-io/cfctl/releases/latest/download/cfctl_Darwin_arm64.tar.gz"
 ```
 
 ```bash
@@ -53,7 +53,7 @@ sudo mv cfctl /usr/local/bin/
 **For x86_64**
 
 ```bash
-curl -LO "https://github.com/cloudforet-io/cfctl/releases/latest/download/cfctl_Linux_x86_64.tar.gz"
+wget -LO "https://github.com/cloudforet-io/cfctl/releases/latest/download/cfctl_Linux_x86_64.tar.gz"
 ```
 
 ```bash
@@ -65,7 +65,7 @@ sudo mv cfctl /usr/local/bin/
 **For ARM64**
 
 ```bash
-curl -LO "https://github.com/cloudforet-io/cfctl/releases/latest/download/cfctl_Linux_arm64.tar.gz"
+wget -LO "https://github.com/cloudforet-io/cfctl/releases/latest/download/cfctl_Linux_arm64.tar.gz"
 ```
 
 ```bash
