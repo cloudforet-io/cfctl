@@ -41,8 +41,8 @@ var rootCmd = &cobra.Command{
 	Long: `cfctl controls the SpaceONE services.
   Find more information at: 
     - https://github.com/cloudforet-io/cfctl
-    - https://docs.spaceone.megazone.io/developers/setup/cfctl (English)
-    - https://docs.spaceone.megazone.io/ko/developers/setup/cfctl (Korean)`,
+    - https://docs.spaceone.megazone.io/docs/developers/cfctl (English)
+    - https://docs.spaceone.megazone.io/ko/docs/developers/cfctl (Korean)`,
 	// Uncomment the following line if your bare application
 	// has an action associated with it:
 	// Run: func(cmd *cobra.Command, args []string) { },
