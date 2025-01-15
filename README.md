@@ -112,7 +112,7 @@ source ~/.config/fish/config.fish
 4. Open PowerShell or Command Prompt and verify the installation:
 
 ```powershell
-cfctl version
+cfctl
 ```
 
 # 02. Quick Start
