@@ -376,7 +376,7 @@ func addDynamicServiceCommands() error {
 	// If no cached endpoints, show progress with detailed messages
 	progressbar, _ := pterm.DefaultProgressbar.
 		WithTotal(4).
-		WithTitle(fmt.Sprintf("Setting up %s environment", config.Environment)).
+		WithTitle(fmt.Sprintf("Environments up %s environment", config.Environment)).
 		Start()
 
 	progressbar.UpdateTitle("Fetching available service endpoints from the API server")

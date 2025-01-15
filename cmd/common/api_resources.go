@@ -35,7 +35,7 @@ func FetchApiResourcesCmd(serviceName string) *cobra.Command {
 }
 
 func ListAPIResources(serviceName string) error {
-	setting, err := configs.LoadSetting()
+	setting, err := configs.SetSettingFile()
 	if err != nil {
 		return fmt.Errorf("failed to load setting: %v", err)
 	}
@@ -87,7 +87,7 @@ func loadShortNames() (map[string]string, error) {
 	return shortNamesMap, nil
 }
 
-func FetchServiceResources(serviceName, endpoint string, shortNamesMap map[string]string, config *configs.Setting) ([][]string, error) {
+func FetchServiceResources(serviceName, endpoint string, shortNamesMap map[string]string, config *configs.Environments) ([][]string, error) {
 	parts := strings.Split(endpoint, "://")
 	if len(parts) != 2 {
 		return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
