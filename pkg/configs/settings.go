@@ -9,25 +9,17 @@ import (
 	"github.com/spf13/viper"
 )
 
-// Environment represents a single environment configuration
-type Environment struct {
-	Endpoint string `yaml:"endpoint"` // gRPC or HTTP endpoint URL
-	Proxy    string `yaml:"proxy"`    // Proxy server address if required
-	Token    string `yaml:"token"`    // Authentication token
-	URL      string `yaml:"url"`      // Web console URL
-}
-
 // Setting represents the complete configuration structure
 type Setting struct {
 	Environment  string                 `yaml:"environment"`  // Current active environment
 	Environments map[string]Environment `yaml:"environments"` // Map of available environments
 }
 
-// SettingPaths contains all setting related paths
-type SettingPaths struct {
-	CacheDir    string // ~/.cfctl/cache
-	SettingDir  string // ~/.cfctl
-	SettingFile string // ~/.cfctl/setting.yaml
+// Environment represents a single environment configuration
+type Environment struct {
+	Endpoint string `yaml:"endpoint"` // gRPC or HTTP endpoint URL
+	Proxy    string `yaml:"proxy"`    // Proxy server address if required
+	Token    string `yaml:"token"`    // Authentication token
 }
 
 // LoadSetting loads the setting from the default location (~/.cfctl/setting.yaml)
@@ -56,15 +48,6 @@ func LoadSetting() (*Setting, error) {
 	}, nil
 }
 
-// GetCachePath returns the path to environment-specific cache directory
-func GetCachePath(env string) (string, error) {
-	paths, err := GetSettingPaths()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(paths.CacheDir, env), nil
-}
-
 // GetSettingPath returns the path to the main setting file
 func GetSettingPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -72,29 +55,6 @@ func GetSettingPath() (string, error) {
 		return "", fmt.Errorf("failed to get home directory: %v", err)
 	}
 	return filepath.Join(home, ".cfctl", "setting.yaml"), nil
-}
-
-// GetSettingPaths returns all setting related paths
-func GetSettingPaths() (*SettingPaths, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %v", err)
-	}
-
-	return &SettingPaths{
-		CacheDir:    filepath.Join(home, ".cfctl", "cache"),
-		SettingDir:  filepath.Join(home, ".cfctl"),
-		SettingFile: filepath.Join(home, ".cfctl", "setting.yaml"),
-	}, nil
-}
-
-// GetTokenPath returns the path to environment-specific token file
-func GetTokenPath(env string) (string, error) {
-	cachePath, err := GetCachePath(env)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(cachePath, "access_token"), nil
 }
 
 // loadMainSetting loads the main setting file using viper
@@ -134,7 +94,6 @@ func loadEnvironmentSetting(env string) (*Environment, error) {
 	envSetting := &Environment{
 		Endpoint: v.GetString(fmt.Sprintf("environments.%s.endpoint", env)),
 		Proxy:    v.GetString(fmt.Sprintf("environments.%s.proxy", env)),
-		URL:      v.GetString(fmt.Sprintf("environments.%s.url", env)),
 	}
 
 	if err := loadToken(env, envSetting); err != nil {
