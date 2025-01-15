@@ -270,7 +270,7 @@ func addDynamicServiceCommands() error {
 			pterm.DefaultBox.WithTitle("Local gRPC Server Not Found").
 				WithTitleTopCenter().
 				WithBoxStyle(pterm.NewStyle(pterm.FgYellow)).
-				Printfln("Unable to connect to local gRPC server.\nPlease make sure your gRPC server is running on %s", config.Endpoint)
+				Printfln("Current environment: %s\nUnable to connect to local gRPC server.\nPlease make sure your gRPC server is running on %s", config.Environment, config.Endpoint)
 			return nil
 		}
 		defer func(conn *grpc.ClientConn) {
