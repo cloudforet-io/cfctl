@@ -187,12 +187,14 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 		hostPort = strings.TrimPrefix(config.Environments[config.Environment].Endpoint, "grpc://")
 	} else {
 		apiEndpoint, err = configs.GetAPIEndpoint(config.Environments[config.Environment].Endpoint)
+		fmt.Println(apiEndpoint)
 		if err != nil {
 			pterm.Error.Printf("Failed to get API endpoint: %v\n", err)
 			os.Exit(1)
 		}
 		// Get identity service endpoint
 		identityEndpoint, hasIdentityService, err = configs.GetIdentityEndpoint(apiEndpoint)
+		fmt.Println(identityEndpoint)
 		if err != nil {
 			pterm.Error.Printf("Failed to get identity endpoint: %v\n", err)
 			os.Exit(1)

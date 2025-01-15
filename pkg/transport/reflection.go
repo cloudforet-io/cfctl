@@ -56,6 +56,22 @@ func ListGRPCServices(endpoint string) ([]string, error) {
 	return listServices(conn)
 }
 
+// GetGrpcConnection establishes a gRPC connection with the specified endpoint
+func GetGrpcConnection(endpoint string) (*grpc.ClientConn, error) {
+	parsedURL, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse endpoint: %v", err)
+	}
+
+	host := parsedURL.Hostname()
+	port := parsedURL.Port()
+	if port == "" {
+		port = "443"
+	}
+
+	return dialGRPC(endpoint, host, port)
+}
+
 // CheckIdentityProxyAvailable checks if the given gRPC endpoint can be used as an identity proxy
 // by verifying the presence of both Endpoint and Token services.
 // These services are required for the identity service to act as a proxy.
