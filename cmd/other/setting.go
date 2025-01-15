@@ -143,7 +143,6 @@ This is useful for development or when connecting directly to specific service e
 		}
 
 		pterm.Success.Printf("Successfully initialized direct connection to %s\n", endpoint)
-		updateSetting(envName, endpoint, "")
 		if err := v.ReadInConfig(); err == nil {
 			v.Set(fmt.Sprintf("environments.%s.proxy", envName), false)
 			if err := v.WriteConfig(); err != nil {
@@ -151,6 +150,8 @@ This is useful for development or when connecting directly to specific service e
 				return
 			}
 		}
+
+		updateSetting(envName, endpoint, "", false)
 	},
 }
 
@@ -253,8 +254,10 @@ var settingInitProxyCmd = &cobra.Command{
 			}
 		}
 
+		internalFlag, _ := cmd.Flags().GetBool("internal")
+
 		// Update configuration
-		updateSetting(envName, endpointStr, envSuffix)
+		updateSetting(envName, endpointStr, envSuffix, internalFlag)
 	},
 }
 
@@ -1344,7 +1347,7 @@ func isIPAddress(host string) bool {
 }
 
 // updateSetting updates the configuration files
-func updateSetting(envName, endpoint, envSuffix string) {
+func updateSetting(envName, endpoint, envSuffix string, internal bool) {
 	settingDir := GetSettingDir()
 	mainSettingPath := filepath.Join(settingDir, "setting.yaml")
 
@@ -1357,6 +1360,16 @@ func updateSetting(envName, endpoint, envSuffix string) {
 
 	// Set environment
 	v.Set("environment", envName)
+
+	if internal {
+		// Get internal endpoint
+		internalEndpoint, err := getInternalEndpoint(endpoint)
+		if err != nil {
+			pterm.Error.Printf("Failed to get internal endpoint: %v\n", err)
+			return
+		}
+		endpoint = internalEndpoint
+	}
 
 	// Handle protocol for endpoint
 	if !strings.Contains(endpoint, "://") {
@@ -1397,6 +1410,120 @@ func updateSetting(envName, endpoint, envSuffix string) {
 
 	pterm.Success.Printf("Environment '%s' successfully initialized.\n", envName)
 	pterm.Info.Printf("Configuration saved to: %s\n", mainSettingPath)
+}
+
+func getInternalEndpoint(endpoint string) (string, error) {
+	if strings.HasPrefix(endpoint, "grpc://") || strings.HasPrefix(endpoint, "grpc+ssl://") {
+		// Handle gRPC endpoint
+		conn, err := transport.GetGrpcConnection(endpoint)
+		if err != nil {
+			return "", fmt.Errorf("failed to connect to gRPC server: %v", err)
+		}
+		defer conn.Close()
+
+		client := grpc_reflection_v1alpha.NewServerReflectionClient(conn)
+		refClient := grpcreflect.NewClient(context.Background(), client)
+		defer refClient.Reset()
+
+		serviceName := "spaceone.api.identity.v2.Endpoint"
+		methodName := "list"
+
+		serviceDesc, err := refClient.ResolveService(serviceName)
+		if err != nil {
+			return "", fmt.Errorf("failed to resolve service: %v", err)
+		}
+
+		methodDesc := serviceDesc.FindMethodByName(methodName)
+		if methodDesc == nil {
+			return "", fmt.Errorf("method not found: %s", methodName)
+		}
+
+		reqMsg := dynamic.NewMessage(methodDesc.GetInputType())
+		reqMsg.SetField(reqMsg.GetMessageDescriptor().FindFieldByName("service"), "identity")
+		reqMsg.SetField(reqMsg.GetMessageDescriptor().FindFieldByName("endpoint_type"), "INTERNAL")
+		reqMsg.SetField(reqMsg.GetMessageDescriptor().FindFieldByName("query"), map[string]interface{}{})
+
+		respMsg := dynamic.NewMessage(methodDesc.GetOutputType())
+		fullMethod := fmt.Sprintf("/%s/%s", serviceName, methodName)
+
+		if err := conn.Invoke(context.Background(), fullMethod, reqMsg, respMsg); err != nil {
+			return "", fmt.Errorf("failed to invoke method: %v", err)
+		}
+
+		results, err := respMsg.TryGetField(respMsg.GetMessageDescriptor().FindFieldByName("results"))
+		if err != nil {
+			return "", fmt.Errorf("failed to get results: %v", err)
+		}
+
+		resultsSlice := results.([]interface{})
+		if len(resultsSlice) > 0 {
+			result := resultsSlice[0].(*dynamic.Message)
+			if internalEndpoint, err := result.TryGetField(result.GetMessageDescriptor().FindFieldByName("internal_endpoint")); err == nil {
+				return internalEndpoint.(string), nil
+			}
+		}
+	} else {
+		// Handle REST endpoint
+		// 1. First get the console API endpoint from config
+		client := &http.Client{}
+		configResp, err := client.Get(endpoint + "/config/production.json")
+		if err != nil {
+			return "", fmt.Errorf("failed to get config: %v", err)
+		}
+		defer configResp.Body.Close()
+
+		var config struct {
+			ConsoleAPIV2 struct {
+				Endpoint string `json:"ENDPOINT"`
+			} `json:"CONSOLE_API_V2"`
+		}
+
+		if err := json.NewDecoder(configResp.Body).Decode(&config); err != nil {
+			return "", fmt.Errorf("failed to decode config: %v", err)
+		}
+
+		// 2. Then use the console API endpoint to get internal endpoint
+		reqBody := map[string]interface{}{
+			"service":       "identity",
+			"endpoint_type": "INTERNAL",
+			"query":         map[string]interface{}{},
+		}
+
+		jsonBody, err := json.Marshal(reqBody)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal request body: %v", err)
+		}
+
+		req, err := http.NewRequest("POST", config.ConsoleAPIV2.Endpoint+"/identity/endpoint/list", bytes.NewBuffer(jsonBody))
+		if err != nil {
+			return "", fmt.Errorf("failed to create request: %v", err)
+		}
+
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("accept", "application/json")
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("failed to send request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		var result struct {
+			Results []struct {
+				InternalEndpoint string `json:"internal_endpoint"`
+			} `json:"results"`
+		}
+
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return "", fmt.Errorf("failed to decode response: %v", err)
+		}
+
+		if len(result.Results) > 0 {
+			return result.Results[0].InternalEndpoint, nil
+		}
+	}
+
+	return "", fmt.Errorf("internal endpoint not found")
 }
 
 // convertToStringMap converts map[interface{}]interface{} to map[string]interface{}
@@ -1442,6 +1569,7 @@ func init() {
 
 	settingInitProxyCmd.Flags().Bool("app", false, "Initialize as application configuration")
 	settingInitProxyCmd.Flags().Bool("user", false, "Initialize as user-specific configuration")
+	settingInitProxyCmd.Flags().Bool("internal", false, "Use internal endpoint for the environment")
 
 	envCmd.Flags().StringP("switch", "s", "", "Switch to a different environment")
 	envCmd.Flags().StringP("remove", "r", "", "Remove an environment")
