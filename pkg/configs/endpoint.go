@@ -126,7 +126,7 @@ func GetIdentityEndpoint(apiEndpoint string) (string, bool, error) {
 	return "", false, nil
 }
 
-func GetServiceEndpoint(config *Setting, serviceName string) (string, error) {
+func GetServiceEndpoint(config *Environments, serviceName string) (string, error) {
 	envConfig := config.Environments[config.Environment]
 	if envConfig.Endpoint == "" {
 		return "", fmt.Errorf("endpoint not found in environment config")

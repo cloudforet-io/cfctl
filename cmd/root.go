@@ -270,7 +270,7 @@ func addDynamicServiceCommands() error {
 			pterm.DefaultBox.WithTitle("Local gRPC Server Not Found").
 				WithTitleTopCenter().
 				WithBoxStyle(pterm.NewStyle(pterm.FgYellow)).
-				Printfln("Unable to connect to local gRPC server.\nPlease make sure your gRPC server is running on %s", config.Endpoint)
+				Printfln("Current environment: %s\nUnable to connect to local gRPC server.\nPlease make sure your gRPC server is running on %s", config.Environment, config.Endpoint)
 			return nil
 		}
 		defer func(conn *grpc.ClientConn) {
@@ -376,7 +376,7 @@ func addDynamicServiceCommands() error {
 	// If no cached endpoints, show progress with detailed messages
 	progressbar, _ := pterm.DefaultProgressbar.
 		WithTotal(4).
-		WithTitle(fmt.Sprintf("Setting up %s environment", config.Environment)).
+		WithTitle(fmt.Sprintf("Environments up %s environment", config.Environment)).
 		Start()
 
 	progressbar.UpdateTitle("Fetching available service endpoints from the API server")

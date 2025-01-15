@@ -230,11 +230,12 @@ func FetchService(serviceName string, verb string, resourceName string, options 
 
 	// Configure gRPC connection
 	var conn *grpc.ClientConn
-	if config.Environment == "local" {
+	if strings.HasPrefix(config.Environments[config.Environment].Endpoint, "grpc://") {
+		hostPort := strings.TrimPrefix(config.Environments[config.Environment].Endpoint, "grpc://")
 		// For local environment, use insecure connection
-		conn, err = grpc.Dial("localhost:50051", grpc.WithInsecure())
+		conn, err = grpc.Dial(hostPort, grpc.WithInsecure())
 		if err != nil {
-			pterm.Error.Printf("Cannot connect to local gRPC server (localhost:50051)\n")
+			pterm.Error.Printf("Cannot connect to local gRPC server (%s)\n", hostPort)
 			pterm.Info.Println("Please check if your gRPC server is running")
 			return nil, fmt.Errorf("failed to connect to local server: %v", err)
 		}
@@ -492,8 +493,9 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 			fmt.Sprintf("page_size=%d", options.PageSize))
 	}
 
-	if config.Environment == "local" {
-		conn, err = grpc.Dial("localhost:50051", grpc.WithInsecure(),
+	if strings.HasPrefix(config.Environments[config.Environment].Endpoint, "grpc://") {
+		hostPort = strings.TrimPrefix(config.Environments[config.Environment].Endpoint, "grpc://")
+		conn, err = grpc.Dial(hostPort, grpc.WithInsecure(),
 			grpc.WithDefaultCallOptions(
 				grpc.MaxCallRecvMsgSize(10*1024*1024),
 				grpc.MaxCallSendMsgSize(10*1024*1024),

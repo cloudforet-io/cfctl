@@ -1372,7 +1372,7 @@ func updateSetting(envName, endpoint, envSuffix string) {
 	v.Set(envKey, endpoint)
 
 	proxyKey := fmt.Sprintf("environments.%s.proxy", envName)
-	if strings.HasPrefix(endpoint, "grpc://") || strings.HasPrefix(endpoint, "grpc+ssl://") {
+	if strings.HasPrefix(endpoint, "grpc+ssl://") {
 		isProxy, err := transport.CheckIdentityProxyAvailable(endpoint)
 		if err != nil {
 			pterm.Warning.Printf("Failed to check gRPC endpoint: %v\n", err)
