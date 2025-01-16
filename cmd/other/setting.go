@@ -156,28 +156,32 @@ var settingInitProxyCmd = &cobra.Command{
 	Long:  `Specify a proxy URL to initialize the environment configuration.`,
 	Args:  cobra.ExactArgs(1),
 	Example: `  cfctl setting init proxy http[s]://example.com --app
-  cfctl setting init proxy http[s]://example.com --user`,
+  cfctl setting init proxy http[s]://example.com --user
+  cfctl setting init proxy http[s]://example.com --internal`,
 	Run: func(cmd *cobra.Command, args []string) {
 		endpointStr := args[0]
 		appFlag, _ := cmd.Flags().GetBool("app")
 		userFlag, _ := cmd.Flags().GetBool("user")
 		internalFlag, _ := cmd.Flags().GetBool("internal")
 
-		if !appFlag && !userFlag {
-			pterm.Error.Println("You must specify either --app or --user flag.")
+		if internalFlag {
+			appFlag = true
+		} else if !appFlag && !userFlag {
+			pterm.Error.Println("You must specify either --app, --user, or --internal flag.")
 			cmd.Help()
 			return
 		}
 
-		// Internal flag can only be used with --app flag
-		if internalFlag && userFlag {
+		if userFlag && internalFlag {
 			pterm.DefaultBox.WithTitle("Internal Flag Not Allowed").
 				WithTitleTopCenter().
 				WithRightPadding(4).
 				WithLeftPadding(4).
 				WithBoxStyle(pterm.NewStyle(pterm.FgRed)).
-				Println("The --internal flag can only be used with the --app flag.\n" +
+				Println("The --internal flag can be used either alone or with the --app flag.\n" +
 					"Example usage:\n" +
+					"  $ cfctl setting init proxy <URL> --internal\n" +
+					"				     Or\n" +
 					"  $ cfctl setting init proxy <URL> --app --internal")
 			return
 		}
