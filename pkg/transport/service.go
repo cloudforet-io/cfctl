@@ -674,33 +674,68 @@ func fetchJSONResponse(config *Config, serviceName string, verb string, resource
 	if err != nil {
 		if strings.Contains(err.Error(), "ERROR_AUTHENTICATE_FAILURE") ||
 			strings.Contains(err.Error(), "Token is invalid or expired") {
-			// Create a styled error message box
-			headerBox := pterm.DefaultBox.WithTitle("Authentication Error").
-				WithTitleTopCenter().
-				WithRightPadding(4).
-				WithLeftPadding(4).
-				WithBoxStyle(pterm.NewStyle(pterm.FgLightRed))
 
-			errorExplain := "Your authentication token has expired or is invalid.\n" +
-				"Please login again to refresh your credentials."
+			// Check if current environment is app type
+			if strings.HasSuffix(config.Environment, "-app") {
+				headerBox := pterm.DefaultBox.WithTitle("App Token Required").
+					WithTitleTopCenter().
+					WithRightPadding(4).
+					WithLeftPadding(4).
+					WithBoxStyle(pterm.NewStyle(pterm.FgLightRed))
 
-			headerBox.Println(errorExplain)
-			fmt.Println()
+				appTokenExplain := "Please create a Domain Admin App in SpaceONE Console.\n" +
+					"This requires Domain Admin privilege.\n\n" +
+					"Or Please create a Workspace App in SpaceONE Console.\n" +
+					"This requires Workspace Owner privilege."
 
-			steps := []string{
-				"1. Run 'cfctl login'",
-				"2. Enter your credentials when prompted",
-				"3. Try your command again",
+				headerBox.Println(appTokenExplain)
+				fmt.Println()
+
+				steps := []string{
+					"1. Go to SpaceONE Console",
+					"2. Navigate to either 'Admin > App Page' or specific 'Workspace > App page'",
+					"3. Click 'Create' to create your App",
+					"4. Copy the generated App Token",
+					fmt.Sprintf("5. Update token in your config file:\n   Path: ~/.cfctl/setting.yaml\n   Environment: %s", config.Environment),
+				}
+
+				instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
+					WithTitleTopCenter().
+					WithRightPadding(4).
+					WithLeftPadding(4)
+
+				instructionBox.Println(strings.Join(steps, "\n\n"))
+
+				return nil, fmt.Errorf("app token required")
+			} else {
+				// Original user authentication error message
+				headerBox := pterm.DefaultBox.WithTitle("Authentication Error").
+					WithTitleTopCenter().
+					WithRightPadding(4).
+					WithLeftPadding(4).
+					WithBoxStyle(pterm.NewStyle(pterm.FgLightRed))
+
+				errorExplain := "Your authentication token has expired or is invalid.\n" +
+					"Please login again to refresh your credentials."
+
+				headerBox.Println(errorExplain)
+				fmt.Println()
+
+				steps := []string{
+					"1. Run 'cfctl login'",
+					"2. Enter your credentials when prompted",
+					"3. Try your command again",
+				}
+
+				instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
+					WithTitleTopCenter().
+					WithRightPadding(4).
+					WithLeftPadding(4)
+
+				instructionBox.Println(strings.Join(steps, "\n\n"))
+
+				return nil, fmt.Errorf("authentication required")
 			}
-
-			instructionBox := pterm.DefaultBox.WithTitle("Required Steps").
-				WithTitleTopCenter().
-				WithRightPadding(4).
-				WithLeftPadding(4)
-
-			instructionBox.Println(strings.Join(steps, "\n\n"))
-
-			return nil, fmt.Errorf("authentication required")
 		}
 		return nil, fmt.Errorf("failed to invoke method %s: %v", fullMethod, err)
 	}
