@@ -133,7 +133,8 @@ func GetServiceEndpoint(config *Environments, serviceName string) (string, error
 	}
 
 	if strings.HasPrefix(envConfig.Endpoint, "grpc://") {
-		if strings.Contains(envConfig.Endpoint, "localhost") {
+		// Allow both localhost and cluster-internal addresses
+		if strings.Contains(envConfig.Endpoint, "localhost") || strings.Contains(envConfig.Endpoint, ".svc.cluster.local") {
 			return envConfig.Endpoint, nil
 		}
 	}
