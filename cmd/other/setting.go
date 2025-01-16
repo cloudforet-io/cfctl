@@ -1606,7 +1606,6 @@ func reorderRootNode(doc *yaml.Node) {
 		return
 	}
 
-	// rootMap.Content 에는 [keyNode, valNode, keyNode, valNode, ...] 순
 	var newContent []*yaml.Node
 	var aliasesKV []*yaml.Node
 	var environmentKV []*yaml.Node
