@@ -1321,6 +1321,12 @@ func fetchWorkspaces(baseUrl string, identityEndpoint string, hasIdentityService
 			}
 			creds := credentials.NewTLS(tlsConfig)
 			opts = append(opts, grpc.WithTransportCredentials(creds))
+		} else if strings.HasPrefix(identityEndpoint, "grpc://") {
+			tlsConfig := &tls.Config{
+				InsecureSkipVerify: true,
+			}
+			creds := credentials.NewTLS(tlsConfig)
+			opts = append(opts, grpc.WithTransportCredentials(creds))
 		} else {
 			opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		}

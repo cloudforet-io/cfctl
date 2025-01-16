@@ -103,15 +103,7 @@ func FetchServiceResources(serviceName, endpoint string, shortNamesMap map[strin
 		creds := credentials.NewTLS(tlsConfig)
 		opts = append(opts, grpc.WithTransportCredentials(creds))
 	} else if scheme == "grpc" {
-		if strings.Contains(hostPort, ".svc.cluster.local") {
-			tlsConfig := &tls.Config{
-				InsecureSkipVerify: true,
-			}
-			creds := credentials.NewTLS(tlsConfig)
-			opts = append(opts, grpc.WithTransportCredentials(creds))
-		} else {
-			opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		}
+		opts = append(opts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	} else {
 		return nil, fmt.Errorf("unsupported scheme: %s", scheme)
 	}
