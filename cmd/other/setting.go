@@ -167,10 +167,24 @@ var settingInitProxyCmd = &cobra.Command{
 		endpointStr := args[0]
 		appFlag, _ := cmd.Flags().GetBool("app")
 		userFlag, _ := cmd.Flags().GetBool("user")
+		internalFlag, _ := cmd.Flags().GetBool("internal")
 
 		if !appFlag && !userFlag {
 			pterm.Error.Println("You must specify either --app or --user flag.")
 			cmd.Help()
+			return
+		}
+
+		// Internal flag can only be used with --app flag
+		if internalFlag && userFlag {
+			pterm.DefaultBox.WithTitle("Internal Flag Not Allowed").
+				WithTitleTopCenter().
+				WithRightPadding(4).
+				WithLeftPadding(4).
+				WithBoxStyle(pterm.NewStyle(pterm.FgRed)).
+				Println("The --internal flag can only be used with the --app flag.\n" +
+					"Example usage:\n" +
+					"  $ cfctl setting init proxy <URL> --app --internal")
 			return
 		}
 
@@ -253,8 +267,6 @@ var settingInitProxyCmd = &cobra.Command{
 				}
 			}
 		}
-
-		internalFlag, _ := cmd.Flags().GetBool("internal")
 
 		// Update configuration
 		updateSetting(envName, endpointStr, envSuffix, internalFlag)
