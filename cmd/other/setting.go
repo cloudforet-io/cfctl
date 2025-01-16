@@ -317,8 +317,8 @@ var envCmd = &cobra.Command{
 			// Update only the environment field in app setting
 			appV.Set("environment", switchEnv)
 
-			if err := appV.WriteConfig(); err != nil {
-				pterm.Error.Printf("Failed to update environment in setting.yaml: %v", err)
+			if err := WriteConfigPreservingKeyOrder(appV, appSettingPath); err != nil {
+				pterm.Error.Printf("Failed to update environment in setting.yaml: %v\n", err)
 				return
 			}
 
@@ -357,19 +357,18 @@ var envCmd = &cobra.Command{
 				targetViper.Set("environments", envMap)
 
 				// Write the updated configuration back to the respective setting file
-				if err := targetViper.WriteConfig(); err != nil {
-					pterm.Error.Printf("Failed to update setting file '%s': %v", targetSettingPath, err)
+				if err := WriteConfigPreservingKeyOrder(targetViper, targetSettingPath); err != nil {
+					pterm.Error.Printf("Failed to update setting file '%s': %v\n", targetSettingPath, err)
 					return
 				}
 
 				// If the deleted environment was the current one, unset it
 				if currentEnv == removeEnv {
 					appV.Set("environment", "")
-					if err := appV.WriteConfig(); err != nil {
-						pterm.Error.Printf("Failed to update environment in setting.yaml: %v", err)
+					if err := WriteConfigPreservingKeyOrder(appV, appSettingPath); err != nil {
+						pterm.Error.Printf("Failed to clear current environment: %v\n", err)
 						return
 					}
-					pterm.Info.WithShowLineNumber(false).Println("Cleared current environment in setting.yaml")
 				}
 
 				// Display success message
@@ -1568,6 +1567,74 @@ func convertToSlice(s []interface{}) []interface{} {
 		}
 	}
 	return result
+}
+
+func WriteConfigPreservingKeyOrder(v *viper.Viper, path string) error {
+	allSettings := v.AllSettings()
+
+	rawBytes, err := yaml.Marshal(allSettings)
+	if err != nil {
+		return fmt.Errorf("failed to marshal viper data: %w", err)
+	}
+
+	var rootNode yaml.Node
+	if err := yaml.Unmarshal(rawBytes, &rootNode); err != nil {
+		return fmt.Errorf("failed to unmarshal into yaml.Node: %w", err)
+	}
+
+	reorderRootNode(&rootNode)
+
+	reorderedBytes, err := yaml.Marshal(&rootNode)
+	if err != nil {
+		return fmt.Errorf("failed to marshal reordered yaml.Node: %w", err)
+	}
+
+	if err := os.WriteFile(path, reorderedBytes, 0644); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+
+	return nil
+}
+
+func reorderRootNode(doc *yaml.Node) {
+	if doc.Kind != yaml.DocumentNode || len(doc.Content) == 0 {
+		return
+	}
+
+	rootMap := doc.Content[0]
+	if rootMap.Kind != yaml.MappingNode {
+		return
+	}
+
+	// rootMap.Content 에는 [keyNode, valNode, keyNode, valNode, ...] 순
+	var newContent []*yaml.Node
+	var aliasesKV []*yaml.Node
+	var environmentKV []*yaml.Node
+	var environmentsKV []*yaml.Node
+	var otherKVs []*yaml.Node
+
+	for i := 0; i < len(rootMap.Content); i += 2 {
+		keyNode := rootMap.Content[i]
+		valNode := rootMap.Content[i+1]
+
+		switch keyNode.Value {
+		case "aliases":
+			aliasesKV = append(aliasesKV, keyNode, valNode)
+		case "environment":
+			environmentKV = append(environmentKV, keyNode, valNode)
+		case "environments":
+			environmentsKV = append(environmentsKV, keyNode, valNode)
+		default:
+			otherKVs = append(otherKVs, keyNode, valNode)
+		}
+	}
+
+	newContent = append(newContent, environmentKV...)
+	newContent = append(newContent, environmentsKV...)
+	newContent = append(newContent, otherKVs...)
+	newContent = append(newContent, aliasesKV...)
+
+	rootMap.Content = newContent
 }
 
 func init() {
