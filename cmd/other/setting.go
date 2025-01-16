@@ -102,12 +102,6 @@ This is useful for development or when connecting directly to specific service e
 		v.SetConfigFile(mainSettingPath)
 		v.SetConfigType("yaml")
 
-		//envName, err := parseEnvNameFromURL(endpoint)
-		//if err != nil {
-		//	pterm.Error.Printf("Failed to parse environment name: %v\n", err)
-		//	return
-		//}
-
 		// Check if environment already exists
 		if err := v.ReadInConfig(); err == nil {
 			environments := v.GetStringMap("environments")
@@ -1405,6 +1399,8 @@ func updateSetting(envName, endpoint, envSuffix string, internal bool) {
 		} else {
 			v.Set(proxyKey, isProxy)
 		}
+	} else if strings.HasPrefix(endpoint, "grpc://") {
+		v.Set(proxyKey, false)
 	} else {
 		v.Set(proxyKey, true)
 	}
