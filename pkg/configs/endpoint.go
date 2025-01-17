@@ -170,9 +170,9 @@ func GetServiceEndpoint(config *Environments, serviceName string) (string, error
 }
 
 func FetchEndpointsMap(endpoint string) (map[string]string, error) {
-	if strings.HasPrefix(endpoint, "grpc://") {
+	if strings.HasPrefix(endpoint, "grpc://localhost") {
 		endpointsMap := make(map[string]string)
-		endpointsMap["local"] = endpoint
+		endpointsMap["static"] = endpoint
 		return endpointsMap, nil
 	}
 
@@ -187,16 +187,21 @@ func FetchEndpointsMap(endpoint string) (map[string]string, error) {
 
 	if !hasIdentityService {
 		// Handle gRPC+SSL protocol directly
-		if strings.HasPrefix(endpoint, "grpc+ssl://") {
+		if strings.HasPrefix(endpoint, "grpc+ssl://") || strings.HasPrefix(endpoint, "grpc://") {
+			protocol := "grpc+ssl://"
+			if strings.HasPrefix(endpoint, "grpc://") {
+				protocol = "grpc://"
+			}
+
 			// Parse the endpoint
-			parts := strings.Split(endpoint, "/")
-			endpoint = strings.Join(parts[:len(parts)-1], "/")
-			parts = strings.Split(endpoint, "://")
-			if len(parts) != 2 {
+			hostPart := strings.TrimPrefix(endpoint, protocol)
+			hostPart = strings.TrimSuffix(hostPart, "/")
+
+			hostParts := strings.Split(hostPart, ".")
+			if len(hostParts) == 0 {
 				return nil, fmt.Errorf("invalid endpoint format: %s", endpoint)
 			}
 
-			hostParts := strings.Split(parts[1], ".")
 			svc := hostParts[0]
 			baseDomain := strings.Join(hostParts[1:], ".")
 
