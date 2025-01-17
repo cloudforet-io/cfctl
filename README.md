@@ -32,7 +32,7 @@ wget "https://github.com/cloudforet-io/cfctl/releases/latest/download/cfctl_Darw
 ```
 tar xvf cfctl_Darwin_x86_64.tar.gz
 chmod +x cfctl
-sudo mv cfctl /usr/local/bin/
+mv cfctl /usr/local/bin/
 ```
 
 **For Apple Silicon Mac**
@@ -44,7 +44,7 @@ wget "https://github.com/cloudforet-io/cfctl/releases/latest/download/cfctl_Darw
 ```bash
 tar xvf cfctl_Darwin_arm64.tar.gz
 chmod +x cfctl
-sudo mv cfctl /usr/local/bin/
+mv cfctl /usr/local/bin/
 ```
 
 
@@ -59,7 +59,7 @@ wget "https://github.com/cloudforet-io/cfctl/releases/latest/download/cfctl_Linu
 ```bash
 tar xvf cfctl_Linux_x86_64.tar.gz
 chmod +x cfctl
-sudo mv cfctl /usr/local/bin/
+mv cfctl /usr/local/bin/
 ```
 
 **For ARM64**
@@ -71,7 +71,7 @@ wget "https://github.com/cloudforet-io/cfctl/releases/latest/download/cfctl_Linu
 ```bash
 tar xvf cfctl_Linux_arm64.tar.gz
 chmod +x cfctl
-sudo mv cfctl /usr/local/bin/
+mv cfctl /usr/local/bin/
 ```
 
 ### Docker
