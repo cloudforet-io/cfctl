@@ -262,7 +262,9 @@ func addDynamicServiceCommands() error {
 	var apiEndpoint string
 
 	// For local environment
-	if strings.HasPrefix(config.Endpoint, "grpc://") {
+	if strings.Contains(config.Endpoint, ".svc.cluster.local") {
+		apiEndpoint = endpointName
+	} else if strings.HasPrefix(config.Endpoint, "grpc://") {
 		endpoint := strings.TrimPrefix(config.Endpoint, "grpc://")
 
 		conn, err := grpc.Dial(endpoint, grpc.WithInsecure(), grpc.WithBlock(), grpc.WithTimeout(time.Second))
@@ -319,9 +321,10 @@ func addDynamicServiceCommands() error {
 		}
 
 		if hasPlugin {
-			cmd := createServiceCommand(config.Environment)
+			cmd := createServiceCommand("static")
 			cmd.GroupID = "available"
 			rootCmd.AddCommand(cmd)
+			return nil
 		}
 
 		// Add commands for other microservices
@@ -334,7 +337,7 @@ func addDynamicServiceCommands() error {
 		return nil
 	}
 
-	if strings.HasPrefix(endpointName, "grpc+ssl://") {
+	if strings.HasPrefix(endpointName, "grpc+ssl://") || strings.HasPrefix(endpointName, "grpc://") {
 		apiEndpoint = endpointName
 	} else if strings.HasPrefix(endpointName, "http://") || strings.HasPrefix(endpointName, "https://") {
 		apiEndpoint, err = configs.GetAPIEndpoint(endpointName)
